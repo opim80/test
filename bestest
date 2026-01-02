@@ -1,24 +1,92 @@
--- [[ AUTOMATION TAB ]]
-local isInitialized = false -- Logic flag to check if script just loaded
-local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Server Hopper (Mesh Detector)", Default = false })
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
--- The Start Button
-local StartButton = Tabs.Automation:AddButton({
-    Title = "Start Hopper",
-    Description = "Manually start the cycle if toggled on",
-    Callback = function()
-        if HopperToggle.Value then
-            startHopperLoop()
-        else
-            Fluent:Notify({Title = "Error", Content = "Please enable the Toggle first!", Duration = 3})
+-- Services
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+
+-- Constants
+local MESH_ID_TARGET = "rbxassetid://12439777368"
+local SERVER_LOG_FILE = "fluent_server_history.json"
+
+-- State Variables
+local webhookURL = ""
+local webhookEnabled = false
+local isInitialized = false 
+
+-- Helper: Send Discord Webhook
+local function sendWebhook(title, message, color)
+    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+        local data = {
+            ["embeds"] = {{
+                ["title"] = title,
+                ["description"] = message,
+                ["color"] = color or 0x00ff00,
+                ["timestamp"] = DateTime.now():ToIsoDate()
+            }}
+        }
+        local success, err = pcall(function()
+            request({
+                Url = webhookURL,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(data)
+            })
+        end)
+        return success
+    end
+    return false
+end
+
+-- Helper: Server History
+local function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
+        return success and data or {}
+    end
+    return {}
+end
+
+local function serverHop()
+    local history = getHistory()
+    history[game.JobId] = os.time()
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
+
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing < server.maxPlayers and not history[server.id] then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
+            end
         end
     end
+end
+
+-- Create Window
+local Window = Fluent:CreateWindow({
+    Title = "Premium Server Utility",
+    SubTitle = "Fluent Edition",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true, 
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
 })
 
--- Encapsulated Loop Logic
-function startHopperLoop()
+local Tabs = {
+    Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
+    Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
+}
+
+-- [[ LOOP FUNCTION ]]
+local function startHopperLoop()
     task.spawn(function()
-        while HopperToggle.Value do
+        while Tabs.Automation.Elements.HopperToggle.Value do
             local target = workspace:FindFirstChild("map") 
                 and workspace.map:FindFirstChild("Rokyo") 
                 and workspace.map.Rokyo:FindFirstChild("MeshPart")
@@ -26,33 +94,66 @@ function startHopperLoop()
             if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
                 sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
                 Fluent:Notify({Title = "Success", Content = "Target Found! Hopping stopped.", Duration = 5})
-                HopperToggle:SetValue(false)
+                Tabs.Automation.Elements.HopperToggle:SetValue(false)
                 break
             else
                 serverHop()
             end
-            task.wait(10)
+            task.wait(10) -- Prevents crashing/rate-limiting
         end
     end)
 end
 
--- Toggle Logic
+-- [[ AUTOMATION TAB ]]
+local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Server Hopper (Mesh Detector)", Default = false })
+
+Tabs.Automation:AddButton({
+    Title = "Start Hopper",
+    Description = "Manually begin the search",
+    Callback = function()
+        if HopperToggle.Value then
+            startHopperLoop()
+            Fluent:Notify({Title = "Hopper", Content = "Search started...", Duration = 3})
+        else
+            Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
+        end
+    end
+})
+
 HopperToggle:OnChanged(function()
-    -- If the script is already running and you turn the toggle OFF, it stops.
-    -- If you turn it ON, we only auto-start if it's the very first time (Config load).
+    -- Only auto-start if the script hasn't finished loading yet (Initial config load)
     if HopperToggle.Value and not isInitialized then
-        isInitialized = true -- Set this so manual clicks later don't auto-trigger
         startHopperLoop()
     end
 end)
 
--- At the end of your script, after SaveManager:LoadAutoloadConfig()
-task.spawn(function()
-    task.wait(1) -- Brief wait for SaveManager to apply settings
-    if HopperToggle.Value then
-        isInitialized = true
-        startHopperLoop()
-    else
-        isInitialized = true -- Mark as initialized even if off, so button is required later
+-- [[ CONFIG & WEBHOOK TAB ]]
+Tabs.Settings:AddSection("Webhook Settings")
+
+Tabs.Settings:AddInput("WebhookURL", {
+    Title = "Webhook URL",
+    Default = "",
+    Callback = function(Value) webhookURL = Value end
+})
+
+Tabs.Settings:AddButton({
+    Title = "Test Webhook",
+    Callback = function()
+        sendWebhook("Test", "Webhook Active", 5793010)
     end
-end)
+})
+
+-- [[ CONFIG MANAGEMENT ]]
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"WebhookURL"}) 
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
+
+-- Final Load
+SaveManager:LoadAutoloadConfig()
+task.wait(0.5)
+isInitialized = true -- After this, the button is required for manual toggles
