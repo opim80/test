@@ -1,0 +1,113 @@
+-- Load the Syde UI Library (assuming it's in your executor's scripts folder or defined as 'syde')
+local syde = loadstring(game:HttpGet("https://raw.githubusercontent.com/essencejs/syde/main/source.lua"))()
+
+-- Services
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local RunService = game:GetService("RunService")
+
+-- Configuration for Server Hopping
+local SERVER_LOG_FILE = "syde_server_history.json"
+local MESH_ID_TARGET = "rbxassetid://12439777368"
+local LOG_EXPIRY_TIME = 1800 -- 30 minutes in seconds
+
+-- Utility: Load/Save Server History
+local function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
+        return success and data or {}
+    end
+    return {}
+end
+
+local function saveHistory(history)
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
+end
+
+-- Clean up expired servers (older than 30 mins)
+local function cleanHistory()
+    local history = getHistory()
+    local now = os.time()
+    for id, timestamp in pairs(history) do
+        if now - timestamp > LOG_EXPIRY_TIME then
+            history[id] = nil
+        end
+    end
+    saveHistory(history)
+end
+
+-- Main Server Hopping Function
+local function serverHop()
+    cleanHistory()
+    local history = getHistory()
+    
+    -- Log current server before leaving
+    history[game.JobId] = os.time()
+    saveHistory(history)
+
+    local servers = {}
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing < server.maxPlayers and not history[server.id] then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
+            end
+        end
+    end
+    warn("No suitable servers found, retrying...")
+end
+
+-- UI Initialization
+local Window = syde:Load({
+    Name = "Server Utility",
+    Logo = "14554547135", -- Default logo from source 
+    ConfigFolder = "SydeConfigs",
+    ConfigEnabled = true -- Enables automated saving for flags [cite: 5, 188]
+})
+
+local Page = Window:CreatePage({ Title = "Automation" })
+
+-- Server Hopper Logic
+local isHopping = false
+local scanConnection
+
+Page:Toggle({
+    Title = "Server Hopper",
+    Description = "Joins new servers until specific MeshPart is found.",
+    Value = false, -- Default state
+    SFlag = "ServerHopperToggle", -- Flag for auto-saving config [cite: 99]
+    CallBack = function(state)
+        isHopping = state
+        if state then
+            print("Server Hopper Enabled")
+            -- Start scanning the workspace
+            scanConnection = RunService.Heartbeat:Connect(function()
+                local meshPart = workspace:FindFirstChild("map") 
+                    and workspace.map:FindFirstChild("Rokyo") 
+                    and workspace.map.Rokyo:FindFirstChild("MeshPart")
+                
+                if meshPart and meshPart:IsA("MeshPart") and meshPart.MeshId == MESH_ID_TARGET then
+                    print("found")
+                    scanConnection:Disconnect()
+                    -- Note: The toggle UI state won't automatically flip back to 'false' 
+                    -- unless you manually call the internal Set method, but hopping stops.
+                    isHopping = false 
+                elseif isHopping then
+                    -- If not found, trigger hop (debounce/delay recommended in real use)
+                    task.wait(2) 
+                    serverHop()
+                end
+            end)
+        else
+            if scanConnection then scanConnection:Disconnect() end
+            print("Server Hopper Disabled")
+        end
+    end
+})
+
+-- Handle initial config loading
+syde:LoadSaveConfig() --
