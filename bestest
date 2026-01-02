@@ -5,40 +5,45 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 
 -- Constants
+local SETTINGS_FOLDER = "RayfieldConfigs"
+local AUTOLOAD_FILE = SETTINGS_FOLDER .. "/autoload.txt"
 local SERVER_LOG_FILE = "rayfield_server_history.json"
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local LOG_EXPIRY_TIME = 1800 
 
--- Global Variables for Webhook
+-- State Variables
 local webhookURL = ""
 local webhookEnabled = false
+local selectedConfig = "ServerHopper"
+
+-- Ensure folder exists
+if makefolder and not isfolder(SETTINGS_FOLDER) then makefolder(SETTINGS_FOLDER) end
 
 -- Helper: Send Discord Webhook
-local function sendWebhook(message)
-    if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+local function sendWebhook(title, message, color)
+    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
         local data = {
-            ["content"] = "",
             ["embeds"] = {{
-                ["title"] = "Server Hopper Notification",
+                ["title"] = title,
                 ["description"] = message,
-                ["color"] = tonumber(0x00ff00),
-                ["footer"] = { ["text"] = "Rayfield Automation" },
+                ["color"] = color or 0x00ff00,
                 ["timestamp"] = DateTime.now():ToIsoDate()
             }}
         }
-        local jsonData = HttpService:JSONEncode(data)
-        pcall(function()
+        local success, err = pcall(function()
             request({
                 Url = webhookURL,
                 Method = "POST",
                 Headers = {["Content-Type"] = "application/json"},
-                Body = jsonData
+                Body = HttpService:JSONEncode(data)
             })
         end)
+        return success
     end
+    return false
 end
 
--- Helper: Server History Management
+-- Helper: Server History
 local function getHistory()
     if isfile(SERVER_LOG_FILE) then
         local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
@@ -47,18 +52,10 @@ local function getHistory()
     return {}
 end
 
-local function saveHistory(history)
-    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
-end
-
 local function serverHop()
     local history = getHistory()
-    local now = os.time()
-    for id, timestamp in pairs(history) do
-        if now - timestamp > LOG_EXPIRY_TIME then history[id] = nil end
-    end
-    history[game.JobId] = now
-    saveHistory(history)
+    history[game.JobId] = os.time()
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
     local success, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
@@ -67,12 +64,6 @@ local function serverHop()
     if success and result and result.data then
         for _, server in ipairs(result.data) do
             if server.playing < server.maxPlayers and not history[server.id] then
-                Rayfield:Notify({
-                    Title = "Hopping",
-                    Content = "Found new server! Teleporting...",
-                    Duration = 5,
-                    Image = 4483362458,
-                })
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
                 return
             end
@@ -80,20 +71,26 @@ local function serverHop()
     end
 end
 
+-- Determine Autoload File
+local currentConfigFile = "ServerHopper"
+if isfile(AUTOLOAD_FILE) then
+    currentConfigFile = readfile(AUTOLOAD_FILE)
+end
+
 -- Create Window
 local Window = Rayfield:CreateWindow({
-    Name = "Server Utility",
+    Name = "Premium Server Utility",
     LoadingTitle = "Rayfield Interface",
-    LoadingSubtitle = "by Assistant",
+    LoadingSubtitle = "Config & Webhook Edition",
     ConfigurationSaving = {
        Enabled = true,
-       FolderName = "RayfieldConfigs", 
-       FileName = "ServerHopper"
+       FolderName = SETTINGS_FOLDER, 
+       FileName = currentConfigFile
     }
 })
 
 local Tab = Window:CreateTab("Automation", 4483362458)
-local ConfigTab = Window:CreateTab("Config/Webhooks", 4483362458)
+local ConfigTab = Window:CreateTab("Config & Webhooks", 4483362458)
 
 -- [[ AUTOMATION TAB ]]
 local isHopping = false
@@ -111,14 +108,8 @@ Tab:CreateToggle({
                         and workspace.map.Rokyo:FindFirstChild("MeshPart")
 
                     if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
-                        print("found")
-                        sendWebhook("✅ Target MeshPart found in Server: " .. game.JobId)
-                        Rayfield:Notify({
-                            Title = "Target Found!",
-                            Content = "Detected the MeshPart. Hopping stopped.",
-                            Duration = 10,
-                            Image = 4483362458,
-                        })
+                        sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
+                        Rayfield:Notify({Title = "Success", Content = "Target Found! Hopping stopped.", Duration = 5})
                         isHopping = false
                         break
                     else
@@ -131,46 +122,77 @@ Tab:CreateToggle({
     end,
 })
 
-Tab:CreateButton({
-    Name = "Force Server Hop",
-    Callback = function()
-        serverHop()
-    end,
-})
-
 -- [[ CONFIG & WEBHOOK TAB ]]
 ConfigTab:CreateSection("Webhook Settings")
 
 ConfigTab:CreateInput({
-    Name = "Discord Webhook URL",
-    PlaceholderText = "Paste URL here...",
-    RemoveTextAfterFocusLost = false,
-    Flag = "WebhookURL",
-    Callback = function(Text)
-        webhookURL = Text
-    end,
+    Name = "Webhook URL",
+    PlaceholderText = "Discord Webhook Link...",
+    Flag = "W_URL",
+    Callback = function(Text) webhookURL = Text end,
 })
 
 ConfigTab:CreateToggle({
-    Name = "Enable Webhook Notifications",
+    Name = "Enable Webhook",
     CurrentValue = false,
-    Flag = "WebhookToggle",
-    Callback = function(Value)
-        webhookEnabled = Value
+    Flag = "W_Toggle",
+    Callback = function(Value) webhookEnabled = Value end,
+})
+
+ConfigTab:CreateButton({
+    Name = "Test Webhook",
+    Callback = function()
+        local ok = sendWebhook("Test Message", "Your webhook is configured correctly!", 0x5865F2)
+        Rayfield:Notify({
+            Title = ok and "Sent!" or "Failed",
+            Content = ok and "Check your Discord channel." or "URL is invalid or empty.",
+            Duration = 3
+        })
     end,
 })
 
-ConfigTab:CreateSection("Configuration")
+ConfigTab:CreateSection("Configuration Manager")
+
+ConfigTab:CreateDropdown({
+    Name = "Select Config Profile",
+    Options = {"ServerHopper", "Profile_1", "Profile_2", "Custom"},
+    CurrentOption = {currentConfigFile},
+    MultipleOptions = false,
+    Callback = function(Option)
+        selectedConfig = Option[1]
+    end,
+})
 
 ConfigTab:CreateButton({
-    Name = "Save Current Config",
+    Name = "Load Selected Config",
     Callback = function()
-        Rayfield:SaveConfiguration()
+        -- Note: Rayfield doesn't support hot-swapping filenames mid-session easily.
+        -- This saves the preference for next execution.
+        writefile(AUTOLOAD_FILE, selectedConfig)
         Rayfield:Notify({
-            Title = "Success",
-            Content = "Configuration has been saved!",
-            Duration = 3,
-            Image = 4483362458,
+            Title = "Config Set",
+            Content = "Profile '" .. selectedConfig .. "' will load on next restart.",
+            Duration = 5
         })
+    end,
+})
+
+ConfigTab:CreateButton({
+    Name = "Set as Autoload",
+    Callback = function()
+        writefile(AUTOLOAD_FILE, selectedConfig)
+        Rayfield:Notify({
+            Title = "Autoload Saved",
+            Content = selectedConfig .. " is now your default profile.",
+            Duration = 3
+        })
+    end,
+})
+
+ConfigTab:CreateButton({
+    Name = "Save Current Settings",
+    Callback = function()
+        Rayfield:SaveSettings() -- Correct method name
+        Rayfield:Notify({Title = "Saved", Content = "Settings written to " .. selectedConfig .. ".lua", Duration = 3})
     end,
 })
