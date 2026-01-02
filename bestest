@@ -1,13 +1,13 @@
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/Addons/SaveManager.lua"))()
-local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/Addons/InterfaceManager.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 -- Services
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 
 -- Constants
-local MESH_ID_TARGET = "12439777368" -- We will use string matching to be safe
+local MESH_ID_TARGET = "12439777368" -- Stripped to numbers for better matching
 local SERVER_LOG_FILE = "fluent_server_history.json"
 
 -- State Variables
@@ -15,14 +15,17 @@ local webhookURL = ""
 local webhookEnabled = false
 local isInitialized = false 
 
--- Helper: Find Devil Heart
+-- Helper: Detection Logic
 local function findDevilHeart()
-    -- We search through the map or workspace for the mesh
-    for _, v in ipairs(workspace:GetDescendants()) do
-        if v:IsA("MeshPart") and v.MeshId:find(MESH_ID_TARGET) then
-            -- Requirements: MeshId matches and has a PointLight child
-            if v:FindFirstChildOfClass("PointLight") then
-                return v
+    local map = workspace:FindFirstChild("map")
+    if not map then return nil end
+
+    -- Recursive search in case the hierarchy changes slightly
+    for _, item in ipairs(map:GetDescendants()) do
+        if item:IsA("MeshPart") and item.MeshId:find(MESH_ID_TARGET) then
+            -- Verify it has the PointLight child as requested
+            if item:FindFirstChildOfClass("PointLight") then
+                return item
             end
         end
     end
@@ -40,7 +43,7 @@ local function sendWebhook(title, message, color)
                 ["timestamp"] = DateTime.now():ToIsoDate()
             }}
         }
-        local success = pcall(function()
+        pcall(function()
             request({
                 Url = webhookURL,
                 Method = "POST",
@@ -48,12 +51,10 @@ local function sendWebhook(title, message, color)
                 Body = HttpService:JSONEncode(data)
             })
         end)
-        return success
     end
-    return false
 end
 
--- Helper: Server History
+-- Helper: Server History & Hopping
 local function getHistory()
     if isfile(SERVER_LOG_FILE) then
         local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
@@ -79,7 +80,6 @@ local function serverHop()
             end
         end
     end
-    Fluent:Notify({Title = "Hopper", Content = "No new servers found. Retrying...", Duration = 3})
 end
 
 -- [[ LOOP FUNCTION ]]
@@ -90,9 +90,9 @@ local function startHopperLoop()
 
             if heart then
                 if webhookEnabled then
-                    sendWebhook("✅ Devil Heart Found!", "Found in server: " .. game.JobId)
+                    sendWebhook("✅ Devil Heart Found!", "Target found in server: " .. game.JobId)
                 end
-                Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
+                Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Search stopped.", Duration = 10})
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
@@ -106,7 +106,7 @@ end
 -- Create Window
 local Window = Fluent:CreateWindow({
     Title = "Premium Server Utility",
-    SubTitle = "Devil Heart Hunter",
+    SubTitle = "Devil Heart Finder",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -120,30 +120,29 @@ local Tabs = {
 }
 
 -- [[ AUTOMATION TAB ]]
-local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Server Hopper (Devil Heart)", Default = false })
+local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Devil Heart Hopper", Default = false })
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
-    Description = "Manually begin the search loop",
+    Description = "Begin automated Devil Heart search",
     Callback = function()
         if HopperToggle.Value then
             startHopperLoop()
-            Fluent:Notify({Title = "Hopper", Content = "Search started...", Duration = 3})
         else
-            Fluent:Notify({Title = "Error", Content = "Enable the toggle above first!", Duration = 3})
+            Fluent:Notify({Title = "Error", Content = "Enable toggle first!", Duration = 3})
         end
     end
 })
 
 Tabs.Automation:AddButton({
     Title = "Check for Devil Heart",
-    Description = "Test if the item is in this server",
+    Description = "Manually check if target is in this server",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            Fluent:Notify({Title = "Detection", Content = "✅ Devil Heart IS in this server!", Duration = 5})
+            Fluent:Notify({Title = "Detected!", Content = "Devil Heart is present in this server.", Duration = 5})
         else
-            Fluent:Notify({Title = "Detection", Content = "❌ Devil Heart not found.", Duration = 5})
+            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected here.", Duration = 5})
         end
     end
 })
@@ -167,23 +166,14 @@ Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = fa
     webhookEnabled = Value
 end)
 
-Tabs.Settings:AddButton({
-    Title = "Test Webhook",
-    Callback = function()
-        local ok = sendWebhook("Test", "Webhook Active", 5793010)
-        Fluent:Notify({Title = "Webhook", Content = ok and "Test Sent" or "Test Failed", Duration = 3})
-    end
-})
-
 Tabs.Settings:AddSection("History Management")
 
 Tabs.Settings:AddButton({
     Title = "Clear Server History",
-    Description = "Deletes the log of visited servers",
     Callback = function()
         if isfile(SERVER_LOG_FILE) then
             delfile(SERVER_LOG_FILE)
-            Fluent:Notify({Title = "Success", Content = "Server history cleared.", Duration = 3})
+            Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
         end
     end
 })
@@ -197,8 +187,6 @@ InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-
--- Final Load
 SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
