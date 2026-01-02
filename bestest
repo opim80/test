@@ -13,31 +13,15 @@ local MESH_ID_TARGET = "rbxassetid://12439777368"
 -- State
 local webhookURL = ""
 local webhookEnabled = false
-local configNameInput = "" -- Required for saving
-local isHopping = false
+local configNameInput = "" 
+local isHopping = false -- Starts as false
 
 if makefolder and not isfolder(SETTINGS_FOLDER) then makefolder(SETTINGS_FOLDER) end
 
--- Helper: Universal Save Function
+-- Helper: Save Fix
 local function safeSave()
-    local success = pcall(function() Window:Save() end)
-    if not success then pcall(function() Rayfield:Save() end) end
-end
-
--- Helper: Webhook
-local function sendWebhook(title, message)
-    if webhookEnabled and webhookURL ~= "" then
-        pcall(function()
-            (request or syn.request)({
-                Url = webhookURL,
-                Method = "POST",
-                Headers = {["Content-Type"] = "application/json"},
-                Body = HttpService:JSONEncode({
-                    embeds = {{title = title, description = message, color = 0x00ff00}}
-                })
-            })
-        end)
-    end
+    pcall(function() Window:Save() end)
+    pcall(function() Rayfield:Save() end)
 end
 
 -- Helper: Server Hopper Logic
@@ -57,11 +41,11 @@ local function serverHop()
     end
 end
 
--- Load Autoloaded Config Name
+-- Determine which config file to load
 local currentConfigFile = isfile(AUTOLOAD_FILE) and readfile(AUTOLOAD_FILE) or "ServerHopper"
 
 local Window = Rayfield:CreateWindow({
-    Name = "Elite Hopper & Config Manager",
+    Name = "Elite Hopper Manager",
     LoadingTitle = "Rayfield Recode",
     ConfigurationSaving = {
        Enabled = true,
@@ -75,25 +59,26 @@ local ConfigTab = Window:CreateTab("Config & Webhooks", 4483362458)
 
 -- [[ AUTOMATION ]]
 Tab:CreateToggle({
-    Name = "Safe-Save Server Hopper",
-    CurrentValue = false,
+    Name = "Server Hopper",
+    CurrentValue = false, -- Default to false if no config exists
     Flag = "HopperToggle",
     Callback = function(Value)
         isHopping = Value
+        
+        -- The loop only starts if 'Value' is true. 
+        -- If the config is missing or false, this block is skipped.
         if isHopping then
-            -- FIRST: Ensure state is saved to disk before hopping
-            Rayfield:Notify({Title = "Saving State...", Content = "Committing toggle to config before first hop.", Duration = 2})
-            safeSave()
-            task.wait(1.5) -- Buffer for file write
-
             task.spawn(function()
+                -- Wait for UI to settle and ensure the state is saved
+                safeSave()
+                task.wait(1) 
+
                 while isHopping do
                     local target = workspace:FindFirstChild("map") 
                         and workspace.map:FindFirstChild("Rokyo") 
                         and workspace.map.Rokyo:FindFirstChild("MeshPart")
 
                     if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
-                        sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
                         isHopping = false
                         break
                     else
@@ -106,63 +91,32 @@ Tab:CreateToggle({
     end,
 })
 
--- [[ CONFIG & WEBHOOKS ]]
-ConfigTab:CreateSection("Webhook Settings")
-
-ConfigTab:CreateInput({
-    Name = "Webhook URL",
-    PlaceholderText = "Paste Discord Webhook...",
-    Flag = "W_URL",
-    Callback = function(Text) webhookURL = Text end,
-})
-
-ConfigTab:CreateToggle({
-    Name = "Enable Webhook",
-    CurrentValue = false,
-    Flag = "W_Toggle",
-    Callback = function(Value) webhookEnabled = Value end,
-})
-
-ConfigTab:CreateSection("Configuration Manager")
-
+-- [[ CONFIGURATION ]]
 ConfigTab:CreateInput({
     Name = "Profile Name",
-    PlaceholderText = "e.g. MySuperConfig",
-    RemoveTextAfterFocusLost = false,
-    Callback = function(Text)
-        configNameInput = Text
-    end,
+    PlaceholderText = "Type name here...",
+    Callback = function(Text) configNameInput = Text end,
 })
 
 ConfigTab:CreateButton({
-    Name = "Save Current Settings",
+    Name = "Save Settings",
     Callback = function()
-        if configNameInput == "" then
-            Rayfield:Notify({Title = "Error", Content = "Please enter a Profile Name above first!", Duration = 3})
-        else
-            -- We update the filename choice for Rayfield's internal system
+        if configNameInput ~= "" then
             Window.ConfigurationSaving.FileName = configNameInput
             safeSave()
-            Rayfield:Notify({Title = "Saved!", Content = "Config saved as: " .. configNameInput, Duration = 3})
-        end
-    end,
-})
-
-ConfigTab:CreateButton({
-    Name = "Set Current Profile to Autoload",
-    Callback = function()
-        if configNameInput == "" then
-            Rayfield:Notify({Title = "Error", Content = "Enter a name to set it as default!", Duration = 3})
+            Rayfield:Notify({Title = "Saved", Content = "Config: " .. configNameInput, Duration = 3})
         else
-            writefile(AUTOLOAD_FILE, configNameInput)
-            Rayfield:Notify({Title = "Autoload Set", Content = configNameInput .. " will load next time.", Duration = 3})
+            Rayfield:Notify({Title = "Error", Content = "Enter a name first!", Duration = 3})
         end
     end,
 })
 
 ConfigTab:CreateButton({
-    Name = "Test Webhook",
+    Name = "Set as Default (Autoload)",
     Callback = function()
-        sendWebhook("Test", "Webhook working!")
+        if configNameInput ~= "" then
+            writefile(AUTOLOAD_FILE, configNameInput)
+            Rayfield:Notify({Title = "Success", Content = configNameInput .. " is now default.", Duration = 3})
+        end
     end,
 })
