@@ -5,64 +5,49 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 
 -- Constants
-local CONFIG_DIR = "Rayfield_Configs"
-local AUTOLOAD_PATH = CONFIG_DIR .. "/autoload_pref.txt"
-local SERVER_LOG = "server_history.json"
+local SETTINGS_FOLDER = "RayfieldConfigs"
+local AUTOLOAD_FILE = SETTINGS_FOLDER .. "/autoload.txt"
+local SERVER_LOG_FILE = "rayfield_server_history.json"
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 
--- Initialization
-if makefolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
-
 -- State
-local configName = ""
 local webhookURL = ""
 local webhookEnabled = false
+local configNameInput = "" -- Required for saving
 local isHopping = false
 
--- Helper: Custom Save Logic (Bypasses library bugs)
-local function manualSave(filename)
-    if filename == "" then 
-        Rayfield:Notify({Title = "Error", Content = "You must enter a name first!", Duration = 3})
-        return false 
-    end
-    
-    local data = {
-        webhookURL = webhookURL,
-        webhookEnabled = webhookEnabled,
-        isHopping = isHopping
-    }
-    
-    local path = CONFIG_DIR .. "/" .. filename .. ".json"
-    writefile(path, HttpService:JSONEncode(data))
-    Rayfield:Notify({Title = "Success", Content = "Config saved to: " .. filename, Duration = 3})
-    return true
+if makefolder and not isfolder(SETTINGS_FOLDER) then makefolder(SETTINGS_FOLDER) end
+
+-- Helper: Universal Save Function
+local function safeSave()
+    local success = pcall(function() Window:Save() end)
+    if not success then pcall(function() Rayfield:Save() end) end
 end
 
--- Helper: Discord Webhook
-local function sendWebhook(msg)
+-- Helper: Webhook
+local function sendWebhook(title, message)
     if webhookEnabled and webhookURL ~= "" then
         pcall(function()
-            request({
+            (request or syn.request)({
                 Url = webhookURL,
                 Method = "POST",
                 Headers = {["Content-Type"] = "application/json"},
-                Body = HttpService:JSONEncode({content = msg})
+                Body = HttpService:JSONEncode({
+                    embeds = {{title = title, description = message, color = 0x00ff00}}
+                })
             })
         end)
     end
 end
 
--- Helper: Server Hopper
+-- Helper: Server Hopper Logic
 local function serverHop()
-    local history = isfile(SERVER_LOG) and HttpService:JSONDecode(readfile(SERVER_LOG)) or {}
+    local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
     history[game.JobId] = os.time()
-    writefile(SERVER_LOG, HttpService:JSONEncode(history))
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
-    end)
-
-    if success and result.data then
+    local result = HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    if result and result.data then
         for _, server in ipairs(result.data) do
             if server.playing < server.maxPlayers and not history[server.id] then
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
@@ -72,34 +57,43 @@ local function serverHop()
     end
 end
 
--- Window Setup
+-- Load Autoloaded Config Name
+local currentConfigFile = isfile(AUTOLOAD_FILE) and readfile(AUTOLOAD_FILE) or "ServerHopper"
+
 local Window = Rayfield:CreateWindow({
-    Name = "Ultimate Server Hopper",
-    LoadingTitle = "Loading Automation...",
-    ConfigurationSaving = { Enabled = false } -- We are using our custom manual system for reliability
+    Name = "Elite Hopper & Config Manager",
+    LoadingTitle = "Rayfield Recode",
+    ConfigurationSaving = {
+       Enabled = true,
+       FolderName = SETTINGS_FOLDER, 
+       FileName = currentConfigFile
+    }
 })
 
-local MainTab = Window:CreateTab("Automation", 4483362458)
-local ConfigTab = Window:CreateTab("Configs", 4483362458)
+local Tab = Window:CreateTab("Automation", 4483362458)
+local ConfigTab = Window:CreateTab("Config & Webhooks", 4483362458)
 
 -- [[ AUTOMATION ]]
-MainTab:CreateToggle({
-    Name = "Enable Server Hopper",
+Tab:CreateToggle({
+    Name = "Safe-Save Server Hopper",
     CurrentValue = false,
+    Flag = "HopperToggle",
     Callback = function(Value)
         isHopping = Value
         if isHopping then
-            -- INSTANT SAVE logic
-            if configName ~= "" then manualSave(configName) end
-            
+            -- FIRST: Ensure state is saved to disk before hopping
+            Rayfield:Notify({Title = "Saving State...", Content = "Committing toggle to config before first hop.", Duration = 2})
+            safeSave()
+            task.wait(1.5) -- Buffer for file write
+
             task.spawn(function()
                 while isHopping do
                     local target = workspace:FindFirstChild("map") 
                         and workspace.map:FindFirstChild("Rokyo") 
                         and workspace.map.Rokyo:FindFirstChild("MeshPart")
 
-                    if target and target.MeshId == MESH_ID_TARGET then
-                        sendWebhook("✅ Target Found in Job: " .. game.JobId)
+                    if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
+                        sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
                         isHopping = false
                         break
                     else
@@ -112,56 +106,63 @@ MainTab:CreateToggle({
     end,
 })
 
--- [[ CONFIGS ]]
-ConfigTab:CreateSection("Naming")
-
-ConfigTab:CreateInput({
-    Name = "New Config Name",
-    PlaceholderText = "Required to save...",
-    Callback = function(Text)
-        configName = Text
-    end,
-})
-
-ConfigTab:CreateSection("Settings")
+-- [[ CONFIG & WEBHOOKS ]]
+ConfigTab:CreateSection("Webhook Settings")
 
 ConfigTab:CreateInput({
     Name = "Webhook URL",
-    PlaceholderText = "Paste here...",
+    PlaceholderText = "Paste Discord Webhook...",
+    Flag = "W_URL",
     Callback = function(Text) webhookURL = Text end,
 })
 
 ConfigTab:CreateToggle({
-    Name = "Webhook Notifications",
+    Name = "Enable Webhook",
     CurrentValue = false,
+    Flag = "W_Toggle",
     Callback = function(Value) webhookEnabled = Value end,
+})
+
+ConfigTab:CreateSection("Configuration Manager")
+
+ConfigTab:CreateInput({
+    Name = "Profile Name",
+    PlaceholderText = "e.g. MySuperConfig",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        configNameInput = Text
+    end,
+})
+
+ConfigTab:CreateButton({
+    Name = "Save Current Settings",
+    Callback = function()
+        if configNameInput == "" then
+            Rayfield:Notify({Title = "Error", Content = "Please enter a Profile Name above first!", Duration = 3})
+        else
+            -- We update the filename choice for Rayfield's internal system
+            Window.ConfigurationSaving.FileName = configNameInput
+            safeSave()
+            Rayfield:Notify({Title = "Saved!", Content = "Config saved as: " .. configNameInput, Duration = 3})
+        end
+    end,
+})
+
+ConfigTab:CreateButton({
+    Name = "Set Current Profile to Autoload",
+    Callback = function()
+        if configNameInput == "" then
+            Rayfield:Notify({Title = "Error", Content = "Enter a name to set it as default!", Duration = 3})
+        else
+            writefile(AUTOLOAD_FILE, configNameInput)
+            Rayfield:Notify({Title = "Autoload Set", Content = configNameInput .. " will load next time.", Duration = 3})
+        end
+    end,
 })
 
 ConfigTab:CreateButton({
     Name = "Test Webhook",
     Callback = function()
-        local success = sendWebhook("Test: Webhook is working correctly!")
-        Rayfield:Notify({Title = "Status", Content = success and "Sent!" or "Failed (Check URL)", Duration = 3})
-    end,
-})
-
-ConfigTab:CreateSection("Save/Load")
-
-ConfigTab:CreateButton({
-    Name = "Save Current Config",
-    Callback = function()
-        manualSave(configName)
-    end,
-})
-
-ConfigTab:CreateButton({
-    Name = "Set as Autoload",
-    Callback = function()
-        if configName ~= "" then
-            writefile(AUTOLOAD_PATH, configName)
-            Rayfield:Notify({Title = "Autoload", Content = configName .. " set as default.", Duration = 3})
-        else
-            Rayfield:Notify({Title = "Error", Content = "Enter a name first!", Duration = 3})
-        end
+        sendWebhook("Test", "Webhook working!")
     end,
 })
