@@ -26,7 +26,7 @@ local function sendWebhook(title, message, color)
                 ["timestamp"] = DateTime.now():ToIsoDate()
             }}
         }
-        local success, err = pcall(function()
+        local success = pcall(function()
             request({
                 Url = webhookURL,
                 Method = "POST",
@@ -86,20 +86,23 @@ local Tabs = {
 -- [[ LOOP FUNCTION ]]
 local function startHopperLoop()
     task.spawn(function()
-        while Tabs.Automation.Elements.HopperToggle.Value do
+        -- Directly referencing the Toggle's Value property
+        while Fluent.Options.HopperToggle.Value do
             local target = workspace:FindFirstChild("map") 
                 and workspace.map:FindFirstChild("Rokyo") 
                 and workspace.map.Rokyo:FindFirstChild("MeshPart")
 
             if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
-                sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
+                if webhookEnabled then
+                    sendWebhook("✅ Target Found!", "MeshId matched in server: " .. game.JobId)
+                end
                 Fluent:Notify({Title = "Success", Content = "Target Found! Hopping stopped.", Duration = 5})
-                Tabs.Automation.Elements.HopperToggle:SetValue(false)
+                Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
                 serverHop()
             end
-            task.wait(10) -- Prevents crashing/rate-limiting
+            task.wait(10) -- Cool-down to prevent rate-limiting/kicks
         end
     end)
 end
@@ -109,13 +112,13 @@ local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Server 
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
-    Description = "Manually begin the search",
+    Description = "Manually begin the search loop",
     Callback = function()
         if HopperToggle.Value then
             startHopperLoop()
             Fluent:Notify({Title = "Hopper", Content = "Search started...", Duration = 3})
         else
-            Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
+            Fluent:Notify({Title = "Error", Content = "Enable the toggle above first!", Duration = 3})
         end
     end
 })
@@ -136,10 +139,15 @@ Tabs.Settings:AddInput("WebhookURL", {
     Callback = function(Value) webhookURL = Value end
 })
 
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(Value)
+    webhookEnabled = Value
+end)
+
 Tabs.Settings:AddButton({
     Title = "Test Webhook",
     Callback = function()
-        sendWebhook("Test", "Webhook Active", 5793010)
+        local ok = sendWebhook("Test", "Webhook Active", 5793010)
+        Fluent:Notify({Title = "Webhook", Content = ok and "Test Sent" or "Test Failed", Duration = 3})
     end
 })
 
@@ -156,4 +164,4 @@ Window:SelectTab(1)
 -- Final Load
 SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
-isInitialized = true -- After this, the button is required for manual toggles
+isInitialized = true -- Now manual toggles will require the Start Button
