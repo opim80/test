@@ -1,3 +1,4 @@
+-- [[ LOAD RAYFIELD ]]
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
 -- Services
@@ -5,23 +6,28 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 
 -- Constants
-local SETTINGS_FOLDER = "RayfieldConfigs"
-local AUTOLOAD_FILE = SETTINGS_FOLDER .. "/autoload.txt"
 local SERVER_LOG_FILE = "rayfield_server_history.json"
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 
--- State
-local webhookURL = ""
-local webhookEnabled = false
-local configNameInput = "" 
-local isHopping = false -- Starts as false
-
-if makefolder and not isfolder(SETTINGS_FOLDER) then makefolder(SETTINGS_FOLDER) end
-
--- Helper: Save Fix
-local function safeSave()
-    pcall(function() Window:Save() end)
-    pcall(function() Rayfield:Save() end)
+-- Helper: Webhook
+local function sendWebhook(title, message)
+    if _G.Config["WebhookEnabled"] and _G.Config["WebhookURL"] ~= "" then
+        pcall(function()
+            (request or syn.request)({
+                Url = _G.Config["WebhookURL"],
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode({
+                    embeds = {{
+                        title = title, 
+                        description = message, 
+                        color = 0x00ff00,
+                        timestamp = DateTime.now():ToIsoDate()
+                    }}
+                })
+            })
+        end)
+    end
 end
 
 -- Helper: Server Hopper Logic
@@ -41,82 +47,49 @@ local function serverHop()
     end
 end
 
--- Determine which config file to load
-local currentConfigFile = isfile(AUTOLOAD_FILE) and readfile(AUTOLOAD_FILE) or "ServerHopper"
-
+-- Create Window
 local Window = Rayfield:CreateWindow({
-    Name = "Elite Hopper Manager",
-    LoadingTitle = "Rayfield Recode",
-    ConfigurationSaving = {
-       Enabled = true,
-       FolderName = SETTINGS_FOLDER, 
-       FileName = currentConfigFile
-    }
+    Name = "Elite Hopper: " .. (_G.Config["ProfileName"] or "Loaded"),
+    LoadingTitle = "Applying Config...",
+    ConfigurationSaving = { Enabled = false } -- Disabled internal Rayfield saving as requested
 })
 
-local Tab = Window:CreateTab("Automation", 4483362458)
-local ConfigTab = Window:CreateTab("Config & Webhooks", 4483362458)
+local Tab = Window:CreateTab("Status", 4483362458)
 
--- [[ AUTOMATION ]]
-Tab:CreateToggle({
-    Name = "Server Hopper",
-    CurrentValue = false, -- Default to false if no config exists
-    Flag = "HopperToggle",
-    Callback = function(Value)
-        isHopping = Value
+-- Displaying current state in UI
+Tab:CreateLabel("Current Profile: " .. _G.Config["ProfileName"])
+Tab:CreateLabel("Webhook: " .. (_G.Config["WebhookEnabled"] and "Enabled" or "Disabled"))
+
+local StatusLabel = Tab:CreateLabel("Status: Idle")
+
+-- [[ EXECUTION LOGIC ]]
+local function startAutomation()
+    if _G.Config["ServerHop"] then
+        StatusLabel:Set("Status: Searching for Mesh...")
         
-        -- The loop only starts if 'Value' is true. 
-        -- If the config is missing or false, this block is skipped.
-        if isHopping then
-            task.spawn(function()
-                -- Wait for UI to settle and ensure the state is saved
-                safeSave()
-                task.wait(1) 
+        task.spawn(function()
+            while _G.Config["ServerHop"] do
+                -- Path Check
+                local target = workspace:FindFirstChild("map") 
+                    and workspace.map:FindFirstChild("Rokyo") 
+                    and workspace.map.Rokyo:FindFirstChild("MeshPart")
 
-                while isHopping do
-                    local target = workspace:FindFirstChild("map") 
-                        and workspace.map:FindFirstChild("Rokyo") 
-                        and workspace.map.Rokyo:FindFirstChild("MeshPart")
-
-                    if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
-                        isHopping = false
-                        break
-                    else
-                        serverHop()
-                    end
-                    task.wait(10)
+                if target and target:IsA("MeshPart") and target.MeshId == MESH_ID_TARGET then
+                    StatusLabel:Set("Status: FOUND TARGET!")
+                    sendWebhook("✅ Target Found!", "MeshId detected in JobId: " .. game.JobId)
+                    break
+                else
+                    StatusLabel:Set("Status: Not found, hopping...")
+                    task.wait(2) -- Short delay to see status
+                    serverHop()
                 end
-            end)
-        end
-    end,
-})
+                task.wait(10)
+            end
+        end)
+    else
+        StatusLabel:Set("Status: Hopper Disabled in Config")
+    end
+end
 
--- [[ CONFIGURATION ]]
-ConfigTab:CreateInput({
-    Name = "Profile Name",
-    PlaceholderText = "Type name here...",
-    Callback = function(Text) configNameInput = Text end,
-})
-
-ConfigTab:CreateButton({
-    Name = "Save Settings",
-    Callback = function()
-        if configNameInput ~= "" then
-            Window.ConfigurationSaving.FileName = configNameInput
-            safeSave()
-            Rayfield:Notify({Title = "Saved", Content = "Config: " .. configNameInput, Duration = 3})
-        else
-            Rayfield:Notify({Title = "Error", Content = "Enter a name first!", Duration = 3})
-        end
-    end,
-})
-
-ConfigTab:CreateButton({
-    Name = "Set as Default (Autoload)",
-    Callback = function()
-        if configNameInput ~= "" then
-            writefile(AUTOLOAD_FILE, configNameInput)
-            Rayfield:Notify({Title = "Success", Content = configNameInput .. " is now default.", Duration = 3})
-        end
-    end,
-})
+-- Initialize based on the Table defined at the start
+startAutomation()
