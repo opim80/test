@@ -3,37 +3,42 @@
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Added Pre-Load PlayButton check and registration.
-    - Preserved instant-start hopper logic on config load.
-    - Maintained ACBait and Webhook features.
+    - Added Pre-Load Interceptor: Automatically clicks 'Play' if the MainMenu exists.
+    - Preserved instant-start logic for Hopper via Config.
+    - Maintained ACBait safety protocols and Discord integration.
 ]]
 
--- [[ PRE-LOAD EXECUTION ]]
--- Logic to bypass the Main Menu before the script initializes
-local function bypassMainMenu()
+-- [[ PRE-LOAD INTERCEPTOR ]]
+-- This section runs before the UI library loads to ensure the player is in-game.
+local function handleNativeMainMenu()
     local lp = game:GetService("Players").LocalPlayer
-    local success, playerGui = pcall(function() return lp:FindFirstChild("PlayerGui") end)
+    if not lp then return end
     
-    if success and playerGui then
-        local playButtonPath = playerGui:FindFirstChild("MainMenu") and 
-                               playerGui.MainMenu:FindFirstChild("Menu") and 
-                               playerGui.MainMenu.Menu:FindFirstChild("MainMenu") and 
-                               playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
+    local playerGui = lp:FindFirstChild("PlayerGui")
+    if playerGui then
+        -- Path provided: .MainMenu.Menu.MainMenu.PlayButton
+        local playButton = playerGui:FindFirstChild("MainMenu") 
+            and playerGui.MainMenu:FindFirstChild("Menu")
+            and playerGui.MainMenu.Menu:FindFirstChild("MainMenu")
+            and playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
 
-        if playButtonPath and playButtonPath:IsA("GuiButton") then
-            -- Register a press to ensure character spawns
+        if playButton and playButton:IsA("GuiButton") then
+            -- Simulate the click
+            print("[CSMDH] Native Play Button detected. Triggering enter...")
             local virtualUser = game:GetService("VirtualUser")
-            playButtonPath:Activate()
-            -- Fallback: Use VirtualUser to simulate an actual click if .Activate() is restricted
-            virtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
-            virtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            -- We trigger the event directly for reliability
+            for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+                connection:Fire()
+            end
+            -- Fallback for environments without getconnections
+            playButton:Activate()
         end
     end
 end
 
-bypassMainMenu()
+handleNativeMainMenu()
 
--- [[ LOAD MAIN LIBRARIES ]]
+-- [[ LOAD LIBRARIES ]]
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
@@ -59,7 +64,7 @@ local isInitialized = false
 local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
-local isHopperRunning = false
+local isHopperRunning = false 
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -72,7 +77,10 @@ local function findDevilHeart()
                 if object:FindFirstChildOfClass("PointLight") then 
                     local cf = object.CFrame
                     local pos = Vector3.new(cf.X, cf.Y, cf.Z)
-                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos end
+                    
+                    if pos.Y < AC_BAIT_Y_LIMIT then
+                        return "ACBait", pos
+                    end
                     return "valid", pos
                 end
             end
@@ -102,16 +110,9 @@ local function sendWebhook(title, message, color)
     end
 end
 
-local function getHistory()
-    if isfile(SERVER_LOG_FILE) then
-        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
-        return success and data or {}
-    end
-    return {}
-end
-
 local function serverHop()
     local history = getHistory()
+    if not history then history = {} end
     history[game.JobId] = os.time()
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
@@ -129,6 +130,14 @@ local function serverHop()
     end
 end
 
+function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
+        return success and data or {}
+    end
+    return {}
+end
+
 -- [[ MOVEMENT ENGINE ]]
 
 local function stopTween()
@@ -141,25 +150,6 @@ local function stopTween()
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
-end
-
-local function performTweenSegment(targetPos)
-    if stopRequested then return end
-    local character = LocalPlayer.Character
-    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return end
-
-    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
-    local easingStyle = Fluent.Options.TweenEasing.Value
-    local distance = (rootPart.Position - targetPos).Magnitude
-    local duration = (speed * distance) / 100
-
-    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[easingStyle], Enum.EasingDirection.Out)
-    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
-    
-    table.insert(activeTweens, tween)
-    tween:Play()
-    tween.Completed:Wait()
 end
 
 local function startStagedTween(targetPos)
@@ -188,7 +178,14 @@ local function startStagedTween(targetPos)
             local dist = (currentPos - goalPos).Magnitude
             local nextStep = (useSegments and dist > maxDist) and (currentPos + (goalPos - currentPos).Unit * maxDist) or goalPos
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
-            performTweenSegment(nextStep)
+
+            local duration = (Fluent.Options.TweenSpeed.Value * (rootPart.Position - nextStep).Magnitude) / 100
+            local tInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
+            local tw = TweenService:Create(rootPart, tInfo, {CFrame = CFrame.new(nextStep)})
+            table.insert(activeTweens, tw)
+            tw:Play()
+            tw.Completed:Wait()
+
             if not stopRequested and useSegments and (rootPart.Position - goalPos).Magnitude > 1 then task.wait(interval) end
         end
     end
@@ -214,7 +211,7 @@ local function runHopperLogic()
             local status, heartPos = findDevilHeart()
             
             if status == "ACBait" then
-                sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000)
+                sendWebhook("⚠️ ACBait Detected", "Ignoring bait heart at Y: " .. heartPos.Y, 0xff0000)
                 serverHop()
             elseif status == "valid" then
                 sendWebhook("✅ Valid Heart Found!", "Target detected in server: " .. game.JobId)
@@ -256,32 +253,31 @@ Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery",
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper Manually",
-    Callback = function() if not HopperToggle.Value then HopperToggle:SetValue(true) else runHopperLogic() end end
+    Callback = function()
+        if not HopperToggle.Value then HopperToggle:SetValue(true) else runHopperLogic() end
+    end
 })
 
 Tabs.Automation:AddButton({
     Title = "Manual Scan",
     Callback = function()
         local status, heartPos = findDevilHeart()
-        if status == "ACBait" then Fluent:Notify({Title = "ACBait Found", Content = "Heart detected below Y940 (Trap)."})
-        elseif status == "valid" then Fluent:Notify({Title = "Valid Heart!", Content = "Position: " .. tostring(heartPos)})
-        else Fluent:Notify({Title = "Not Found", Content = "No heart detected."}) end
+        Fluent:Notify({Title = status or "Not Found", Content = heartPos and tostring(heartPos) or "No heart detected."})
     end
 })
 
 Tabs.Automation:AddSection("Movement Controls")
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
     local status, hp = findDevilHeart() 
-    if status == "valid" then startStagedTween(hp) 
-    elseif status == "ACBait" then Fluent:Notify({Title = "Blocked", Content = "ACBait heart detected."})
-    else Fluent:Notify({Title="Error", Content="No target found."}) end 
+    if status == "valid" then startStagedTween(hp) end
 end})
 Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
 
--- [[ CONFIGURATION TAB ]]
+-- [[ SETTINGS ]]
 Tabs.Settings:AddSection("Movement Logic")
 Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y Movement", Default = false})
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Enable Segmented Movement", Default = false})
+
 Tabs.Settings:AddSection("Tween Parameters")
 Tabs.Settings:AddInput("TweenSpeed", {Title = "Tween Speed", Default = "0.5", Numeric = true})
 Tabs.Settings:AddInput("TweenDist", {Title = "Segment Distance", Default = "50", Numeric = true})
@@ -291,18 +287,8 @@ Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Lin
 Tabs.Settings:AddSection("Discord Notifications")
 Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Notifications", Default = false }):OnChanged(function(v) webhookEnabled = v end)
-Tabs.Settings:AddButton({Title = "Test Connectivity", Callback = function() sendWebhook("Test", "Check successful.") end})
 
-Tabs.Settings:AddSection("System Utility")
-Tabs.Settings:AddButton({Title = "Flush Server History", Callback = function() if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end end})
-Tabs.Settings:AddButton({Title = "Initialize Anti-AFK", Callback = function()
-    LocalPlayer.Idled:Connect(function() 
-        game:GetService("VirtualUser"):Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame) 
-        task.wait(1) 
-        game:GetService("VirtualUser"):Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame) 
-    end)
-end})
-
+-- [[ FINALIZE ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
@@ -314,4 +300,5 @@ Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
+
 if HopperToggle.Value then runHopperLogic() end
