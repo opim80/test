@@ -1,48 +1,35 @@
 --[[
-    CSMDH meth | V1.1.3
+    CSMDH meth | V1.1.4
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Replaced VirtualInputManager with getconnections() interceptor for the Play Button.
-    - Maintains full compatibility with all existing automation features.
+    - Logic Shift: Manual toggling requires the "Start" button to begin the loop.
+    - Logic Shift: Auto-loaded configs trigger the loop immediately on execution.
+    - Maintains getconnections() Main Menu interceptor and ACBait Y940 guard.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
--- This section runs before the UI library loads to ensure the player is in-game.
 local function handleNativeMainMenu()
     local lp = game:GetService("Players").LocalPlayer
     if not lp then return end
     
     local playerGui = lp:FindFirstChild("PlayerGui")
     if playerGui then
-        -- Path provided: .MainMenu.Menu.MainMenu.PlayButton
         local playButton = playerGui:FindFirstChild("MainMenu") 
             and playerGui.MainMenu:FindFirstChild("Menu")
             and playerGui.MainMenu.Menu:FindFirstChild("MainMenu")
             and playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
 
         if playButton and playButton:IsA("GuiButton") then
-            print("[CSMDH] Native Play Button detected. Triggering enter...")
-            
-            -- Triggering via getconnections for maximum executor compatibility
-            local success = false
             if getconnections then
                 for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
                     connection:Fire()
-                    success = true
                 end
-            end
-            
-            -- Note: If getconnections fails or is unavailable, we do not use .Activate() 
-            -- per user instruction to avoid non-existent property errors.
-            if success then
-                print("[CSMDH] Play Button signals fired successfully.")
             end
         end
     end
 end
 
--- Execute pre-load check immediately
 handleNativeMainMenu()
 
 -- [[ MAIN UI INITIALIZATION ]]
@@ -82,12 +69,8 @@ local function findDevilHeart()
         for _, object in ipairs(rokyos:GetChildren()) do
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
                 if object:FindFirstChildOfClass("PointLight") then 
-                    local cf = object.CFrame
-                    local pos = Vector3.new(cf.X, cf.Y, cf.Z)
-                    
-                    if pos.Y < AC_BAIT_Y_LIMIT then
-                        return "ACBait", pos
-                    end
+                    local pos = object.Position
+                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos end
                     return "valid", pos
                 end
             end
@@ -118,8 +101,7 @@ local function sendWebhook(title, message, color)
 end
 
 local function serverHop()
-    local history = getHistory()
-    if not history then history = {} end
+    local history = getHistory() or {}
     history[game.JobId] = os.time()
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
@@ -158,11 +140,10 @@ local function performTweenSegment(targetPos)
     if not rootPart then return end
 
     local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
-    local easingStyle = Fluent.Options.TweenEasing.Value
     local distance = (rootPart.Position - targetPos).Magnitude
     local duration = (speed * distance) / 100
 
-    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[easingStyle], Enum.EasingDirection.Out)
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
     local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
     table.insert(activeTweens, tween)
@@ -185,27 +166,23 @@ local function startStagedTween(targetPos)
     end)
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 
-    local useSplit = Fluent.Options.SplitToggle.Value
-    local useSegments = Fluent.Options.SegmentToggle.Value
-    local maxDist = tonumber(Fluent.Options.TweenDist.Value) or 50
-    local interval = Fluent.Options.TweenInterval.Value
-
     local function moveToGoal(goalPos)
         while (rootPart.Position - goalPos).Magnitude > 1 and not stopRequested do
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
-            local nextStep = (useSegments and dist > maxDist) and (currentPos + (goalPos - currentPos).Unit * maxDist) or goalPos
+            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > tonumber(Fluent.Options.TweenDist.Value)) 
+                and (currentPos + (goalPos - currentPos).Unit * tonumber(Fluent.Options.TweenDist.Value)) or goalPos
             
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
-
             performTweenSegment(nextStep)
-            if not stopRequested and useSegments and (rootPart.Position - goalPos).Magnitude > 1 then task.wait(interval) end
+            if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude > 1 then 
+                task.wait(Fluent.Options.TweenInterval.Value) 
+            end
         end
     end
 
-    if useSplit then
-        local horizGoal = Vector3.new(targetPos.X, math.max(rootPart.Position.Y, MIN_Y_LIMIT), targetPos.Z)
-        moveToGoal(horizGoal)
+    if Fluent.Options.SplitToggle.Value then
+        moveToGoal(Vector3.new(targetPos.X, math.max(rootPart.Position.Y, MIN_Y_LIMIT), targetPos.Z))
         if not stopRequested then moveToGoal(targetPos) end
     else
         moveToGoal(targetPos)
@@ -224,18 +201,13 @@ local function runHopperLogic()
             local status, heartPos = findDevilHeart()
             
             if status == "ACBait" then
-                sendWebhook("⚠️ ACBait Detected", "Ignoring trap heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000)
+                sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y, 0xff0000)
                 serverHop()
             elseif status == "valid" then
-                sendWebhook("✅ Valid Heart Found!", "Target detected in server: " .. game.JobId)
-                
+                sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId)
                 if Fluent.Options.AutoTweenOnFind.Value then
-                    Fluent:Notify({Title = "Auto-Discovery", Content = "Starting automatic tween to Heart..."})
                     startStagedTween(heartPos)
-                else
-                    Fluent:Notify({Title = "Discovery", Content = "Heart found. Auto-Tween is disabled."})
                 end
-                
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
@@ -247,11 +219,11 @@ local function runHopperLogic()
     end)
 end
 
--- [[ UI ]]
+-- [[ UI INITIALIZATION ]]
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.3",
+    SubTitle = "V1.1.4",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -263,52 +235,60 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Configuration", Icon = "settings" })
 }
 
--- Automation
+-- Automation Tab
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
-HopperToggle:OnChanged(function() if HopperToggle.Value then runHopperLogic() end end)
+
+-- Logic: Manual Toggles do NOT auto-start the loop anymore
+HopperToggle:OnChanged(function()
+    if HopperToggle.Value then
+        Fluent:Notify({Title = "Hopper Ready", Content = "Loop enabled. Press 'Start' to begin hopping.", Duration = 3})
+    end
+end)
 
 Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery", Default = true })
 
 Tabs.Automation:AddButton({
-    Title = "Start Hopper Manually",
+    Title = "Start Hopper",
+    Description = "Manually begin the server hopping process.",
     Callback = function()
-        if not HopperToggle.Value then HopperToggle:SetValue(true) else runHopperLogic() end
+        if HopperToggle.Value then
+            runHopperLogic()
+        else
+            Fluent:Notify({Title = "Warning", Content = "Enable the 'Auto-Hop Loop' toggle first.", Duration = 3})
+        end
     end
 })
 
-Tabs.Automation:AddButton({
-    Title = "Check Server",
-    Callback = function()
-        local status, hp = findDevilHeart()
-        Fluent:Notify({Title = "Status", Content = status == "ACBait" and "ACBait detected." or (status == "valid" and "Heart found at " .. tostring(hp) or "No heart found.")})
-    end
-})
-
-Tabs.Automation:AddSection("Movement")
+-- Movement controls and manual scan preserved below...
+Tabs.Automation:AddSection("Manual Actions")
+Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
+    local status, hp = findDevilHeart()
+    Fluent:Notify({Title = "Result", Content = status or "No heart found."})
+end})
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
     local status, hp = findDevilHeart() 
-    if status == "valid" then startStagedTween(hp) else Fluent:Notify({Title="Error", Content="Valid heart not found."}) end 
+    if status == "valid" then startStagedTween(hp) end 
 end})
 Tabs.Automation:AddButton({Title = "Stop Movement", Callback = stopTween})
 
--- Settings
-Tabs.Settings:AddSection("Tweening")
-Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ/Y Movement", Default = false})
-Tabs.Settings:AddToggle("SegmentToggle", {Title = "Segmented Pathing", Default = false})
+-- Settings Tab
+Tabs.Settings:AddSection("Movement Settings")
+Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ/Y", Default = false})
+Tabs.Settings:AddToggle("SegmentToggle", {Title = "Segments", Default = false})
 Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed", Default = "0.5", Numeric = true})
-Tabs.Settings:AddInput("TweenDist", {Title = "Max Segment Distance", Default = "50", Numeric = true})
+Tabs.Settings:AddInput("TweenDist", {Title = "Segment Dist", Default = "50", Numeric = true})
 Tabs.Settings:AddSlider("TweenInterval", {Title = "Interval", Default = 2, Min = 0.1, Max = 10, Rounding = 1})
 Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing", Values = {"Linear", "Quad", "Sine", "Cubic"}, Default = "Linear"})
 
-Tabs.Settings:AddSection("Discord")
-Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
+Tabs.Settings:AddSection("Discord Notifications")
+Tabs.Settings:AddInput("WebhookURL", {Title = "URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):OnChanged(function(v) webhookEnabled = v end)
 
+-- Finalization and Auto-Load logic
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenDist", "TweenInterval", "TweenEasing"}) 
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
@@ -317,4 +297,8 @@ SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
 
-if HopperToggle.Value then runHopperLogic() end
+-- LOGIC: Check if config loaded the toggle as ON
+-- If it did, we start immediately, bypassing the manual Start button requirement.
+if HopperToggle.Value then
+    runHopperLogic()
+end
