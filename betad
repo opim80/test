@@ -14,7 +14,7 @@ local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 942
-local DUMPSTER_Y_LIMIT = 940
+local ACBait_Y_LIMIT = 940
 
 -- State Variables
 local webhookURL = ""
@@ -35,9 +35,9 @@ local function findDevilHeart()
                     local cf = object.CFrame
                     local pos = Vector3.new(cf.X, cf.Y, cf.Z)
                     
-                    -- Check if Dumpster Heart
-                    if pos.Y < DUMPSTER_Y_LIMIT then
-                        return "dumpster", pos
+                    -- Check if ACBait Heart
+                    if pos.Y < ACBait_Y_LIMIT then
+                        return "ACBait", pos
                     end
                     
                     return "valid", pos
@@ -202,9 +202,9 @@ Tabs.Automation:AddButton({
                 while Fluent.Options.HopperToggle.Value do
                     local status, heartPos = findDevilHeart()
                     
-                    if status == "dumpster" then
-                        if webhookEnabled then sendWebhook("🗑️ Dumpster Heart Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000) end
-                        Fluent:Notify({Title = "Dumpster Heart", Content = "Heart is below Y940. Ignoring and hopping...", Duration = 5})
+                    if status == "ACBait" then
+                        if webhookEnabled then sendWebhook("🗑️ ACBait Heart Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000) end
+                        Fluent:Notify({Title = "ACBait Heart", Content = "Heart is below Y940. Ignoring and hopping...", Duration = 5})
                         serverHop()
                     elseif status == "valid" then
                         if webhookEnabled then sendWebhook("✅ Valid Heart Found!", "Server: " .. game.JobId) end
@@ -226,8 +226,8 @@ Tabs.Automation:AddButton({
     Title = "Check Server",
     Callback = function()
         local status, heartPos = findDevilHeart()
-        if status == "dumpster" then
-            Fluent:Notify({Title = "Dumpster Found", Content = "Heart detected but it's below Y940. Manual tween disabled.", Duration = 5})
+        if status == "ACBait" then
+            Fluent:Notify({Title = "ACBait Found", Content = "Heart detected but it's below Y940. Manual tween disabled.", Duration = 5})
         elseif status == "valid" then
             Fluent:Notify({Title = "Valid Heart Found!", Content = "Position: " .. tostring(heartPos)})
         else
@@ -241,8 +241,8 @@ Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function()
     local status, hp = findDevilHeart() 
     if status == "valid" then 
         startStagedTween(hp) 
-    elseif status == "dumpster" then
-        Fluent:Notify({Title = "Blocked", Content = "Cannot tween to a dumpster heart (Below Y940).", Duration = 3})
+    elseif status == "ACBait" then
+        Fluent:Notify({Title = "Blocked", Content = "Cannot tween to a ACBait heart (Below Y940).", Duration = 3})
     else 
         Fluent:Notify({Title="Error", Content="No heart."}) 
     end 
