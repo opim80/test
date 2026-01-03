@@ -5,16 +5,16 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 -- Services
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
-local LocalPlayer = Players.LocalPlayer
+local SERVER_LOG_FILE = "fluent_server_history.json"
 
 -- State Variables
-local activeMovement = false
-local avoidanceDirection = 1 -- 1 for Right, -1 for Left
+local webhookURL = ""
+local webhookEnabled = false
+local isInitialized = false 
 
 -- Helper: Find Devil Heart
 local function findDevilHeart()
@@ -30,76 +30,69 @@ local function findDevilHeart()
     return nil
 end
 
--- Helper: Visualize Ray
-local function createVisualRay(pos, dir, color)
-    local p = Instance.new("Part")
-    p.Anchored = true
-    p.CanCollide = false
-    p.Size = Vector3.new(0.2, 0.2, dir.Magnitude)
-    p.CFrame = CFrame.lookAt(pos + dir/2, pos + dir)
-    p.Color = color
-    p.Material = Enum.Material.Neon
-    p.Parent = workspace:FindFirstChild("RayVisuals") or (function()
-        local f = Instance.new("Folder", workspace)
-        f.Name = "RayVisuals"
-        return f
-    end)()
-    task.delay(0.1, function() p:Destroy() end)
-end
-
--- Reactive Movement Logic
-local function reactiveMove(targetPart)
-    activeMovement = true
-    local character = LocalPlayer.Character
-    local root = character:WaitForChild("HumanoidRootPart")
-    local humanoid = character:WaitForChild("Humanoid")
+-- Helper: Find Ground Position
+local function getGroundBelow(pos)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = {game.Players.LocalPlayer.Character}
     
-    while activeMovement and targetPart and targetPart.Parent do
-        local startPos = root.Position
-        local targetPos = targetPart.Position
-        local toTarget = (targetPos - startPos).Unit
-        
-        -- Raycast to detect wall in front
-        local rayParams = RaycastParams.new()
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        rayParams.FilterDescendantsInstances = {character}
-        
-        -- Detect wall face-first (look ahead 7 studs)
-        local result = workspace:Raycast(startPos, toTarget * 7, rayParams)
-        createVisualRay(startPos, toTarget * 7, result and Color3.new(1,0,0) or Color3.new(0,1,0))
-
-        if result and result.Instance.CanCollide then
-            -- We hit a wall!
-            -- Calculate a direction to walk ALONG the wall
-            local wallNormal = result.Normal
-            local walkDir = Vector3.new(-wallNormal.Z, 0, wallNormal.X) * avoidanceDirection
-            
-            -- Jump if the wall is short or we are stuck
-            if result.Distance < 3 then
-                humanoid.Jump = true
-            end
-            
-            -- Move sideways until the wall is gone
-            humanoid:Move(walkDir, false)
-        else
-            -- Path is clear, move toward heart
-            humanoid:Move(toTarget, false)
-        end
-        
-        -- Stop if we are close enough
-        if (targetPos - startPos).Magnitude < 5 then
-            activeMovement = false
-            break
-        end
-        
-        task.wait()
+    -- Cast ray downwards 500 studs
+    local result = workspace:Raycast(pos, Vector3.new(0, -500, 0), raycastParams)
+    if result then
+        return result.Position + Vector3.new(0, 3, 0) -- Stay 3 studs above hit point
     end
+    return pos -- Fallback if no ground found
 end
+
+-- Helper: Incremental Tween Movement
+local function tweenToHeart(targetPart)
+    local character = game.Players.LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    local easingStyle = Fluent.Options.TweenEasing.Value
+    local targetPos = targetPart.Position
+
+    task.spawn(function()
+        while (rootPart.Position - targetPos).Magnitude > 5 do
+            local currentPos = rootPart.Position
+            local direction = (targetPos - currentPos).Unit
+            local distanceToTravel = math.min(50, (targetPos - currentPos).Magnitude)
+            local nextDestination = currentPos + (direction * distanceToTravel)
+
+            -- If we are at the end, go to heart, otherwise find ground
+            local landingPoint = nextDestination
+            if (targetPos - nextDestination).Magnitude > 5 then
+                landingPoint = getGroundBelow(nextDestination)
+            else
+                landingPoint = targetPart.Position
+            end
+
+            -- Calculate Duration (Lower number = Faster)
+            local segDist = (rootPart.Position - landingPoint).Magnitude
+            local duration = (speed * segDist) / 100
+
+            local tween = TweenService:Create(rootPart, TweenInfo.new(duration, Enum.EasingStyle[easingStyle]), {CFrame = CFrame.new(landingPoint)})
+            tween:Play()
+            tween.Completed:Wait()
+
+            -- Ground Pause (unless we are at the heart)
+            if (rootPart.Position - targetPos).Magnitude > 5 then
+                Fluent:Notify({Title = "Movement", Content = "Resting on ground for 4s...", Duration = 2})
+                task.wait(4)
+            end
+        end
+        Fluent:Notify({Title = "Success", Content = "Reached Devil Heart!", Duration = 5})
+    end)
+end
+
+-- [The rest of the ServerHop, Webhook, and UI Logic from the previous script remains identical]
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility v6.0",
-    SubTitle = "Reactive Avoidance",
+    Title = "Devil Heart Utility",
+    SubTitle = "Safe Tween Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -109,50 +102,54 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
-    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+    Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
 }
 
 -- [[ AUTOMATION TAB ]]
-Tabs.Automation:AddSection("Reactive Movement")
+Tabs.Automation:AddSection("Devil Heart Detector")
+local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Devil Heart Hopper", Default = false })
 
 Tabs.Automation:AddButton({
-    Title = "Start Reactive Walk",
-    Description = "Walks to heart and navigates around walls on contact",
+    Title = "Start Hopper",
     Callback = function()
-        local heart = findDevilHeart()
-        if heart then
-            reactiveMove(heart)
-        else
-            Fluent:Notify({Title = "Error", Content = "Devil Heart not found.", Duration = 3})
+        if HopperToggle.Value then
+            task.spawn(function()
+                while Fluent.Options.HopperToggle.Value do
+                    local heart = findDevilHeart()
+                    if heart then
+                        HopperToggle:SetValue(false)
+                        tweenToHeart(heart)
+                        break
+                    else
+                        -- Call your serverHop function here
+                    end
+                    task.wait(10)
+                end
+            end)
         end
     end
 })
 
-Tabs.Automation:AddButton({
-    Title = "Stop Movement",
-    Callback = function() activeMovement = false end
-})
+Tabs.Automation:AddSection("Movement Settings")
+Tabs.Automation:AddInput("TweenSpeed", {Title = "Tween Speed", Default = "0.5", Numeric = true})
+Tabs.Automation:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Linear", "Quad", "Sine"}, Default = "Linear"})
 
-Tabs.Automation:AddDropdown("AvoidSide", {
-    Title = "Avoidance Direction",
-    Description = "Which side to prioritize when hitting a wall.",
-    Values = {"Left", "Right"},
-    Default = "Right",
-    Callback = function(Value)
-        avoidanceDirection = (Value == "Right" and 1 or -1)
+Tabs.Automation:AddButton({
+    Title = "Tween to Heart",
+    Description = "Moves 50 studs then rests on ground",
+    Callback = function()
+        local heart = findDevilHeart()
+        if heart then tweenToHeart(heart) end
     end
 })
 
-Tabs.Automation:AddParagraph({
-    Title = "How it works",
-    Content = "The player walks toward the heart. If a red line (Raycast) hits a wall, the player will start strafing sideways until the line turns green (path clear), then continues forward."
-})
-
--- [[ INITIALIZATION ]]
-Window:SelectTab(1)
+-- [[ CONFIG MANAGEMENT ]]
 SaveManager:SetLibrary(Fluent)
-SaveManager:IgnoreThemeSettings()
+InterfaceManager:SetLibrary(Fluent)
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
+task.wait(0.5)
 isInitialized = true
