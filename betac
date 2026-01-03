@@ -1,12 +1,39 @@
 --[[
-    CSMDH meth | V1.1.1
+    CSMDH meth | V1.1.2
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Adjusted initialization logic to respect auto-loaded config states.
-    - Hopper now auto-starts if HopperToggle is true on script execution.
+    - Added Pre-Load PlayButton check and registration.
+    - Preserved instant-start hopper logic on config load.
+    - Maintained ACBait and Webhook features.
 ]]
 
+-- [[ PRE-LOAD EXECUTION ]]
+-- Logic to bypass the Main Menu before the script initializes
+local function bypassMainMenu()
+    local lp = game:GetService("Players").LocalPlayer
+    local success, playerGui = pcall(function() return lp:FindFirstChild("PlayerGui") end)
+    
+    if success and playerGui then
+        local playButtonPath = playerGui:FindFirstChild("MainMenu") and 
+                               playerGui.MainMenu:FindFirstChild("Menu") and 
+                               playerGui.MainMenu.Menu:FindFirstChild("MainMenu") and 
+                               playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
+
+        if playButtonPath and playButtonPath:IsA("GuiButton") then
+            -- Register a press to ensure character spawns
+            local virtualUser = game:GetService("VirtualUser")
+            playButtonPath:Activate()
+            -- Fallback: Use VirtualUser to simulate an actual click if .Activate() is restricted
+            virtualUser:Button1Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+            virtualUser:Button1Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+        end
+    end
+end
+
+bypassMainMenu()
+
+-- [[ LOAD MAIN LIBRARIES ]]
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
@@ -32,7 +59,7 @@ local isInitialized = false
 local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
-local isHopperRunning = false -- Prevent duplicate threads
+local isHopperRunning = false
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -45,10 +72,7 @@ local function findDevilHeart()
                 if object:FindFirstChildOfClass("PointLight") then 
                     local cf = object.CFrame
                     local pos = Vector3.new(cf.X, cf.Y, cf.Z)
-                    
-                    if pos.Y < AC_BAIT_Y_LIMIT then
-                        return "ACBait", pos
-                    end
+                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos end
                     return "valid", pos
                 end
             end
@@ -163,9 +187,7 @@ local function startStagedTween(targetPos)
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
             local nextStep = (useSegments and dist > maxDist) and (currentPos + (goalPos - currentPos).Unit * maxDist) or goalPos
-            
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
-
             performTweenSegment(nextStep)
             if not stopRequested and useSegments and (rootPart.Position - goalPos).Magnitude > 1 then task.wait(interval) end
         end
@@ -196,14 +218,9 @@ local function runHopperLogic()
                 serverHop()
             elseif status == "valid" then
                 sendWebhook("✅ Valid Heart Found!", "Target detected in server: " .. game.JobId)
-                
                 if Fluent.Options.AutoTweenOnFind.Value then
-                    Fluent:Notify({Title = "Auto-Discovery", Content = "Discovery complete. Starting Tween..."})
                     startStagedTween(heartPos)
-                else
-                    Fluent:Notify({Title = "Discovery", Content = "Heart found. Auto-Tween is OFF."})
                 end
-                
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
@@ -219,7 +236,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.1",
+    SubTitle = "V1.1.2",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -231,55 +248,33 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Configuration", Icon = "settings" })
 }
 
--- [[ AUTOMATION TAB ]]
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
-
--- Event listener to start loop when toggled manually
-HopperToggle:OnChanged(function()
-    if HopperToggle.Value then
-        runHopperLogic()
-    end
-end)
+HopperToggle:OnChanged(function() if HopperToggle.Value then runHopperLogic() end end)
 
 Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery", Default = true })
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper Manually",
-    Description = "Forces the hopper logic to run if it isn't already.",
-    Callback = function()
-        if not HopperToggle.Value then
-            HopperToggle:SetValue(true)
-        else
-            runHopperLogic()
-        end
-    end
+    Callback = function() if not HopperToggle.Value then HopperToggle:SetValue(true) else runHopperLogic() end end
 })
 
 Tabs.Automation:AddButton({
     Title = "Manual Scan",
     Callback = function()
         local status, heartPos = findDevilHeart()
-        if status == "ACBait" then
-            Fluent:Notify({Title = "ACBait Found", Content = "Heart detected but it's below Y940 (Trap).", Duration = 5})
-        elseif status == "valid" then
-            Fluent:Notify({Title = "Valid Heart!", Content = "Position: " .. tostring(heartPos)})
-        else
-            Fluent:Notify({Title = "Not Found", Content = "No heart detected."})
-        end
+        if status == "ACBait" then Fluent:Notify({Title = "ACBait Found", Content = "Heart detected below Y940 (Trap)."})
+        elseif status == "valid" then Fluent:Notify({Title = "Valid Heart!", Content = "Position: " .. tostring(heartPos)})
+        else Fluent:Notify({Title = "Not Found", Content = "No heart detected."}) end
     end
 })
 
 Tabs.Automation:AddSection("Movement Controls")
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
     local status, hp = findDevilHeart() 
-    if status == "valid" then 
-        startStagedTween(hp) 
-    elseif status == "ACBait" then
-        Fluent:Notify({Title = "Blocked", Content = "Safety: ACBait heart detected.", Duration = 3})
-    else 
-        Fluent:Notify({Title="Error", Content="Target not found."}) 
-    end 
+    if status == "valid" then startStagedTween(hp) 
+    elseif status == "ACBait" then Fluent:Notify({Title = "Blocked", Content = "ACBait heart detected."})
+    else Fluent:Notify({Title="Error", Content="No target found."}) end 
 end})
 Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
 
@@ -287,7 +282,6 @@ Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
 Tabs.Settings:AddSection("Movement Logic")
 Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y Movement", Default = false})
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Enable Segmented Movement", Default = false})
-
 Tabs.Settings:AddSection("Tween Parameters")
 Tabs.Settings:AddInput("TweenSpeed", {Title = "Tween Speed", Default = "0.5", Numeric = true})
 Tabs.Settings:AddInput("TweenDist", {Title = "Segment Distance", Default = "50", Numeric = true})
@@ -297,10 +291,7 @@ Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Lin
 Tabs.Settings:AddSection("Discord Notifications")
 Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Notifications", Default = false }):OnChanged(function(v) webhookEnabled = v end)
-Tabs.Settings:AddButton({
-    Title = "Test Connectivity",
-    Callback = function() sendWebhook("Test", "Connectivity check successful.") end
-})
+Tabs.Settings:AddButton({Title = "Test Connectivity", Callback = function() sendWebhook("Test", "Check successful.") end})
 
 Tabs.Settings:AddSection("System Utility")
 Tabs.Settings:AddButton({Title = "Flush Server History", Callback = function() if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end end})
@@ -312,7 +303,6 @@ Tabs.Settings:AddButton({Title = "Initialize Anti-AFK", Callback = function()
     end)
 end})
 
--- [[ FINALIZE ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
@@ -321,13 +311,7 @@ InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-
--- Handle Auto-Loading and Immediate Execution
 SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
-
--- Check if toggle was enabled via Config auto-load and start immediately
-if HopperToggle.Value then
-    runHopperLogic()
-end
+if HopperToggle.Value then runHopperLogic() end
