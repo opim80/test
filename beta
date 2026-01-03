@@ -150,7 +150,7 @@ end
 -- Create Window
 local Window = Fluent:CreateWindow({
     Title = "Devil Heart Utility",
-    SubTitle = "v5.1 Stealth Edition",
+    SubTitle = "v5.1.1 Stealth Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
