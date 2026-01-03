@@ -1,11 +1,68 @@
 --[[
-    CSMDH meth | V1.1.1
+    CSMDH meth | V1.1.2
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Adjusted initialization logic to respect auto-loaded config states.
-    - Hopper now auto-starts if HopperToggle is true on script execution.
+    - Added Pre-Load Logic: Automatically clicks the "Play" button in the Main Menu if present.
+    - Uses VirtualInputManager for authentic input simulation (No FireServer/Activate).
+    - Preserves all previous Auto-Hop, Tween, and Config features.
 ]]
+
+-- [[ PRE-LOAD: AUTO PLAY BUTTON CLICKER ]] --
+task.spawn(function()
+    local Players = game:GetService("Players")
+    local VirtualInputManager = game:GetService("VirtualInputManager")
+    local GuiService = game:GetService("GuiService")
+    local LocalPlayer = Players.LocalPlayer
+
+    -- Wait briefly to ensure PlayerGui is accessible
+    if not LocalPlayer.PlayerGui then LocalPlayer:GetPropertyChangedSignal("PlayerGui"):Wait() end
+
+    local function clickPlayButton()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        if not playerGui then return end
+
+        -- Safe Navigation to the specific button path
+        -- Path: PlayerGui.MainMenu.Menu.MainMenu.PlayButton
+        local mainMenu = playerGui:FindFirstChild("MainMenu")
+        if mainMenu then
+            local menuFrame = mainMenu:FindFirstChild("Menu")
+            if menuFrame then
+                local innerMenu = menuFrame:FindFirstChild("MainMenu")
+                if innerMenu then
+                    local playBtn = innerMenu:FindFirstChild("PlayButton")
+                    
+                    -- Check if button exists and is visible
+                    if playBtn and playBtn:IsA("GuiButton") and playBtn.Visible then
+                        -- Calculate the Absolute Position (Screen Coordinates) of the button center
+                        local absPos = playBtn.AbsolutePosition
+                        local absSize = playBtn.AbsoluteSize
+                        local centerX = absPos.X + (absSize.X / 2)
+                        
+                        -- Account for GUI Inset (Top bar) if IgnoreGuiInset is false, though AbsolutePosition usually accounts for this.
+                        -- Adding the Y offset ensures we hit the element visually.
+                        local inset = GuiService:GetGuiInset()
+                        local centerY = absPos.Y + (absSize.Y / 2) + inset.Y
+
+                        -- Simulate a full MouseButton1 Click (Down + Up)
+                        -- 0, true/false, game, 1 (1 = Left Mouse Button)
+                        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, true, game, 1)
+                        task.wait(0.05)
+                        VirtualInputManager:SendMouseButtonEvent(centerX, centerY, 0, false, game, 1)
+                        
+                        -- Notify console for debug purposes
+                        print("[Pre-Load] Play Button Clicked via VirtualInputManager")
+                    end
+                end
+            end
+        end
+    end
+
+    -- Attempt the click safely
+    pcall(clickPlayButton)
+end)
+-- [[ END PRE-LOAD ]] --
+
 
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
@@ -32,7 +89,7 @@ local isInitialized = false
 local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
-local isHopperRunning = false -- Prevent duplicate threads
+local isHopperRunning = false
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -219,7 +276,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.1",
+    SubTitle = "V1.1.2",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -235,7 +292,6 @@ local Tabs = {
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
 
--- Event listener to start loop when toggled manually
 HopperToggle:OnChanged(function()
     if HopperToggle.Value then
         runHopperLogic()
@@ -321,13 +377,11 @@ InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-
--- Handle Auto-Loading and Immediate Execution
 SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
 
--- Check if toggle was enabled via Config auto-load and start immediately
+-- Immediate execution if config enables it
 if HopperToggle.Value then
     runHopperLogic()
 end
