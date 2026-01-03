@@ -7,15 +7,19 @@ local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
+local LocalPlayer = Players.LocalPlayer
 
 -- State Variables
 local webhookURL = ""
 local webhookEnabled = false
 local isInitialized = false 
+local activeTween = nil
+local velocityConnection = nil
 
 -- Helper: Find Devil Heart
 local function findDevilHeart()
@@ -34,11 +38,30 @@ local function findDevilHeart()
     return nil
 end
 
+-- Helper: Stop Active Tween
+local function stopTween()
+    if activeTween then
+        activeTween:Cancel()
+        activeTween = nil
+    end
+    if velocityConnection then
+        velocityConnection:Disconnect()
+        velocityConnection = nil
+    end
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Landing)
+    end
+end
+
 -- Helper: Tween Movement (IY Stealth Optimized)
 local function tweenToHeart(targetPart)
-    local character = game.Players.LocalPlayer.Character
+    stopTween() -- Cancel any existing tween before starting
+    
+    local character = LocalPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfChild("Humanoid")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
     local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
@@ -53,29 +76,24 @@ local function tweenToHeart(targetPart)
         Enum.EasingDirection.Out
     )
 
-    -- IY Safety: Prevent physics-based flagging by killing velocity during tween
-    local velocityConnection
+    -- IY Safety: Prevent physics-based flagging by killing velocity
     velocityConnection = RunService.Stepped:Connect(function()
-        if rootPart.Parent then
-            rootPart.Velocity = Vector3.new(0, 0, 0)
-            rootPart.RotVelocity = Vector3.new(0, 0, 0)
-        else
-            velocityConnection:Disconnect()
+        if rootPart and rootPart.Parent then
+            rootPart.Velocity = Vector3.zero
+            rootPart.RotVelocity = Vector3.zero
         end
     end)
 
-    -- IY Safety: Disable state-based AC checks (Falling/Trip)
+    -- IY Safety: Disable state-based AC checks
     if humanoid then
         humanoid:ChangeState(Enum.HumanoidStateType.Physics)
     end
 
-    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetPart.CFrame})
+    activeTween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetPart.CFrame})
+    activeTween:Play()
     
-    tween:Play()
-    
-    tween.Completed:Connect(function()
-        if velocityConnection then velocityConnection:Disconnect() end
-        if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landing) end
+    activeTween.Completed:Connect(function()
+        stopTween()
     end)
 end
 
@@ -132,7 +150,7 @@ end
 -- Create Window
 local Window = Fluent:CreateWindow({
     Title = "Devil Heart Utility",
-    SubTitle = "v5.0 Stealth Edition",
+    SubTitle = "v5.1 Stealth Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -173,11 +191,10 @@ local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Devil H
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
-    Description = "Begin searching servers for a Devil Heart",
     Callback = function()
         if HopperToggle.Value then
             startHopperLoop()
-            Fluent:Notify({Title = "Hopper", Content = "Searching for Devil Heart...", Duration = 3})
+            Fluent:Notify({Title = "Hopper", Content = "Searching...", Duration = 3})
         else
             Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
         end
@@ -186,13 +203,12 @@ Tabs.Automation:AddButton({
 
 Tabs.Automation:AddButton({
     Title = "Check for Devil Heart",
-    Description = "Manually scan the current server",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            Fluent:Notify({Title = "Found!", Content = "A Devil Heart is currently in this server.", Duration = 5})
+            Fluent:Notify({Title = "Found!", Content = "A Devil Heart is in this server.", Duration = 5})
         else
-            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected in this server.", Duration = 5})
+            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected.", Duration = 5})
         end
     end
 })
@@ -205,61 +221,62 @@ Tabs.Automation:AddInput("TweenSpeed", {
     Default = "0.5",
     Numeric = true,
     Finished = true,
-    Callback = function(Value) end
+    Callback = function() end
 })
 
 Tabs.Automation:AddDropdown("TweenEasing", {
     Title = "Easing Style",
     Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"},
     Default = "Linear",
-    Callback = function(Value) end
+    Callback = function() end
 })
 
 Tabs.Automation:AddButton({
     Title = "Tween to Heart",
-    Description = "Fly to the heart with IY Stealth fixes",
     Callback = function()
         local heart = findDevilHeart()
-        if heart then
-            tweenToHeart(heart)
-        else
-            Fluent:Notify({Title = "Error", Content = "No Devil Heart found in this server.", Duration = 3})
+        if heart then tweenToHeart(heart) else 
+            Fluent:Notify({Title = "Error", Content = "No heart found.", Duration = 3}) 
         end
     end
 })
 
-HopperToggle:OnChanged(function()
-    if HopperToggle.Value and not isInitialized then
-        startHopperLoop()
+Tabs.Automation:AddButton({
+    Title = "Stop Tween",
+    Callback = function()
+        stopTween()
+        Fluent:Notify({Title = "Movement", Content = "Tween Cancelled.", Duration = 3})
     end
-end)
-
--- [[ CONFIG & WEBHOOK TAB ]]
-Tabs.Settings:AddSection("Webhook Settings")
-
-Tabs.Settings:AddInput("WebhookURL", {
-    Title = "Webhook URL",
-    Default = "",
-    Callback = function(Value) webhookURL = Value end
 })
 
-Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(Value)
-    webhookEnabled = Value
-end)
+-- [[ SETTINGS TAB ]]
+Tabs.Settings:AddSection("Webhook Settings")
+Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
 
-Tabs.Settings:AddSection("History Management")
+Tabs.Settings:AddSection("Utility")
+Tabs.Settings:AddButton({
+    Title = "Anti-AFK",
+    Description = "Prevents idle disconnection",
+    Callback = function()
+        local vu = game:GetService("VirtualUser")
+        LocalPlayer.Idled:Connect(function()
+            vu:Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+            task.wait(1)
+            vu:Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+        end)
+        Fluent:Notify({Title = "Anti-AFK", Content = "Anti-AFK is now active.", Duration = 3})
+    end
+})
 
 Tabs.Settings:AddButton({
     Title = "Clear Server History",
     Callback = function()
-        if isfile(SERVER_LOG_FILE) then
-            delfile(SERVER_LOG_FILE)
-            Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
-        end
+        if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end
+        Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
     end
 })
 
--- [[ CONFIG MANAGEMENT ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
