@@ -10,9 +10,13 @@ local Players = game:GetService("Players")
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local LocalPlayer = Players.LocalPlayer
-local NODE_SPACING = 5 -- Distance between pre-calculated points
+local NODE_SPACING = 5 -- Larger spacing = faster calculation
+local PLAYER_HEIGHT_CHECK = 6 -- Studs to check upward for walls
 
--- Helper: Find Devil Heart
+-- State Variables
+local isInitialized = false 
+
+-- Helper: Deep Find Devil Heart
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
@@ -26,101 +30,92 @@ local function findDevilHeart()
     return nil
 end
 
--- Deep Collision Checker
+-- Improved Collision Check: Deep Scans workspace.map
 local function isAreaBlocked(pos)
-    local mapFolder = workspace:FindFirstChild("map")
-    if not mapFolder then return false end
+    local map = workspace:FindFirstChild("map")
+    if not map then return false end
 
-    -- Define the player's physical space for the check
-    local checkSize = Vector3.new(4, 6, 4) 
-    local params = OverlapParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
+    -- Define the check volume (Tall box for height safety)
+    local halfSize = Vector3.new(2, PLAYER_HEIGHT_CHECK / 2, 2)
+    local region = Region3.new(pos - halfSize, pos + halfSize)
     
-    -- We are specifically checking the contents of workspace.map
-    local objectsToCheck = {}
-    for _, model in ipairs(mapFolder:GetChildren()) do
-        for _, child in ipairs(model:GetChildren()) do
-            if child:IsA("BasePart") and child.CanCollide then
-                table.insert(objectsToCheck, child)
-            end
+    -- Check for parts in the region
+    local parts = workspace:FindPartsInRegion3WithWhiteList(region, {map}, 100)
+
+    for _, part in ipairs(parts) do
+        if part.CanCollide then
+            return true
         end
     end
-    params.FilterDescendantsInstances = objectsToCheck
-
-    local collisions = workspace:GetPartBoundsInBox(CFrame.new(pos), checkSize, params)
-    return #collisions > 0
+    return false
 end
 
--- Pre-Calculated Path Logic
-local function calculateAndMove(targetPos)
+-- Custom A* Pre-Calculation Logic
+local function calculatePath(targetPos)
     local character = LocalPlayer.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChild("Humanoid")
     if not root or not humanoid then return end
 
     local startPos = root.Position
-    local calculatedPath = {}
-    local currentPos = startPos
+    local pathPoints = {startPos}
     
-    Fluent:Notify({Title = "System", Content = "Scanning workspace.map for collisions...", Duration = 3})
+    local currentPos = startPos
+    local totalDist = (targetPos - startPos).Magnitude
+    local steps = math.floor(totalDist / NODE_SPACING)
 
-    -- Pre-calculate path points
-    local fullDistance = (targetPos - startPos).Magnitude
-    local steps = math.floor(fullDistance / NODE_SPACING)
-    local direction = (targetPos - startPos).Unit
+    Fluent:Notify({Title = "System", Content = "Scanning Map Geometry...", Duration = 3})
 
     for i = 1, steps do
-        local nextPoint = startPos + (direction * (i * NODE_SPACING))
+        local nextStep = startPos + ((targetPos - startPos).Unit * (i * NODE_SPACING))
         
-        -- If blocked, try to find a detour point (Left/Right/Up)
-        if isAreaBlocked(nextPoint) then
-            local detours = {
-                nextPoint + Vector3.new(NODE_SPACING, 0, 0),
-                nextPoint + Vector3.new(-NODE_SPACING, 0, 0),
-                nextPoint + Vector3.new(0, NODE_SPACING, 0)
-            }
-            
+        -- If blocked, try to find a detour (Left/Right check)
+        if isAreaBlocked(nextStep) then
             local foundDetour = false
-            for _, detour in ipairs(detours) do
-                if not isAreaBlocked(detour) then
-                    nextPoint = detour
+            local detours = {Vector3.new(NODE_SPACING, 0, 0), Vector3.new(-NODE_SPACING, 0, 0), Vector3.new(0, 0, NODE_SPACING), Vector3.new(0, 0, -NODE_SPACING)}
+            
+            for _, offset in ipairs(detours) do
+                if not isAreaBlocked(nextStep + offset) then
+                    nextStep = nextStep + offset
                     foundDetour = true
                     break
                 end
             end
             
-            -- If still blocked, this point remains at original (MoveTo will attempt to slide past)
+            -- If no detour, the path stays at previous point to avoid walking into wall
+            if not foundDetour then continue end
         end
-        table.insert(calculatedPath, nextPoint)
+        
+        table.insert(pathPoints, nextStep)
     end
-    table.insert(calculatedPath, targetPos) -- Ensure final destination is included
+    table.insert(pathPoints, targetPos) -- Ensure final point is the heart
 
-    -- Visualization
-    local visualFolder = workspace:FindFirstChild("CustomPathVisuals") or Instance.new("Folder", workspace)
-    visualFolder.Name = "CustomPathVisuals"
-    visualFolder:ClearAllChildren()
+    -- Path Visualization
+    local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
+    folder.Name = "PathVisuals"
+    folder:ClearAllChildren()
 
-    for _, point in ipairs(calculatedPath) do
-        local p = Instance.new("Part", visualFolder)
-        p.Anchored, p.CanCollide, p.Size = true, false, Vector3.new(0.6, 0.6, 0.6)
-        p.Shape, p.Material, p.Color = "Ball", "Neon", Color3.fromRGB(255, 255, 0)
-        p.Position = point
+    for _, p in ipairs(pathPoints) do
+        local b = Instance.new("Part", folder)
+        b.Size, b.Anchored, b.CanCollide, b.Shape = Vector3.new(0.6, 0.6, 0.6), true, false, "Ball"
+        b.Position, b.Color, b.Material = p, Color3.fromRGB(255, 255, 255), "Neon"
+        b.Transparency = 0.5
     end
 
-    -- Execution
-    Fluent:Notify({Title = "Movement", Content = "Starting pre-calculated walk.", Duration = 3})
-    for _, point in ipairs(calculatedPath) do
-        humanoid:MoveTo(point)
-        humanoid.MoveToFinished:Wait()
+    -- Execute Movement
+    for _, p in ipairs(pathPoints) do
+        humanoid:MoveTo(p)
+        local arrived = humanoid.MoveToFinished:Wait(2) -- Timeout after 2s per node
+        if not arrived then humanoid.Jump = true end -- Small hop if stuck
     end
     
-    visualFolder:ClearAllChildren()
+    folder:ClearAllChildren()
 end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility v5.1 (Deep Scan)",
-    SubTitle = "Custom Map Collision Detection",
+    Title = "Devil Heart Utility v5.5 (Deep Scan)",
+    SubTitle = "Geometry-Aware Custom Movement",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -134,19 +129,24 @@ local Tabs = {
 }
 
 -- [[ AUTOMATION TAB ]]
-Tabs.Automation:AddSection("Custom Pathfinding")
+Tabs.Automation:AddSection("Custom Movement (No Pathfinding Service)")
 
 Tabs.Automation:AddButton({
-    Title = "Deep Scan & Walk",
-    Description = "Checks children of models in workspace.map before moving",
+    Title = "Scan & Walk to Heart",
+    Description = "Checks all map children for collisions before moving.",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            calculateAndMove(heart.Position)
+            calculatePath(heart.Position)
         else
-            Fluent:Notify({Title = "Error", Content = "Devil Heart not found in Rokyo.", Duration = 3})
+            Fluent:Notify({Title = "Error", Content = "Devil Heart not found.", Duration = 3})
         end
     end
+})
+
+Tabs.Automation:AddParagraph({
+    Title = "Geometry Scanning Info",
+    Content = "This scan checks for any 'CanCollide' parts within 'workspace.map'. It accounts for height (6 studs) to prevent walking into walls."
 })
 
 -- [[ SETTINGS & INITIALIZATION ]]
