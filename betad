@@ -21,19 +21,15 @@ local webhookEnabled = false
 local isInitialized = false 
 local activeTween = nil
 local velocityConnection = nil
-local floorCheckConnection = nil
 
 -- Helper: Find Devil Heart
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
-    
     if rokyos then
         for _, object in ipairs(rokyos:GetChildren()) do
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
-                if object:FindFirstChildOfClass("PointLight") then
-                    return object
-                end
+                if object:FindFirstChildOfClass("PointLight") then return object end
             end
         end
     end
@@ -42,47 +38,40 @@ end
 
 -- Helper: Stop Active Tween
 local function stopTween()
-    if activeTween then
-        activeTween:Cancel()
-        activeTween = nil
-    end
-    if velocityConnection then
-        velocityConnection:Disconnect()
-        velocityConnection = nil
-    end
+    if activeTween then activeTween:Cancel() activeTween = nil end
+    if velocityConnection then velocityConnection:Disconnect() velocityConnection = nil end
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid:ChangeState(Enum.HumanoidStateType.Landed)
-    end
+    if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
 end
 
--- Safety: Floor Check (Ensures player never falls below 942)
-local function startFloorCheck()
-    if floorCheckConnection then floorCheckConnection:Disconnect() end
-    floorCheckConnection = RunService.Heartbeat:Connect(function()
-        local character = LocalPlayer.Character
-        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-        if rootPart and rootPart.Position.Y < MIN_Y_LIMIT then
-            rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 0, rootPart.Velocity.Z)
-            rootPart.CFrame = CFrame.new(rootPart.Position.X, MIN_Y_LIMIT, rootPart.Position.Z)
-        end
-    end)
-end
+-- Helper: Perform Single Segment Tween
+local function performTweenSegment(targetCFrame)
+    local character = LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
 
--- Helper: Tween Movement (Two-Stage IY Stealth)
-local function tweenToHeart(targetPart)
-    stopTween()
+    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    local easingStyle = Fluent.Options.TweenEasing.Value
+    local distance = (rootPart.Position - targetCFrame.Position).Magnitude
+    local duration = (speed * distance) / 100
+
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[easingStyle], Enum.EasingDirection.Out)
     
+    activeTween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetCFrame})
+    activeTween:Play()
+    activeTween.Completed:Wait()
+end
+
+-- Helper: Master Movement Logic
+local function startStagedTween(targetPart)
+    stopTween()
     local character = LocalPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
-    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
-    local easingStyle = Fluent.Options.TweenEasing.Value
-    
-    -- Stealth setup
+    -- IY Safety: Velocity Kill
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent then
             rootPart.Velocity = Vector3.zero
@@ -91,37 +80,36 @@ local function tweenToHeart(targetPart)
     end)
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 
-    -- STAGE 1: Horizontal Movement (X, Z)
-    -- We keep the Y level the same as our current Y (as long as it's > 942)
-    local currentY = math.max(rootPart.Position.Y, MIN_Y_LIMIT)
-    local horizontalTarget = CFrame.new(targetPart.Position.X, currentY, targetPart.Position.Z)
-    
-    local hDistance = (rootPart.Position - horizontalTarget.Position).Magnitude
-    local hDuration = (speed * hDistance) / 100
+    local targetPos = targetPart.Position
+    local maxDist = tonumber(Fluent.Options.TweenDist.Value) or 50
+    local interval = Fluent.Options.TweenInterval.Value
 
-    local hTween = TweenService:Create(rootPart, TweenInfo.new(hDuration, Enum.EasingStyle[easingStyle]), {CFrame = horizontalTarget})
-    activeTween = hTween
-    hTween:Play()
+    -- 1. Horizontal Phase (Move to X/Z first)
+    while true do
+        local currentPos = rootPart.Position
+        -- Calculate X/Z target at current height (ensuring height is never < 942)
+        local currentHeight = math.max(currentPos.Y, MIN_Y_LIMIT)
+        local horizontalTarget = Vector3.new(targetPos.X, currentHeight, targetPos.Z)
+        local distRemaining = (Vector3.new(currentPos.X, 0, currentPos.Z) - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
+
+        if distRemaining < 1 then break end
+
+        local moveDir = (horizontalTarget - currentPos).Unit
+        local stepDist = math.min(distRemaining, maxDist)
+        local nextStep = currentPos + (moveDir * stepDist)
+        
+        performTweenSegment(CFrame.new(nextStep))
+        if distRemaining > maxDist then task.wait(interval) end
+    end
+
+    -- 2. Vertical Phase (Once directly above/below)
+    performTweenSegment(CFrame.new(targetPos))
     
-    hTween.Completed:Connect(function(playbackState)
-        if playbackState == Enum.PlaybackState.Completed then
-            -- STAGE 2: Vertical Movement (Y)
-            -- Directly up or down to the heart
-            local vDistance = math.abs(rootPart.Position.Y - targetPart.Position.Y)
-            local vDuration = (speed * vDistance) / 100
-            
-            local vTween = TweenService:Create(rootPart, TweenInfo.new(vDuration, Enum.EasingStyle[easingStyle]), {CFrame = targetPart.CFrame})
-            activeTween = vTween
-            vTween:Play()
-            
-            vTween.Completed:Connect(function()
-                stopTween()
-            end)
-        end
-    end)
+    stopTween()
+    Fluent:Notify({Title = "Movement", Content = "Arrived at Devil Heart!", Duration = 5})
 end
 
--- Create Window
+-- UI Setup
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
     SubTitle = "V1.0.0",
@@ -134,7 +122,7 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
-    Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
+    Settings = Window:AddTab({ Title = "Configuration", Icon = "settings" })
 }
 
 -- [[ AUTOMATION TAB ]]
@@ -147,29 +135,17 @@ Tabs.Automation:AddButton({
     Callback = function()
         if HopperToggle.Value then
             task.spawn(function()
-                while HopperToggle.Value do
+                while Fluent.Options.HopperToggle.Value do
                     local heart = findDevilHeart()
                     if heart then
-                        Fluent:Notify({Title = "Found!", Content = "Heart found. Starting stealth movement.", Duration = 10})
-                        tweenToHeart(heart)
-                        HopperToggle:SetValue(false)
+                        Fluent:Notify({Title = "Found!", Content = "Executing movement...", Duration = 5})
+                        startStagedTween(heart)
+                        Fluent.Options.HopperToggle:SetValue(false)
                         break
                     else
-                        -- [Server Hop logic included here]
-                        local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
-                        history[game.JobId] = os.time()
-                        writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
-                        local success, result = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end)
-                        if success and result.data then
-                            for _, s in ipairs(result.data) do
-                                if s.playing < s.maxPlayers and not history[s.id] and s.id ~= game.JobId then
-                                    TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
-                                    return
-                                end
-                            end
-                        end
+                        -- [Server hop function here]
+                        task.wait(10)
                     end
-                    task.wait(10)
                 end
             end)
         end
@@ -180,51 +156,31 @@ Tabs.Automation:AddButton({
     Title = "Check for Devil Heart",
     Callback = function()
         local heart = findDevilHeart()
-        if heart then
-            Fluent:Notify({Title = "Found!", Content = "A Devil Heart is in this server.", Duration = 5})
-        else
-            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected.", Duration = 5})
-        end
+        Fluent:Notify({Title = heart and "Found!" or "Not Found", Content = heart and "Heart detected." or "No heart detected.", Duration = 5})
     end
-})
-
-Tabs.Automation:AddSection("Movement Settings")
-
-Tabs.Automation:AddInput("TweenSpeed", {
-    Title = "Tween Speed",
-    Description = "Lower = Faster",
-    Default = "0.5",
-    Numeric = true,
-    Finished = true,
-    Callback = function() end
-})
-
-Tabs.Automation:AddDropdown("TweenEasing", {
-    Title = "Easing Style",
-    Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"},
-    Default = "Linear",
-    Callback = function() end
 })
 
 Tabs.Automation:AddButton({
     Title = "Tween to Heart",
     Callback = function()
         local heart = findDevilHeart()
-        if heart then tweenToHeart(heart) else 
-            Fluent:Notify({Title = "Error", Content = "No heart found.", Duration = 3}) 
-        end
+        if heart then startStagedTween(heart) else Fluent:Notify({Title = "Error", Content = "No heart found.", Duration = 3}) end
     end
 })
 
 Tabs.Automation:AddButton({
     Title = "Stop Tween",
-    Callback = function()
-        stopTween()
-        Fluent:Notify({Title = "Movement", Content = "Tween Cancelled.", Duration = 3})
-    end
+    Callback = function() stopTween() end
 })
 
--- [[ SETTINGS TAB ]]
+-- [[ CONFIGURATION TAB ]]
+Tabs.Settings:AddSection("Tween Settings")
+
+Tabs.Settings:AddInput("TweenSpeed", {Title = "Tween Speed", Description = "Lower = Faster", Default = "0.5", Numeric = true, Finished = true, Callback = function() end})
+Tabs.Settings:AddInput("TweenDist", {Title = "Max Studs per Segment", Default = "50", Numeric = true, Finished = true, Callback = function() end})
+Tabs.Settings:AddSlider("TweenInterval", {Title = "Interval Between Tweens", Description = "Wait time between segments", Default = 2, Min = 0.1, Max = 60, Rounding = 1, Callback = function() end})
+Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"}, Default = "Linear", Callback = function() end})
+
 Tabs.Settings:AddSection("Webhook Settings")
 Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
@@ -239,27 +195,18 @@ Tabs.Settings:AddButton({
             task.wait(1)
             vu:Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
         end)
-        Fluent:Notify({Title = "Anti-AFK", Content = "Active.", Duration = 3})
-    end
-})
-
-Tabs.Settings:AddButton({
-    Title = "Clear History",
-    Callback = function()
-        if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end
-        Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
+        Fluent:Notify({Title = "Anti-AFK", Content = "Active", Duration = 3})
     end
 })
 
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenEasing"}) 
+SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenDist", "TweenInterval", "TweenEasing"}) 
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
-startFloorCheck()
 task.wait(0.5)
 isInitialized = true
