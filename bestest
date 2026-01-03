@@ -5,7 +5,6 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 -- Services
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local TweenService = game:GetService("TweenService")
 local PathfindingService = game:GetService("PathfindingService")
 local Players = game:GetService("Players")
 
@@ -23,73 +22,100 @@ local isInitialized = false
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
+    
     if rokyos then
         for _, object in ipairs(rokyos:GetChildren()) do
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
-                if object:FindFirstChildOfClass("PointLight") then return object end
+                if object:FindFirstChildOfClass("PointLight") then
+                    return object
+                end
             end
         end
     end
     return nil
 end
 
--- Helper: Find Floor for Tween Landing
-local function getSafeFloor(startPos)
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    
-    local result = workspace:Raycast(startPos, Vector3.new(0, -500, 0), raycastParams)
-    if result then
-        return result.Position + Vector3.new(0, 3, 0)
-    end
-    return startPos
-end
-
--- Pathfinding & Incremental Tween Logic
+-- Helper: Pathfinding with Visualization
 local function collectHeart(targetPart)
     local character = LocalPlayer.Character
     if not character or not character:FindFirstChild("HumanoidRootPart") then return end
     
     local humanoid = character:FindFirstChild("Humanoid")
     local rootPart = character.HumanoidRootPart
-    local destination = targetPart.Position
+    local targetPos = targetPart.Position
+    
+    local path = PathfindingService:CreatePath({
+        AgentRadius = 2,
+        AgentHeight = 5,
+        AgentCanJump = true,
+        AgentJumpHeight = 10,
+        AgentMaxSlope = 45,
+    })
 
-    -- 1. Attempt Pathfinding First
-    local path = PathfindingService:CreatePath({AgentCanJump = true, AgentWaypointSpacing = 4})
-    local success, errorMessage = pcall(function() path:ComputeAsync(rootPart.Position, destination) end)
+    local success, errorMessage = pcall(function()
+        path:ComputeAsync(rootPart.Position, targetPos)
+    end)
 
     if success and path.Status == Enum.PathStatus.Success then
         local waypoints = path:GetWaypoints()
+        
+        -- Visualize the Path
+        local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
+        folder.Name = "PathVisuals"
+        folder:ClearAllChildren()
+
+        for _, waypoint in ipairs(waypoints) do
+            local part = Instance.new("Part")
+            part.Shape = Enum.PartType.Ball
+            part.Color = Color3.fromRGB(0, 255, 255)
+            part.Size = Vector3.new(0.6, 0.6, 0.6)
+            part.CFrame = CFrame.new(waypoint.Position)
+            part.Anchored = true
+            part.CanCollide = false
+            part.Material = Enum.Material.Neon
+            part.Parent = folder
+        end
+
+        -- Execute Movement
         for i, waypoint in ipairs(waypoints) do
-            if waypoint.Action == Enum.PathWayPointAction.Jump then humanoid.Jump = true end
+            if waypoint.Action == Enum.PathWaypointAction.Jump then
+                humanoid.Jump = true
+            end
             humanoid:MoveTo(waypoint.Position)
             humanoid.MoveToFinished:Wait()
-            
-            -- Check if path is still viable or if we should switch to Tween
-            if (rootPart.Position - destination).Magnitude < 10 then break end
         end
+        
+        folder:ClearAllChildren() -- Cleanup visuals after arriving
+    else
+        Fluent:Notify({Title = "Path Error", Content = "Could not find a walkable path to the heart.", Duration = 5})
     end
+end
 
-    -- 2. Incremental Tweening (If pathfinding fails or to finish vertical distance)
-    while (rootPart.Position - destination).Magnitude > 5 do
-        local currentPos = rootPart.Position
-        local direction = (destination - currentPos).Unit
-        local nextStep = currentPos + (direction * math.min(50, (destination - currentPos).Magnitude))
-        
-        -- Find a place to stand at this 50-stud increment
-        local landingPos = getSafeFloor(nextStep)
-        
-        local dist = (rootPart.Position - landingPos).Magnitude
-        local speed = Fluent.Options.TweenSpeed.Value
-        local duration = dist / (speed * 50) -- Adjusted for increments
+-- Helper: Server History/Webhook
+local function sendWebhook(title, message, color)
+    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+        local data = {["embeds"] = {{["title"] = title, ["description"] = message, ["color"] = color or 0x00ff00, ["timestamp"] = DateTime.now():ToIsoDate()}}}
+        pcall(function()
+            request({Url = webhookURL, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HttpService:JSONEncode(data)})
+        end)
+    end
+end
 
-        local tween = TweenService:Create(rootPart, TweenInfo.new(duration, Enum.EasingStyle.Linear), {CFrame = CFrame.new(landingPos)})
-        tween:Play()
-        tween.Completed:Wait()
+local function serverHop()
+    local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
+    history[game.JobId] = os.time()
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
-        if (rootPart.Position - destination).Magnitude > 5 then
-            task.wait(4) -- Wait 4 seconds between 50-stud increments
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing < server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
+            end
         end
     end
 end
@@ -97,7 +123,7 @@ end
 -- Create Window
 local Window = Fluent:CreateWindow({
     Title = "Devil Heart Utility",
-    SubTitle = "Pathfinding & Staged Tween",
+    SubTitle = "Pathfinding Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -117,18 +143,20 @@ local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Ho
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
+    Description = "Begin searching and walking to hearts",
     Callback = function()
         if HopperToggle.Value then
             task.spawn(function()
                 while HopperToggle.Value do
                     local heart = findDevilHeart()
                     if heart then
-                        Fluent:Notify({Title = "Found!", Content = "Pathfinding to heart...", Duration = 10})
+                        if webhookEnabled then sendWebhook("✅ Found!", "Heart in: " .. game.JobId) end
+                        Fluent:Notify({Title = "Success", Content = "Found! Pathfinding...", Duration = 10})
                         collectHeart(heart)
                         HopperToggle:SetValue(false)
                         break
                     else
-                        -- [Your serverHop function code here]
+                        serverHop()
                     end
                     task.wait(10)
                 end
@@ -138,30 +166,34 @@ Tabs.Automation:AddButton({
 })
 
 Tabs.Automation:AddButton({
-    Title = "Check & Pathfind",
-    Description = "Manually pathfind to a heart in this server",
+    Title = "Walk to Heart",
+    Description = "Uses Pathfinding (No Tweens)",
     Callback = function()
         local heart = findDevilHeart()
-        if heart then collectHeart(heart) else 
-            Fluent:Notify({Title = "Not Found", Content = "No Heart detected.", Duration = 3}) 
+        if heart then
+            collectHeart(heart)
+        else
+            Fluent:Notify({Title = "Error", Content = "No Devil Heart found in this server!", Duration = 3})
         end
     end
 })
 
-Tabs.Automation:AddSlider("TweenSpeed", {
-    Title = "Tween Speed",
-    Description = "Controls glide speed during 50-stud increments.",
-    Default = 0.5, Min = 0.1, Max = 2, Rounding = 1,
-    Callback = function() end
-})
-
 Tabs.Automation:AddParagraph({
-    Title = "⚠️ Movement Info",
-    Content = "The script will walk using pathfinding first. If blocked, it will tween 50 studs, land on the floor, and wait 4 seconds before moving again."
+    Title = "ℹ️ Pathfinding Info",
+    Content = "This version uses Roblox Pathfinding. If the heart is in a location with no floor or behind a locked door, the path may fail."
 })
 
 -- [[ SETTINGS TAB ]]
--- [InterfaceManager and SaveManager setup here as per previous working versions]
+Tabs.Settings:AddSection("Webhook Settings")
+Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
+
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"WebhookURL"}) 
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
