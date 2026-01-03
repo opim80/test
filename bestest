@@ -35,57 +35,71 @@ local function findDevilHeart()
     return nil
 end
 
--- Helper: Pathfinding with Visualization
+-- Helper: Path Visualization
+local function visualizePath(waypoints)
+    local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
+    folder.Name = "PathVisuals"
+    folder:ClearAllChildren()
+
+    for _, waypoint in ipairs(waypoints) do
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(0.5, 0.5, 0.5)
+        part.Position = waypoint.Position
+        part.Anchored = true
+        part.CanCollide = false
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromRGB(0, 255, 0)
+        part.Shape = Enum.PartType.Ball
+        part.Parent = folder
+    end
+end
+
+-- Helper: Move with Pathfinding
 local function collectHeart(targetPart)
     local character = LocalPlayer.Character
     if not character or not character:FindFirstChild("HumanoidRootPart") then return end
     
     local humanoid = character:FindFirstChild("Humanoid")
     local rootPart = character.HumanoidRootPart
-    local targetPos = targetPart.Position
-    
+    local destination = targetPart.Position
+
     local path = PathfindingService:CreatePath({
         AgentRadius = 2,
         AgentHeight = 5,
         AgentCanJump = true,
-        AgentJumpHeight = 10,
-        AgentMaxSlope = 45,
+        AgentWaypointSpacing = 3
     })
 
     local success, errorMessage = pcall(function()
-        path:ComputeAsync(rootPart.Position, targetPos)
+        path:ComputeAsync(rootPart.Position, destination)
     end)
 
     if success and path.Status == Enum.PathStatus.Success then
         local waypoints = path:GetWaypoints()
-        
-        -- Visualize the Path
-        local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
-        folder.Name = "PathVisuals"
-        folder:ClearAllChildren()
+        visualizePath(waypoints)
 
-        for _, waypoint in ipairs(waypoints) do
-            local part = Instance.new("Part")
-            part.Shape = Enum.PartType.Ball
-            part.Color = Color3.fromRGB(0, 255, 255)
-            part.Size = Vector3.new(0.6, 0.6, 0.6)
-            part.CFrame = CFrame.new(waypoint.Position)
-            part.Anchored = true
-            part.CanCollide = false
-            part.Material = Enum.Material.Neon
-            part.Parent = folder
-        end
-
-        -- Execute Movement
         for i, waypoint in ipairs(waypoints) do
+            -- Jump if required
             if waypoint.Action == Enum.PathWaypointAction.Jump then
                 humanoid.Jump = true
             end
+
             humanoid:MoveTo(waypoint.Position)
-            humanoid.MoveToFinished:Wait()
+            
+            -- Wait until reached waypoint or timeout
+            local reached = humanoid.MoveToFinished:Wait(1) 
+            if not reached then
+                -- Re-check distance to waypoint to prevent getting stuck
+                if (rootPart.Position - waypoint.Position).Magnitude > 5 then
+                    humanoid.Jump = true -- Try to jump over obstacles
+                end
+            end
         end
         
-        folder:ClearAllChildren() -- Cleanup visuals after arriving
+        -- Clean up visuals
+        if workspace:FindFirstChild("PathVisuals") then
+            workspace.PathVisuals:ClearAllChildren()
+        end
     else
         Fluent:Notify({Title = "Path Error", Content = "Could not find a walkable path to the heart.", Duration = 5})
     end
@@ -122,8 +136,8 @@ end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility",
-    SubTitle = "Pathfinding Edition",
+    Title = "Devil Heart Utility v4.0 (Pathfinding)",
+    SubTitle = "Visualized Path Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -143,7 +157,7 @@ local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Ho
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
-    Description = "Begin searching and walking to hearts",
+    Description = "Begin searching servers",
     Callback = function()
         if HopperToggle.Value then
             task.spawn(function()
@@ -151,7 +165,7 @@ Tabs.Automation:AddButton({
                     local heart = findDevilHeart()
                     if heart then
                         if webhookEnabled then sendWebhook("✅ Found!", "Heart in: " .. game.JobId) end
-                        Fluent:Notify({Title = "Success", Content = "Found! Pathfinding...", Duration = 10})
+                        Fluent:Notify({Title = "Success", Content = "Found! Walking to heart...", Duration = 10})
                         collectHeart(heart)
                         HopperToggle:SetValue(false)
                         break
@@ -167,7 +181,7 @@ Tabs.Automation:AddButton({
 
 Tabs.Automation:AddButton({
     Title = "Walk to Heart",
-    Description = "Uses Pathfinding (No Tweens)",
+    Description = "Uses Pathfinding to walk to the heart",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
@@ -179,8 +193,8 @@ Tabs.Automation:AddButton({
 })
 
 Tabs.Automation:AddParagraph({
-    Title = "ℹ️ Pathfinding Info",
-    Content = "This version uses Roblox Pathfinding. If the heart is in a location with no floor or behind a locked door, the path may fail."
+    Title = "⚠️ Movement Info",
+    Content = "This version uses Roblox Pathfinding Service. It will navigate obstacles and visualize the path with green markers."
 })
 
 -- [[ SETTINGS TAB ]]
