@@ -1,11 +1,11 @@
 --[[
-    CSMDH meth | V1.1.4
+    CSMDH meth | V1.1.5
     Professional Devil Heart Automation Utility
     
-    Update Log:
-    - Logic Shift: Manual toggling requires the "Start" button to begin the loop.
-    - Logic Shift: Auto-loaded configs trigger the loop immediately on execution.
-    - Maintains getconnections() Main Menu interceptor and ACBait Y940 guard.
+    Syntax Status: Validated for Luau
+    Logic: 
+    - Manual toggle = Needs "Start" button.
+    - Config load = Auto-starts loop.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -14,17 +14,18 @@ local function handleNativeMainMenu()
     if not lp then return end
     
     local playerGui = lp:FindFirstChild("PlayerGui")
-    if playerGui then
-        local playButton = playerGui:FindFirstChild("MainMenu") 
-            and playerGui.MainMenu:FindFirstChild("Menu")
-            and playerGui.MainMenu.Menu:FindFirstChild("MainMenu")
-            and playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
+    if not playerGui then return end
 
-        if playButton and playButton:IsA("GuiButton") then
-            if getconnections then
-                for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
-                    connection:Fire()
-                end
+    -- Corrected syntax for safe path navigation
+    local mainMenu = playerGui:FindFirstChild("MainMenu")
+    local menu = mainMenu and mainMenu:FindFirstChild("Menu")
+    local innerMenu = menu and menu:FindFirstChild("MainMenu")
+    local playButton = innerMenu and innerMenu:FindFirstChild("PlayButton")
+
+    if playButton and playButton:IsA("GuiButton") then
+        if getconnections then
+            for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+                connection:Fire()
             end
         end
     end
@@ -61,6 +62,17 @@ local velocityConnection = nil
 local isHopperRunning = false
 
 -- [[ HELPER FUNCTIONS ]]
+
+-- Added missing getHistory function to prevent nil-call error
+local function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() 
+            return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) 
+        end)
+        return success and data or {}
+    end
+    return {}
+end
 
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
@@ -101,7 +113,7 @@ local function sendWebhook(title, message, color)
 end
 
 local function serverHop()
-    local history = getHistory() or {}
+    local history = getHistory()
     history[game.JobId] = os.time()
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
@@ -170,8 +182,8 @@ local function startStagedTween(targetPos)
         while (rootPart.Position - goalPos).Magnitude > 1 and not stopRequested do
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
-            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > tonumber(Fluent.Options.TweenDist.Value)) 
-                and (currentPos + (goalPos - currentPos).Unit * tonumber(Fluent.Options.TweenDist.Value)) or goalPos
+            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > (tonumber(Fluent.Options.TweenDist.Value) or 50)) 
+                and (currentPos + (goalPos - currentPos).Unit * (tonumber(Fluent.Options.TweenDist.Value) or 50)) or goalPos
             
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
             performTweenSegment(nextStep)
@@ -223,7 +235,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.4",
+    SubTitle = "V1.1.5",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -239,7 +251,6 @@ local Tabs = {
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
 
--- Logic: Manual Toggles do NOT auto-start the loop anymore
 HopperToggle:OnChanged(function()
     if HopperToggle.Value then
         Fluent:Notify({Title = "Hopper Ready", Content = "Loop enabled. Press 'Start' to begin hopping.", Duration = 3})
@@ -260,7 +271,6 @@ Tabs.Automation:AddButton({
     end
 })
 
--- Movement controls and manual scan preserved below...
 Tabs.Automation:AddSection("Manual Actions")
 Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
     local status, hp = findDevilHeart()
@@ -289,6 +299,10 @@ Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):O
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
+
+-- Added required ignore indexes to prevent config load from breaking persistent fields
+SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenDist", "TweenInterval", "TweenEasing"})
+
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
@@ -297,8 +311,7 @@ SaveManager:LoadAutoloadConfig()
 task.wait(0.5)
 isInitialized = true
 
--- LOGIC: Check if config loaded the toggle as ON
--- If it did, we start immediately, bypassing the manual Start button requirement.
+-- Start immediately if the loaded config has the hopper active
 if HopperToggle.Value then
     runHopperLogic()
 end
