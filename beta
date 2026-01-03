@@ -51,7 +51,7 @@ local function stopTween()
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if humanoid then
-        humanoid:ChangeState(Enum.HumanoidStateType.Landing)
+        humanoid:ChangeState(Enum.HumanoidStateType.Landed)
     end
 end
 
