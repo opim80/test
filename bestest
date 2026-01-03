@@ -5,13 +5,11 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 -- Services
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
-local PathfindingService = game:GetService("PathfindingService")
-local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
-local LocalPlayer = Players.LocalPlayer
 
 -- State Variables
 local webhookURL = ""
@@ -35,88 +33,62 @@ local function findDevilHeart()
     return nil
 end
 
--- Helper: Path Visualization
-local function visualizePath(waypoints)
-    local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
-    folder.Name = "PathVisuals"
-    folder:ClearAllChildren()
+-- Helper: Tween Movement
+local function tweenToHeart(targetPart)
+    local character = game.Players.LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
 
-    for _, waypoint in ipairs(waypoints) do
-        local part = Instance.new("Part")
-        part.Size = Vector3.new(0.5, 0.5, 0.5)
-        part.Position = waypoint.Position
-        part.Anchored = true
-        part.CanCollide = false
-        part.Material = Enum.Material.Neon
-        part.Color = Color3.fromRGB(0, 255, 0)
-        part.Shape = Enum.PartType.Ball
-        part.Parent = folder
-    end
-end
-
--- Helper: Move with Pathfinding
-local function collectHeart(targetPart)
-    local character = LocalPlayer.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    local easingStyle = Fluent.Options.TweenEasing.Value
     
-    local humanoid = character:FindFirstChild("Humanoid")
-    local rootPart = character.HumanoidRootPart
-    local destination = targetPart.Position
+    local distance = (rootPart.Position - targetPart.Position).Magnitude
+    -- Calculation: lower number = faster (speed * distance / 100)
+    local duration = (speed * distance) / 100
 
-    local path = PathfindingService:CreatePath({
-        AgentRadius = 2,
-        AgentHeight = 5,
-        AgentCanJump = true,
-        AgentWaypointSpacing = 3
-    })
+    local tweenInfo = TweenInfo.new(
+        duration, 
+        Enum.EasingStyle[easingStyle], 
+        Enum.EasingDirection.Out
+    )
 
-    local success, errorMessage = pcall(function()
-        path:ComputeAsync(rootPart.Position, destination)
-    end)
-
-    if success and path.Status == Enum.PathStatus.Success then
-        local waypoints = path:GetWaypoints()
-        visualizePath(waypoints)
-
-        for i, waypoint in ipairs(waypoints) do
-            -- Jump if required
-            if waypoint.Action == Enum.PathWaypointAction.Jump then
-                humanoid.Jump = true
-            end
-
-            humanoid:MoveTo(waypoint.Position)
-            
-            -- Wait until reached waypoint or timeout
-            local reached = humanoid.MoveToFinished:Wait(1) 
-            if not reached then
-                -- Re-check distance to waypoint to prevent getting stuck
-                if (rootPart.Position - waypoint.Position).Magnitude > 5 then
-                    humanoid.Jump = true -- Try to jump over obstacles
-                end
-            end
-        end
-        
-        -- Clean up visuals
-        if workspace:FindFirstChild("PathVisuals") then
-            workspace.PathVisuals:ClearAllChildren()
-        end
-    else
-        Fluent:Notify({Title = "Path Error", Content = "Could not find a walkable path to the heart.", Duration = 5})
-    end
+    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetPart.CFrame})
+    tween:Play()
 end
 
--- Helper: Server History/Webhook
+-- Helper: Send Discord Webhook
 local function sendWebhook(title, message, color)
     if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
-        local data = {["embeds"] = {{["title"] = title, ["description"] = message, ["color"] = color or 0x00ff00, ["timestamp"] = DateTime.now():ToIsoDate()}}}
+        local data = {
+            ["embeds"] = {{
+                ["title"] = title,
+                ["description"] = message,
+                ["color"] = color or 0x00ff00,
+                ["timestamp"] = DateTime.now():ToIsoDate()
+            }}
+        }
         pcall(function()
-            request({Url = webhookURL, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HttpService:JSONEncode(data)})
+            request({
+                Url = webhookURL,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(data)
+            })
         end)
     end
 end
 
+-- Helper: Server History
+local function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
+        return success and data or {}
+    end
+    return {}
+end
+
 local function serverHop()
-    local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
+    local history = getHistory()
     history[game.JobId] = os.time()
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
@@ -136,8 +108,8 @@ end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility v4.0 (Pathfinding)",
-    SubTitle = "Visualized Path Edition",
+    Title = "Devil Heart Utility",
+    SubTitle = "Tween Movement Edition",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -147,65 +119,128 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
-    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+    Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
 }
+
+-- [[ LOOP FUNCTION ]]
+local function startHopperLoop()
+    task.spawn(function()
+        while Fluent.Options.HopperToggle.Value do
+            local heart = findDevilHeart()
+
+            if heart then
+                if webhookEnabled then
+                    sendWebhook("✅ Devil Heart Found!", "Target detected in server: " .. game.JobId)
+                end
+                Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
+                Fluent.Options.HopperToggle:SetValue(false)
+                break
+            else
+                serverHop()
+            end
+            task.wait(10)
+        end
+    end)
+end
 
 -- [[ AUTOMATION TAB ]]
 Tabs.Automation:AddSection("Devil Heart Detector")
 
-local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop for Devil Heart", Default = false })
+local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Devil Heart Hopper", Default = false })
 
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
-    Description = "Begin searching servers",
+    Description = "Begin searching servers for a Devil Heart",
     Callback = function()
         if HopperToggle.Value then
-            task.spawn(function()
-                while HopperToggle.Value do
-                    local heart = findDevilHeart()
-                    if heart then
-                        if webhookEnabled then sendWebhook("✅ Found!", "Heart in: " .. game.JobId) end
-                        Fluent:Notify({Title = "Success", Content = "Found! Walking to heart...", Duration = 10})
-                        collectHeart(heart)
-                        HopperToggle:SetValue(false)
-                        break
-                    else
-                        serverHop()
-                    end
-                    task.wait(10)
-                end
-            end)
+            startHopperLoop()
+            Fluent:Notify({Title = "Hopper", Content = "Searching for Devil Heart...", Duration = 3})
+        else
+            Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
         end
     end
 })
 
 Tabs.Automation:AddButton({
-    Title = "Walk to Heart",
-    Description = "Uses Pathfinding to walk to the heart",
+    Title = "Check for Devil Heart",
+    Description = "Manually scan the current server",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            collectHeart(heart)
+            Fluent:Notify({Title = "Found!", Content = "A Devil Heart is currently in this server.", Duration = 5})
         else
-            Fluent:Notify({Title = "Error", Content = "No Devil Heart found in this server!", Duration = 3})
+            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected in this server.", Duration = 5})
         end
     end
 })
 
-Tabs.Automation:AddParagraph({
-    Title = "⚠️ Movement Info",
-    Content = "This version uses Roblox Pathfinding Service. It will navigate obstacles and visualize the path with green markers."
+Tabs.Automation:AddSection("Movement Settings")
+
+Tabs.Automation:AddInput("TweenSpeed", {
+    Title = "Tween Speed",
+    Description = "Lower = Faster",
+    Default = "0.5",
+    Numeric = true,
+    Finished = true,
+    Callback = function(Value) end
 })
 
--- [[ SETTINGS TAB ]]
-Tabs.Settings:AddSection("Webhook Settings")
-Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
-Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
+Tabs.Automation:AddDropdown("TweenEasing", {
+    Title = "Easing Style",
+    Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"},
+    Default = "Linear",
+    Callback = function(Value) end
+})
 
+Tabs.Automation:AddButton({
+    Title = "Tween to Heart",
+    Description = "Fly to the heart using current settings",
+    Callback = function()
+        local heart = findDevilHeart()
+        if heart then
+            tweenToHeart(heart)
+        else
+            Fluent:Notify({Title = "Error", Content = "No Devil Heart found in this server.", Duration = 3})
+        end
+    end
+})
+
+HopperToggle:OnChanged(function()
+    if HopperToggle.Value and not isInitialized then
+        startHopperLoop()
+    end
+end)
+
+-- [[ CONFIG & WEBHOOK TAB ]]
+Tabs.Settings:AddSection("Webhook Settings")
+
+Tabs.Settings:AddInput("WebhookURL", {
+    Title = "Webhook URL",
+    Default = "",
+    Callback = function(Value) webhookURL = Value end
+})
+
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(Value)
+    webhookEnabled = Value
+end)
+
+Tabs.Settings:AddSection("History Management")
+
+Tabs.Settings:AddButton({
+    Title = "Clear Server History",
+    Callback = function()
+        if isfile(SERVER_LOG_FILE) then
+            delfile(SERVER_LOG_FILE)
+            Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
+        end
+    end
+})
+
+-- [[ CONFIG MANAGEMENT ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({"WebhookURL"}) 
+SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenEasing"}) 
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
