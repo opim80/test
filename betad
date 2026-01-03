@@ -55,9 +55,9 @@ local function stopTween()
     end
 end
 
--- Helper: Tween Movement (IY Stealth Optimized)
+-- Helper: Tween Movement (Two-Phase Horizontal then Vertical)
 local function tweenToHeart(targetPart)
-    stopTween() -- Cancel any existing tween before starting
+    stopTween()
     
     local character = LocalPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -65,35 +65,45 @@ local function tweenToHeart(targetPart)
     if not rootPart then return end
 
     local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
-    local easingStyle = Fluent.Options.TweenEasing.Value
+    local easingStyle = Enum.EasingStyle[Fluent.Options.TweenEasing.Value or "Linear"]
     
-    local distance = (rootPart.Position - targetPart.Position).Magnitude
-    local duration = (speed * distance) / 100
-
-    local tweenInfo = TweenInfo.new(
-        duration, 
-        Enum.EasingStyle[easingStyle], 
-        Enum.EasingDirection.Out
-    )
-
-    -- IY Safety: Prevent physics-based flagging by killing velocity
+    -- Stealth Setup: Velocity Kill
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent then
-            rootPart.Velocity = Vector3.zero
-            rootPart.RotVelocity = Vector3.zero
+            rootPart.AssemblyLinearVelocity = Vector3.zero
+            rootPart.AssemblyAngularVelocity = Vector3.zero
         end
     end)
 
-    -- IY Safety: Disable state-based AC checks
     if humanoid then
         humanoid:ChangeState(Enum.HumanoidStateType.Physics)
     end
 
-    activeTween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetPart.CFrame})
+    -- PHASE 1: Horizontal Movement (Stay at current Y)
+    local startPos = rootPart.Position
+    local targetPos = targetPart.Position
+    local horizontalTarget = Vector3.new(targetPos.X, startPos.Y, targetPos.Z)
+    
+    local hDistance = (startPos - horizontalTarget).Magnitude
+    local hDuration = (speed * hDistance) / 100
+
+    local hTweenInfo = TweenInfo.new(hDuration, easingStyle, Enum.EasingDirection.Out)
+    activeTween = TweenService:Create(rootPart, hTweenInfo, {CFrame = CFrame.new(horizontalTarget)})
     activeTween:Play()
     
     activeTween.Completed:Connect(function()
-        stopTween()
+        -- PHASE 2: Vertical Movement (Final adjustment to Heart Y)
+        local currentPos = rootPart.Position
+        local vDistance = math.abs(currentPos.Y - targetPos.Y)
+        local vDuration = (speed * vDistance) / 100
+        
+        local vTweenInfo = TweenInfo.new(vDuration, easingStyle, Enum.EasingDirection.Out)
+        activeTween = TweenService:Create(rootPart, vTweenInfo, {CFrame = targetPart.CFrame})
+        activeTween:Play()
+        
+        activeTween.Completed:Connect(function()
+            stopTween()
+        end)
     end)
 end
 
@@ -149,8 +159,8 @@ end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility",
-    SubTitle = "v5.1.1 Stealth Edition",
+    Title = "Devil Heart Utility | 5.1.2",
+    SubTitle = "v5.2.0 Stealth & Safety",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -168,11 +178,8 @@ local function startHopperLoop()
     task.spawn(function()
         while Fluent.Options.HopperToggle.Value do
             local heart = findDevilHeart()
-
             if heart then
-                if webhookEnabled then
-                    sendWebhook("✅ Devil Heart Found!", "Target detected in server: " .. game.JobId)
-                end
+                if webhookEnabled then sendWebhook("✅ Devil Heart Found!", "Target detected in server: " .. game.JobId) end
                 Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
@@ -233,6 +240,7 @@ Tabs.Automation:AddDropdown("TweenEasing", {
 
 Tabs.Automation:AddButton({
     Title = "Tween to Heart",
+    Description = "Phased Movement: Horizontal -> Vertical",
     Callback = function()
         local heart = findDevilHeart()
         if heart then tweenToHeart(heart) else 
@@ -257,15 +265,14 @@ Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = fa
 Tabs.Settings:AddSection("Utility")
 Tabs.Settings:AddButton({
     Title = "Anti-AFK",
-    Description = "Prevents idle disconnection",
     Callback = function()
         local vu = game:GetService("VirtualUser")
         LocalPlayer.Idled:Connect(function()
-            vu:Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+            vu:Button2Down(Vector2.zero, workspace.CurrentCamera.CFrame)
             task.wait(1)
-            vu:Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+            vu:Button2Up(Vector2.zero, workspace.CurrentCamera.CFrame)
         end)
-        Fluent:Notify({Title = "Anti-AFK", Content = "Anti-AFK is now active.", Duration = 3})
+        Fluent:Notify({Title = "Anti-AFK", Content = "Active.", Duration = 3})
     end
 })
 
