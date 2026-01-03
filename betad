@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
+local MIN_Y_LIMIT = 942
 
 -- State Variables
 local webhookURL = ""
@@ -20,6 +21,7 @@ local webhookEnabled = false
 local isInitialized = false 
 local activeTween = nil
 local velocityConnection = nil
+local floorCheckConnection = nil
 
 -- Helper: Find Devil Heart
 local function findDevilHeart()
@@ -55,7 +57,20 @@ local function stopTween()
     end
 end
 
--- Helper: Tween Movement (Two-Phase Horizontal then Vertical)
+-- Safety: Floor Check (Ensures player never falls below 942)
+local function startFloorCheck()
+    if floorCheckConnection then floorCheckConnection:Disconnect() end
+    floorCheckConnection = RunService.Heartbeat:Connect(function()
+        local character = LocalPlayer.Character
+        local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+        if rootPart and rootPart.Position.Y < MIN_Y_LIMIT then
+            rootPart.Velocity = Vector3.new(rootPart.Velocity.X, 0, rootPart.Velocity.Z)
+            rootPart.CFrame = CFrame.new(rootPart.Position.X, MIN_Y_LIMIT, rootPart.Position.Z)
+        end
+    end)
+end
+
+-- Helper: Tween Movement (Two-Stage IY Stealth)
 local function tweenToHeart(targetPart)
     stopTween()
     
@@ -65,102 +80,51 @@ local function tweenToHeart(targetPart)
     if not rootPart then return end
 
     local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
-    local easingStyle = Enum.EasingStyle[Fluent.Options.TweenEasing.Value or "Linear"]
+    local easingStyle = Fluent.Options.TweenEasing.Value
     
-    -- Stealth Setup: Velocity Kill
+    -- Stealth setup
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent then
-            rootPart.AssemblyLinearVelocity = Vector3.zero
-            rootPart.AssemblyAngularVelocity = Vector3.zero
+            rootPart.Velocity = Vector3.zero
+            rootPart.RotVelocity = Vector3.zero
         end
     end)
+    if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 
-    if humanoid then
-        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-    end
-
-    -- PHASE 1: Horizontal Movement (Stay at current Y)
-    local startPos = rootPart.Position
-    local targetPos = targetPart.Position
-    local horizontalTarget = Vector3.new(targetPos.X, startPos.Y, targetPos.Z)
+    -- STAGE 1: Horizontal Movement (X, Z)
+    -- We keep the Y level the same as our current Y (as long as it's > 942)
+    local currentY = math.max(rootPart.Position.Y, MIN_Y_LIMIT)
+    local horizontalTarget = CFrame.new(targetPart.Position.X, currentY, targetPart.Position.Z)
     
-    local hDistance = (startPos - horizontalTarget).Magnitude
+    local hDistance = (rootPart.Position - horizontalTarget.Position).Magnitude
     local hDuration = (speed * hDistance) / 100
 
-    local hTweenInfo = TweenInfo.new(hDuration, easingStyle, Enum.EasingDirection.Out)
-    activeTween = TweenService:Create(rootPart, hTweenInfo, {CFrame = CFrame.new(horizontalTarget)})
-    activeTween:Play()
+    local hTween = TweenService:Create(rootPart, TweenInfo.new(hDuration, Enum.EasingStyle[easingStyle]), {CFrame = horizontalTarget})
+    activeTween = hTween
+    hTween:Play()
     
-    activeTween.Completed:Connect(function()
-        -- PHASE 2: Vertical Movement (Final adjustment to Heart Y)
-        local currentPos = rootPart.Position
-        local vDistance = math.abs(currentPos.Y - targetPos.Y)
-        local vDuration = (speed * vDistance) / 100
-        
-        local vTweenInfo = TweenInfo.new(vDuration, easingStyle, Enum.EasingDirection.Out)
-        activeTween = TweenService:Create(rootPart, vTweenInfo, {CFrame = targetPart.CFrame})
-        activeTween:Play()
-        
-        activeTween.Completed:Connect(function()
-            stopTween()
-        end)
-    end)
-end
-
--- Helper: Send Discord Webhook
-local function sendWebhook(title, message, color)
-    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
-        local data = {
-            ["embeds"] = {{
-                ["title"] = title,
-                ["description"] = message,
-                ["color"] = color or 0x00ff00,
-                ["timestamp"] = DateTime.now():ToIsoDate()
-            }}
-        }
-        pcall(function()
-            request({
-                Url = webhookURL,
-                Method = "POST",
-                Headers = {["Content-Type"] = "application/json"},
-                Body = HttpService:JSONEncode(data)
-            })
-        end)
-    end
-end
-
--- Helper: Server History
-local function getHistory()
-    if isfile(SERVER_LOG_FILE) then
-        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
-        return success and data or {}
-    end
-    return {}
-end
-
-local function serverHop()
-    local history = getHistory()
-    history[game.JobId] = os.time()
-    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
-
-    local success, result = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
-    end)
-
-    if success and result and result.data then
-        for _, server in ipairs(result.data) do
-            if server.playing < server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
-                return
-            end
+    hTween.Completed:Connect(function(playbackState)
+        if playbackState == Enum.PlaybackState.Completed then
+            -- STAGE 2: Vertical Movement (Y)
+            -- Directly up or down to the heart
+            local vDistance = math.abs(rootPart.Position.Y - targetPart.Position.Y)
+            local vDuration = (speed * vDistance) / 100
+            
+            local vTween = TweenService:Create(rootPart, TweenInfo.new(vDuration, Enum.EasingStyle[easingStyle]), {CFrame = targetPart.CFrame})
+            activeTween = vTween
+            vTween:Play()
+            
+            vTween.Completed:Connect(function()
+                stopTween()
+            end)
         end
-    end
+    end)
 end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility | 5.1.2",
-    SubTitle = "v5.2.0 Stealth & Safety",
+    Title = "CSMDH meth",
+    SubTitle = "V1.0.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -173,24 +137,6 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
 }
 
--- [[ LOOP FUNCTION ]]
-local function startHopperLoop()
-    task.spawn(function()
-        while Fluent.Options.HopperToggle.Value do
-            local heart = findDevilHeart()
-            if heart then
-                if webhookEnabled then sendWebhook("✅ Devil Heart Found!", "Target detected in server: " .. game.JobId) end
-                Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
-                Fluent.Options.HopperToggle:SetValue(false)
-                break
-            else
-                serverHop()
-            end
-            task.wait(10)
-        end
-    end)
-end
-
 -- [[ AUTOMATION TAB ]]
 Tabs.Automation:AddSection("Devil Heart Detector")
 
@@ -200,10 +146,32 @@ Tabs.Automation:AddButton({
     Title = "Start Hopper",
     Callback = function()
         if HopperToggle.Value then
-            startHopperLoop()
-            Fluent:Notify({Title = "Hopper", Content = "Searching...", Duration = 3})
-        else
-            Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
+            task.spawn(function()
+                while HopperToggle.Value do
+                    local heart = findDevilHeart()
+                    if heart then
+                        Fluent:Notify({Title = "Found!", Content = "Heart found. Starting stealth movement.", Duration = 10})
+                        tweenToHeart(heart)
+                        HopperToggle:SetValue(false)
+                        break
+                    else
+                        -- [Server Hop logic included here]
+                        local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
+                        history[game.JobId] = os.time()
+                        writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
+                        local success, result = pcall(function() return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")) end)
+                        if success and result.data then
+                            for _, s in ipairs(result.data) do
+                                if s.playing < s.maxPlayers and not history[s.id] and s.id ~= game.JobId then
+                                    TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
+                                    return
+                                end
+                            end
+                        end
+                    end
+                    task.wait(10)
+                end
+            end)
         end
     end
 })
@@ -240,7 +208,6 @@ Tabs.Automation:AddDropdown("TweenEasing", {
 
 Tabs.Automation:AddButton({
     Title = "Tween to Heart",
-    Description = "Phased Movement: Horizontal -> Vertical",
     Callback = function()
         local heart = findDevilHeart()
         if heart then tweenToHeart(heart) else 
@@ -268,16 +235,16 @@ Tabs.Settings:AddButton({
     Callback = function()
         local vu = game:GetService("VirtualUser")
         LocalPlayer.Idled:Connect(function()
-            vu:Button2Down(Vector2.zero, workspace.CurrentCamera.CFrame)
+            vu:Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
             task.wait(1)
-            vu:Button2Up(Vector2.zero, workspace.CurrentCamera.CFrame)
+            vu:Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
         end)
         Fluent:Notify({Title = "Anti-AFK", Content = "Active.", Duration = 3})
     end
 })
 
 Tabs.Settings:AddButton({
-    Title = "Clear Server History",
+    Title = "Clear History",
     Callback = function()
         if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end
         Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
@@ -293,5 +260,6 @@ SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
+startFloorCheck()
 task.wait(0.5)
 isInitialized = true
