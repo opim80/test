@@ -1,0 +1,290 @@
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- Services
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+
+-- Constants
+local MESH_ID_TARGET = "rbxassetid://12439777368"
+local SERVER_LOG_FILE = "fluent_server_history.json"
+local LocalPlayer = Players.LocalPlayer
+
+-- State Variables
+local webhookURL = ""
+local webhookEnabled = false
+local isInitialized = false 
+local activeTween = nil
+local velocityConnection = nil
+
+-- Helper: Find Devil Heart
+local function findDevilHeart()
+    local map = workspace:FindFirstChild("map")
+    local rokyos = map and map:FindFirstChild("Rokyo")
+    
+    if rokyos then
+        for _, object in ipairs(rokyos:GetChildren()) do
+            if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
+                if object:FindFirstChildOfClass("PointLight") then
+                    return object
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Helper: Stop Active Tween
+local function stopTween()
+    if activeTween then
+        activeTween:Cancel()
+        activeTween = nil
+    end
+    if velocityConnection then
+        velocityConnection:Disconnect()
+        velocityConnection = nil
+    end
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+    end
+end
+
+-- Helper: Tween Movement (IY Stealth Optimized)
+local function tweenToHeart(targetPart)
+    stopTween() -- Cancel any existing tween before starting
+    
+    local character = LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not rootPart then return end
+
+    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    local easingStyle = Fluent.Options.TweenEasing.Value
+    
+    local distance = (rootPart.Position - targetPart.Position).Magnitude
+    local duration = (speed * distance) / 100
+
+    local tweenInfo = TweenInfo.new(
+        duration, 
+        Enum.EasingStyle[easingStyle], 
+        Enum.EasingDirection.Out
+    )
+
+    -- IY Safety: Prevent physics-based flagging by killing velocity
+    velocityConnection = RunService.Stepped:Connect(function()
+        if rootPart and rootPart.Parent then
+            rootPart.Velocity = Vector3.zero
+            rootPart.RotVelocity = Vector3.zero
+        end
+    end)
+
+    -- IY Safety: Disable state-based AC checks
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+    end
+
+    activeTween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetPart.CFrame})
+    activeTween:Play()
+    
+    activeTween.Completed:Connect(function()
+        stopTween()
+    end)
+end
+
+-- Helper: Send Discord Webhook
+local function sendWebhook(title, message, color)
+    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+        local data = {
+            ["embeds"] = {{
+                ["title"] = title,
+                ["description"] = message,
+                ["color"] = color or 0x00ff00,
+                ["timestamp"] = DateTime.now():ToIsoDate()
+            }}
+        }
+        pcall(function()
+            request({
+                Url = webhookURL,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(data)
+            })
+        end)
+    end
+end
+
+-- Helper: Server History
+local function getHistory()
+    if isfile(SERVER_LOG_FILE) then
+        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
+        return success and data or {}
+    end
+    return {}
+end
+
+local function serverHop()
+    local history = getHistory()
+    history[game.JobId] = os.time()
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
+
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
+    end)
+
+    if success and result and result.data then
+        for _, server in ipairs(result.data) do
+            if server.playing < server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
+                return
+            end
+        end
+    end
+end
+
+-- Create Window
+local Window = Fluent:CreateWindow({
+    Title = "Devil Heart Utility",
+    SubTitle = "v5.1.1 Stealth Edition",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true, 
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+local Tabs = {
+    Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
+    Settings = Window:AddTab({ Title = "Config & Webhooks", Icon = "settings" })
+}
+
+-- [[ LOOP FUNCTION ]]
+local function startHopperLoop()
+    task.spawn(function()
+        while Fluent.Options.HopperToggle.Value do
+            local heart = findDevilHeart()
+
+            if heart then
+                if webhookEnabled then
+                    sendWebhook("✅ Devil Heart Found!", "Target detected in server: " .. game.JobId)
+                end
+                Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
+                Fluent.Options.HopperToggle:SetValue(false)
+                break
+            else
+                serverHop()
+            end
+            task.wait(10)
+        end
+    end)
+end
+
+-- [[ AUTOMATION TAB ]]
+Tabs.Automation:AddSection("Devil Heart Detector")
+
+local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Devil Heart Hopper", Default = false })
+
+Tabs.Automation:AddButton({
+    Title = "Start Hopper",
+    Callback = function()
+        if HopperToggle.Value then
+            startHopperLoop()
+            Fluent:Notify({Title = "Hopper", Content = "Searching...", Duration = 3})
+        else
+            Fluent:Notify({Title = "Error", Content = "Enable the toggle first!", Duration = 3})
+        end
+    end
+})
+
+Tabs.Automation:AddButton({
+    Title = "Check for Devil Heart",
+    Callback = function()
+        local heart = findDevilHeart()
+        if heart then
+            Fluent:Notify({Title = "Found!", Content = "A Devil Heart is in this server.", Duration = 5})
+        else
+            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected.", Duration = 5})
+        end
+    end
+})
+
+Tabs.Automation:AddSection("Movement Settings")
+
+Tabs.Automation:AddInput("TweenSpeed", {
+    Title = "Tween Speed",
+    Description = "Lower = Faster",
+    Default = "0.5",
+    Numeric = true,
+    Finished = true,
+    Callback = function() end
+})
+
+Tabs.Automation:AddDropdown("TweenEasing", {
+    Title = "Easing Style",
+    Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"},
+    Default = "Linear",
+    Callback = function() end
+})
+
+Tabs.Automation:AddButton({
+    Title = "Tween to Heart",
+    Callback = function()
+        local heart = findDevilHeart()
+        if heart then tweenToHeart(heart) else 
+            Fluent:Notify({Title = "Error", Content = "No heart found.", Duration = 3}) 
+        end
+    end
+})
+
+Tabs.Automation:AddButton({
+    Title = "Stop Tween",
+    Callback = function()
+        stopTween()
+        Fluent:Notify({Title = "Movement", Content = "Tween Cancelled.", Duration = 3})
+    end
+})
+
+-- [[ SETTINGS TAB ]]
+Tabs.Settings:AddSection("Webhook Settings")
+Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
+
+Tabs.Settings:AddSection("Utility")
+Tabs.Settings:AddButton({
+    Title = "Anti-AFK",
+    Description = "Prevents idle disconnection",
+    Callback = function()
+        local vu = game:GetService("VirtualUser")
+        LocalPlayer.Idled:Connect(function()
+            vu:Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+            task.wait(1)
+            vu:Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame)
+        end)
+        Fluent:Notify({Title = "Anti-AFK", Content = "Anti-AFK is now active.", Duration = 3})
+    end
+})
+
+Tabs.Settings:AddButton({
+    Title = "Clear Server History",
+    Callback = function()
+        if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end
+        Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
+    end
+})
+
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenEasing"}) 
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
+SaveManager:LoadAutoloadConfig()
+task.wait(0.5)
+isInitialized = true
