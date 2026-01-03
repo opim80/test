@@ -14,6 +14,7 @@ local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 942
+local DUMPSTER_Y_LIMIT = 940
 
 -- State Variables
 local webhookURL = ""
@@ -31,14 +32,20 @@ local function findDevilHeart()
         for _, object in ipairs(rokyos:GetChildren()) do
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
                 if object:FindFirstChildOfClass("PointLight") then 
-                    -- Grabbing the CFrame and isolating the Position vector
                     local cf = object.CFrame
-                    return Vector3.new(cf.X, cf.Y, cf.Z), object
+                    local pos = Vector3.new(cf.X, cf.Y, cf.Z)
+                    
+                    -- Check if Dumpster Heart
+                    if pos.Y < DUMPSTER_Y_LIMIT then
+                        return "dumpster", pos
+                    end
+                    
+                    return "valid", pos
                 end
             end
         end
     end
-    return nil
+    return nil, nil
 end
 
 -- Helper: Send Discord Webhook
@@ -132,7 +139,6 @@ local function startStagedTween(targetPos)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
-    -- IY Safety/Spoofing
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent then
             rootPart.Velocity = Vector3.new(0, -0.01, 0)
@@ -194,9 +200,14 @@ Tabs.Automation:AddButton({
         if HopperToggle.Value then
             task.spawn(function()
                 while Fluent.Options.HopperToggle.Value do
-                    local heartPos = findDevilHeart()
-                    if heartPos then
-                        if webhookEnabled then sendWebhook("✅ Heart Found!", "Server: " .. game.JobId) end
+                    local status, heartPos = findDevilHeart()
+                    
+                    if status == "dumpster" then
+                        if webhookEnabled then sendWebhook("🗑️ Dumpster Heart Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000) end
+                        Fluent:Notify({Title = "Dumpster Heart", Content = "Heart is below Y940. Ignoring and hopping...", Duration = 5})
+                        serverHop()
+                    elseif status == "valid" then
+                        if webhookEnabled then sendWebhook("✅ Valid Heart Found!", "Server: " .. game.JobId) end
                         Fluent:Notify({Title = "Found!", Content = "Executing movement..."})
                         startStagedTween(heartPos)
                         Fluent.Options.HopperToggle:SetValue(false)
@@ -214,14 +225,27 @@ Tabs.Automation:AddButton({
 Tabs.Automation:AddButton({
     Title = "Check Server",
     Callback = function()
-        local heartPos = findDevilHeart()
-        Fluent:Notify({Title = heartPos and "Found!" or "Not Found", Content = heartPos and ("Devil Heart Pos: " .. tostring(heartPos)) or "No heart detected."})
+        local status, heartPos = findDevilHeart()
+        if status == "dumpster" then
+            Fluent:Notify({Title = "Dumpster Found", Content = "Heart detected but it's below Y940. Manual tween disabled.", Duration = 5})
+        elseif status == "valid" then
+            Fluent:Notify({Title = "Valid Heart Found!", Content = "Position: " .. tostring(heartPos)})
+        else
+            Fluent:Notify({Title = "Not Found", Content = "No heart detected."})
+        end
     end
 })
 
 Tabs.Automation:AddSection("Movement Commands")
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
-    local hp = findDevilHeart() if hp then startStagedTween(hp) else Fluent:Notify({Title="Error", Content="No heart."}) end 
+    local status, hp = findDevilHeart() 
+    if status == "valid" then 
+        startStagedTween(hp) 
+    elseif status == "dumpster" then
+        Fluent:Notify({Title = "Blocked", Content = "Cannot tween to a dumpster heart (Below Y940).", Duration = 3})
+    else 
+        Fluent:Notify({Title="Error", Content="No heart."}) 
+    end 
 end})
 Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
 
