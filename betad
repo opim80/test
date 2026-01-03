@@ -1,3 +1,8 @@
+--[[
+    CSMDH meth | V1.0.0
+    Integrated with ACBait detection and Discord Webhooks.
+]]
+
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
@@ -14,7 +19,7 @@ local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 942
-local AC_BAIT_Y_LIMIT = 940
+local AC_BAIT_Y_LIMIT = 940 -- Anything below this is considered ACBait
 
 -- State Variables
 local webhookURL = ""
@@ -24,7 +29,9 @@ local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
 
--- Helper: Find Devil Heart and Extract Position
+-- [[ HELPER FUNCTIONS ]]
+
+-- Helper: Find Heart and classify based on Y-Level
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
@@ -35,9 +42,9 @@ local function findDevilHeart()
                     local cf = object.CFrame
                     local pos = Vector3.new(cf.X, cf.Y, cf.Z)
                     
-                    -- Check if ACBait Heart
+                    -- Check if ACBait (Safety Check)
                     if pos.Y < AC_BAIT_Y_LIMIT then
-                        return "acbait", pos
+                        return "ACBait", pos
                     end
                     
                     return "valid", pos
@@ -50,7 +57,7 @@ end
 
 -- Helper: Send Discord Webhook
 local function sendWebhook(title, message, color)
-    if webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+    if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
         local data = {
             ["embeds"] = {{
                 ["title"] = title,
@@ -70,7 +77,7 @@ local function sendWebhook(title, message, color)
     end
 end
 
--- Helper: Server History & Hopping
+-- Helper: Server History & Hopping Logic
 local function getHistory()
     if isfile(SERVER_LOG_FILE) then
         local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
@@ -98,7 +105,8 @@ local function serverHop()
     end
 end
 
--- Improved Stop Logic
+-- [[ MOVEMENT ENGINE ]]
+
 local function stopTween()
     stopRequested = true
     for _, t in ipairs(activeTweens) do
@@ -111,7 +119,6 @@ local function stopTween()
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
 end
 
--- Helper: Perform Single Segment
 local function performTweenSegment(targetPos)
     if stopRequested then return end
     local character = LocalPlayer.Character
@@ -131,7 +138,6 @@ local function performTweenSegment(targetPos)
     tween.Completed:Wait()
 end
 
--- Master Movement Logic
 local function startStagedTween(targetPos)
     stopRequested = false
     local character = LocalPlayer.Character
@@ -139,6 +145,7 @@ local function startStagedTween(targetPos)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
+    -- Anti-Cheat Velocity Spoofing
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent then
             rootPart.Velocity = Vector3.new(0, -0.01, 0)
@@ -158,6 +165,7 @@ local function startStagedTween(targetPos)
             local dist = (currentPos - goalPos).Magnitude
             local nextStep = (useSegments and dist > maxDist) and (currentPos + (goalPos - currentPos).Unit * maxDist) or goalPos
             
+            -- Ensure player stays above death/flag zones
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
 
             performTweenSegment(nextStep)
@@ -175,7 +183,8 @@ local function startStagedTween(targetPos)
     stopTween()
 end
 
--- Create Window
+-- [[ UI INITIALIZATION ]]
+
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
     SubTitle = "V1.0.0",
@@ -191,7 +200,7 @@ local Tabs = {
 }
 
 -- [[ AUTOMATION TAB ]]
-Tabs.Automation:AddSection("Devil Heart Detector")
+Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
 
 Tabs.Automation:AddButton({
@@ -202,13 +211,13 @@ Tabs.Automation:AddButton({
                 while Fluent.Options.HopperToggle.Value do
                     local status, heartPos = findDevilHeart()
                     
-                    if status == "acbait" then
-                        if webhookEnabled then sendWebhook("⚠️ ACBait Heart Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000) end
-                        Fluent:Notify({Title = "ACBait Heart", Content = "Heart is below Y940. Ignoring and hopping...", Duration = 5})
+                    if status == "ACBait" then
+                        sendWebhook("⚠️ ACBait Heart Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000)
+                        Fluent:Notify({Title = "ACBait Detected", Content = "Heart is below Y940. Skipping server...", Duration = 5})
                         serverHop()
                     elseif status == "valid" then
-                        if webhookEnabled then sendWebhook("✅ Valid Heart Found!", "Server: " .. game.JobId) end
-                        Fluent:Notify({Title = "Success", Content = "Devil Heart Found! Hopping stopped.", Duration = 10})
+                        sendWebhook("✅ Valid Heart Found!", "Target detected in server: " .. game.JobId)
+                        Fluent:Notify({Title = "Success", Content = "Valid Heart Found! Moving now."})
                         startStagedTween(heartPos)
                         Fluent.Options.HopperToggle:SetValue(false)
                         break
@@ -224,28 +233,27 @@ Tabs.Automation:AddButton({
 
 Tabs.Automation:AddButton({
     Title = "Check Server",
-    Description = "Manually scan for a Devil Heart",
     Callback = function()
         local status, heartPos = findDevilHeart()
-        if status == "acbait" then
-            Fluent:Notify({Title = "ACBait Found", Content = "Heart detected but it's below Y940. Manual tween disabled.", Duration = 5})
+        if status == "ACBait" then
+            Fluent:Notify({Title = "ACBait Found", Content = "Heart detected but it's dangerously low (Below Y940).", Duration = 5})
         elseif status == "valid" then
-            Fluent:Notify({Title = "Valid Heart Found!", Content = "A Devil Heart is currently in this server. Position: " .. tostring(heartPos), Duration = 5})
+            Fluent:Notify({Title = "Valid Heart Found!", Content = "Position: " .. tostring(heartPos)})
         else
-            Fluent:Notify({Title = "Not Found", Content = "No Devil Heart detected in this server.", Duration = 5})
+            Fluent:Notify({Title = "Not Found", Content = "No heart detected in this server."})
         end
     end
 })
 
-Tabs.Automation:AddSection("Movement Commands")
+Tabs.Automation:AddSection("Manual Movement")
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
     local status, hp = findDevilHeart() 
     if status == "valid" then 
         startStagedTween(hp) 
-    elseif status == "acbait" then
-        Fluent:Notify({Title = "Blocked", Content = "Cannot tween to an ACBait heart (Below Y940).", Duration = 3})
+    elseif status == "ACBait" then
+        Fluent:Notify({Title = "Blocked", Content = "Manual tween blocked: ACBait heart detected.", Duration = 3})
     else 
-        Fluent:Notify({Title="Error", Content="No heart found in this server."}) 
+        Fluent:Notify({Title="Error", Content="No heart found to tween to."}) 
     end 
 end})
 Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
@@ -256,44 +264,32 @@ Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y", Default = fals
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Use Segments", Default = false})
 
 Tabs.Settings:AddSection("Tween Parameters")
-Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed (Lower=Faster)", Default = "0.5", Numeric = true})
+Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed", Default = "0.5", Numeric = true})
 Tabs.Settings:AddInput("TweenDist", {Title = "Segment Distance", Default = "50", Numeric = true})
-Tabs.Settings:AddSlider("TweenInterval", {Title = "Wait Interval (s)", Default = 2, Min = 0.1, Max = 60, Rounding = 1})
-Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Linear", "Quad", "Sine", "Cubic", "Quart", "Quint"}, Default = "Linear"})
+Tabs.Settings:AddSlider("TweenInterval", {Title = "Interval (s)", Default = 2, Min = 0.1, Max = 60, Rounding = 1})
+Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Linear", "Quad", "Sine", "Cubic"}, Default = "Linear"})
 
-Tabs.Settings:AddSection("Webhook Settings")
-Tabs.Settings:AddInput("WebhookURL", {Title = "Webhook URL", Default = "", Callback = function(v) webhookURL = v end})
-Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable Webhook", Default = false }):OnChanged(function(v) webhookEnabled = v end)
+Tabs.Settings:AddSection("Discord Webhooks")
+Tabs.Settings:AddInput("WebhookURL", {Title = "URL", Default = "", Callback = function(v) webhookURL = v end})
+Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):OnChanged(function(v) webhookEnabled = v end)
 Tabs.Settings:AddButton({
     Title = "Test Webhook",
     Callback = function()
-        sendWebhook("Test Webhook", "This is a test message from CSMDH meth.")
+        sendWebhook("Test Webhook", "Connectivity check for CSMDH meth.")
     end
 })
 
-Tabs.Settings:AddSection("History & Utility")
-Tabs.Settings:AddButton({
-    Title = "Clear Server History",
-    Callback = function() 
-        if isfile(SERVER_LOG_FILE) then 
-            delfile(SERVER_LOG_FILE) 
-            Fluent:Notify({Title = "Success", Content = "History cleared.", Duration = 3})
-        end 
-    end
-})
-Tabs.Settings:AddButton({
-    Title = "Anti-AFK",
-    Callback = function()
-        LocalPlayer.Idled:Connect(function() 
-            game:GetService("VirtualUser"):Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame) 
-            task.wait(1) 
-            game:GetService("VirtualUser"):Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame) 
-        end)
-        Fluent:Notify({Title = "Anti-AFK", Content = "Active", Duration = 3})
-    end
-})
+Tabs.Settings:AddSection("Utility")
+Tabs.Settings:AddButton({Title = "Clear History", Callback = function() if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end end})
+Tabs.Settings:AddButton({Title = "Anti-AFK", Callback = function()
+    LocalPlayer.Idled:Connect(function() game:GetService("VirtualUser"):Button2Down(Vector2.new(0,0),workspace.CurrentCamera.CFrame) task.wait(1) game:GetService("VirtualUser"):Button2Up(Vector2.new(0,0),workspace.CurrentCamera.CFrame) end)
+end})
 
+-- [[ FINALIZE ]]
 SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"WebhookURL", "TweenSpeed", "TweenDist", "TweenInterval", "TweenEasing"}) 
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
