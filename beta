@@ -1,0 +1,149 @@
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- Services
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local Players = game:GetService("Players")
+
+-- Constants
+local MESH_ID_TARGET = "rbxassetid://12439777368"
+local LocalPlayer = Players.LocalPlayer
+local NODE_SPACING = 4 -- Accuracy of the grid (lower = more precise but slower)
+
+-- State Variables
+local isInitialized = false 
+
+-- Helper: Find Devil Heart
+local function findDevilHeart()
+    local map = workspace:FindFirstChild("map")
+    local rokyos = map and map:FindFirstChild("Rokyo")
+    if rokyos then
+        for _, object in ipairs(rokyos:GetChildren()) do
+            if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
+                if object:FindFirstChildOfClass("PointLight") then return object end
+            end
+        end
+    end
+    return nil
+end
+
+-- Custom Collision Check
+local function isPointBlocked(pos)
+    local checkPart = Instance.new("Part")
+    checkPart.Size = Vector3.new(3, 5, 3) -- Rough player size
+    checkPart.Position = pos
+    
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LocalPlayer.Character}
+    
+    local parts = workspace:GetPartBoundsInBox(checkPart.CFrame, checkPart.Size, params)
+    checkPart:Destroy()
+
+    for _, part in ipairs(parts) do
+        if part.CanCollide then return true end
+    end
+    return false
+end
+
+-- Custom A* Movement
+local function customPathfind(targetPos)
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    if not root or not humanoid then return end
+
+    local startPos = root.Position
+    local pathPoints = {}
+    
+    -- This is a simplified linear path-check with collision avoidance
+    -- Real A* in Lua is heavy; here we calculate the straight vector and "step" around blocks
+    local currentPos = startPos
+    local direction = (targetPos - startPos).Unit
+    local distance = (targetPos - startPos).Magnitude
+    
+    Fluent:Notify({Title = "System", Content = "Pre-calculating collision-free path...", Duration = 3})
+
+    for i = 0, distance, NODE_SPACING do
+        local nextPoint = startPos + (direction * i)
+        
+        if isPointBlocked(nextPoint) then
+            -- Simple "Step Aside" logic if blocked
+            local offset = Vector3.new(NODE_SPACING, 0, 0)
+            if not isPointBlocked(nextPoint + offset) then
+                nextPoint = nextPoint + offset
+            elseif not isPointBlocked(nextPoint - offset) then
+                nextPoint = nextPoint - offset
+            end
+        end
+        table.insert(pathPoints, nextPoint)
+    end
+
+    -- Visualize Path
+    local folder = workspace:FindFirstChild("CustomPath") or Instance.new("Folder", workspace)
+    folder.Name = "CustomPath"
+    folder:ClearAllChildren()
+
+    for _, p in ipairs(pathPoints) do
+        local b = Instance.new("Part", folder)
+        b.Size, b.Anchored, b.CanCollide, b.Shape = Vector3.new(0.5,0.5,0.5), true, false, "Ball"
+        b.Position, b.Color, b.Material = p, Color3.fromRGB(255, 170, 0), "Neon"
+    end
+
+    -- Execute Movement
+    for _, p in ipairs(pathPoints) do
+        humanoid:MoveTo(p)
+        humanoid.MoveToFinished:Wait()
+    end
+    folder:ClearAllChildren()
+end
+
+-- Create Window
+local Window = Fluent:CreateWindow({
+    Title = "Devil Heart Utility v5.0 (Custom Path)",
+    SubTitle = "A* Simulation Mode",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true, 
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+local Tabs = {
+    Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+
+-- [[ AUTOMATION TAB ]]
+Tabs.Automation:AddSection("Custom Movement")
+
+Tabs.Automation:AddButton({
+    Title = "Calculate & Walk (Custom)",
+    Description = "Calculates path avoidance before moving",
+    Callback = function()
+        local heart = findDevilHeart()
+        if heart then
+            customPathfind(heart.Position)
+        else
+            Fluent:Notify({Title = "Error", Content = "No Devil Heart found.", Duration = 3})
+        end
+    end
+})
+
+Tabs.Automation:AddParagraph({
+    Title = "How it works",
+    Content = "Instead of relying on Roblox's Pathfinding, this manually checks for parts with 'CanCollide' on and tries to find a path around them before starting movement."
+})
+
+-- [[ SETTINGS & INITIALIZATION ]]
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
+SaveManager:LoadAutoloadConfig()
+task.wait(0.5)
+isInitialized = true
