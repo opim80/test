@@ -23,14 +23,18 @@ local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
 
--- Helper: Find Devil Heart
+-- Helper: Find Devil Heart and Extract Position
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
     if rokyos then
         for _, object in ipairs(rokyos:GetChildren()) do
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
-                if object:FindFirstChildOfClass("PointLight") then return object end
+                if object:FindFirstChildOfClass("PointLight") then 
+                    -- Grabbing the CFrame and isolating the Position vector
+                    local cf = object.CFrame
+                    return Vector3.new(cf.X, cf.Y, cf.Z), object
+                end
             end
         end
     end
@@ -101,7 +105,7 @@ local function stopTween()
 end
 
 -- Helper: Perform Single Segment
-local function performTweenSegment(targetCFrame)
+local function performTweenSegment(targetPos)
     if stopRequested then return end
     local character = LocalPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -109,11 +113,11 @@ local function performTweenSegment(targetCFrame)
 
     local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
     local easingStyle = Fluent.Options.TweenEasing.Value
-    local distance = (rootPart.Position - targetCFrame.Position).Magnitude
+    local distance = (rootPart.Position - targetPos).Magnitude
     local duration = (speed * distance) / 100
 
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[easingStyle], Enum.EasingDirection.Out)
-    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = targetCFrame})
+    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
     table.insert(activeTweens, tween)
     tween:Play()
@@ -121,7 +125,7 @@ local function performTweenSegment(targetCFrame)
 end
 
 -- Master Movement Logic
-local function startStagedTween(targetPart)
+local function startStagedTween(targetPos)
     stopRequested = false
     local character = LocalPlayer.Character
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
@@ -137,7 +141,6 @@ local function startStagedTween(targetPart)
     end)
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 
-    local targetPos = targetPart.Position
     local useSplit = Fluent.Options.SplitToggle.Value
     local useSegments = Fluent.Options.SegmentToggle.Value
     local maxDist = tonumber(Fluent.Options.TweenDist.Value) or 50
@@ -151,7 +154,7 @@ local function startStagedTween(targetPart)
             
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
 
-            performTweenSegment(CFrame.new(nextStep))
+            performTweenSegment(nextStep)
             if not stopRequested and useSegments and (rootPart.Position - goalPos).Magnitude > 1 then task.wait(interval) end
         end
     end
@@ -191,11 +194,11 @@ Tabs.Automation:AddButton({
         if HopperToggle.Value then
             task.spawn(function()
                 while Fluent.Options.HopperToggle.Value do
-                    local heart = findDevilHeart()
-                    if heart then
+                    local heartPos = findDevilHeart()
+                    if heartPos then
                         if webhookEnabled then sendWebhook("✅ Heart Found!", "Server: " .. game.JobId) end
                         Fluent:Notify({Title = "Found!", Content = "Executing movement..."})
-                        startStagedTween(heart)
+                        startStagedTween(heartPos)
                         Fluent.Options.HopperToggle:SetValue(false)
                         break
                     else
@@ -211,21 +214,21 @@ Tabs.Automation:AddButton({
 Tabs.Automation:AddButton({
     Title = "Check Server",
     Callback = function()
-        local heart = findDevilHeart()
-        Fluent:Notify({Title = heart and "Found!" or "Not Found", Content = heart and "Devil Heart is here." or "No heart detected."})
+        local heartPos = findDevilHeart()
+        Fluent:Notify({Title = heartPos and "Found!" or "Not Found", Content = heartPos and ("Devil Heart Pos: " .. tostring(heartPos)) or "No heart detected."})
     end
 })
 
 Tabs.Automation:AddSection("Movement Commands")
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
-    local h = findDevilHeart() if h then startStagedTween(h) else Fluent:Notify({Title="Error", Content="No heart."}) end 
+    local hp = findDevilHeart() if hp then startStagedTween(hp) else Fluent:Notify({Title="Error", Content="No heart."}) end 
 end})
 Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
 
 -- [[ CONFIGURATION TAB ]]
 Tabs.Settings:AddSection("Logic Toggles")
-Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y", Default = true})
-Tabs.Settings:AddToggle("SegmentToggle", {Title = "Use Segments", Default = true})
+Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y", Default = false})
+Tabs.Settings:AddToggle("SegmentToggle", {Title = "Use Segments", Default = false})
 
 Tabs.Settings:AddSection("Tween Parameters")
 Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed", Default = "0.5", Numeric = true})
@@ -236,6 +239,12 @@ Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing Style", Values = {"Lin
 Tabs.Settings:AddSection("Webhooks")
 Tabs.Settings:AddInput("WebhookURL", {Title = "URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):OnChanged(function(v) webhookEnabled = v end)
+Tabs.Settings:AddButton({
+    Title = "Test Webhook",
+    Callback = function()
+        sendWebhook("Test Webhook", "This is a test message from CSMDH meth.")
+    end
+})
 
 Tabs.Settings:AddSection("History & Utility")
 Tabs.Settings:AddButton({Title = "Clear History", Callback = function() if isfile(SERVER_LOG_FILE) then delfile(SERVER_LOG_FILE) end end})
