@@ -10,13 +10,11 @@ local Players = game:GetService("Players")
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local LocalPlayer = Players.LocalPlayer
-local NODE_SPACING = 5 -- Larger spacing = faster calculation
-local PLAYER_HEIGHT_CHECK = 6 -- Studs to check upward for walls
 
 -- State Variables
-local isInitialized = false 
+local isMoving = false
 
--- Helper: Deep Find Devil Heart
+-- Helper: Find Devil Heart
 local function findDevilHeart()
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
@@ -30,92 +28,68 @@ local function findDevilHeart()
     return nil
 end
 
--- Improved Collision Check: Deep Scans workspace.map
-local function isAreaBlocked(pos)
-    local map = workspace:FindFirstChild("map")
-    if not map then return false end
-
-    -- Define the check volume (Tall box for height safety)
-    local halfSize = Vector3.new(2, PLAYER_HEIGHT_CHECK / 2, 2)
-    local region = Region3.new(pos - halfSize, pos + halfSize)
-    
-    -- Check for parts in the region
-    local parts = workspace:FindPartsInRegion3WithWhiteList(region, {map}, 100)
-
-    for _, part in ipairs(parts) do
-        if part.CanCollide then
-            return true
-        end
-    end
-    return false
-end
-
--- Custom A* Pre-Calculation Logic
-local function calculatePath(targetPos)
+-- Detection: Is something in front of us?
+local function getObstacleInFront()
     local character = LocalPlayer.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChild("Humanoid")
-    if not root or not humanoid then return end
+    if not root then return nil end
 
-    local startPos = root.Position
-    local pathPoints = {startPos}
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+    raycastParams.FilterDescendantsInstances = {character}
+
+    -- Cast a ray 5 studs forward from the face
+    local result = workspace:Raycast(root.Position, root.CFrame.LookVector * 5, raycastParams)
     
-    local currentPos = startPos
-    local totalDist = (targetPos - startPos).Magnitude
-    local steps = math.floor(totalDist / NODE_SPACING)
+    if result and result.Instance.CanCollide then
+        return result.Instance
+    end
+    return nil
+end
 
-    Fluent:Notify({Title = "System", Content = "Scanning Map Geometry...", Duration = 3})
+-- Movement: Reactive Logic
+local function reactiveMoveTo(targetPart)
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChild("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root then return end
 
-    for i = 1, steps do
-        local nextStep = startPos + ((targetPos - startPos).Unit * (i * NODE_SPACING))
-        
-        -- If blocked, try to find a detour (Left/Right check)
-        if isAreaBlocked(nextStep) then
-            local foundDetour = false
-            local detours = {Vector3.new(NODE_SPACING, 0, 0), Vector3.new(-NODE_SPACING, 0, 0), Vector3.new(0, 0, NODE_SPACING), Vector3.new(0, 0, -NODE_SPACING)}
+    isMoving = true
+    
+    while isMoving and targetPart.Parent do
+        local distance = (root.Position - targetPart.Position).Magnitude
+        if distance < 5 then break end
+
+        local obstacle = getObstacleInFront()
+
+        if obstacle then
+            -- We hit a wall! 
+            Fluent:Notify({Title = "Movement", Content = "Object detected: " .. obstacle.Name .. ". Maneuvering...", Duration = 2})
             
-            for _, offset in ipairs(detours) do
-                if not isAreaBlocked(nextStep + offset) then
-                    nextStep = nextStep + offset
-                    foundDetour = true
-                    break
-                end
-            end
+            -- Try to "Strafe" around it (Left/Right logic)
+            local strafeDirection = root.CFrame.RightVector * 8
+            humanoid:MoveTo(root.Position + strafeDirection)
+            humanoid.MoveToFinished:Wait(1) -- Move aside for 1 second
             
-            -- If no detour, the path stays at previous point to avoid walking into wall
-            if not foundDetour then continue end
+            -- Small jump to clear ledges
+            humanoid.Jump = true
+            task.wait(0.2)
+        else
+            -- Path is clear, walk straight to heart
+            humanoid:MoveTo(targetPart.Position)
         end
         
-        table.insert(pathPoints, nextStep)
-    end
-    table.insert(pathPoints, targetPos) -- Ensure final point is the heart
-
-    -- Path Visualization
-    local folder = workspace:FindFirstChild("PathVisuals") or Instance.new("Folder", workspace)
-    folder.Name = "PathVisuals"
-    folder:ClearAllChildren()
-
-    for _, p in ipairs(pathPoints) do
-        local b = Instance.new("Part", folder)
-        b.Size, b.Anchored, b.CanCollide, b.Shape = Vector3.new(0.6, 0.6, 0.6), true, false, "Ball"
-        b.Position, b.Color, b.Material = p, Color3.fromRGB(255, 255, 255), "Neon"
-        b.Transparency = 0.5
-    end
-
-    -- Execute Movement
-    for _, p in ipairs(pathPoints) do
-        humanoid:MoveTo(p)
-        local arrived = humanoid.MoveToFinished:Wait(2) -- Timeout after 2s per node
-        if not arrived then humanoid.Jump = true end -- Small hop if stuck
+        task.wait(0.1)
     end
     
-    folder:ClearAllChildren()
+    isMoving = false
+    Fluent:Notify({Title = "Success", Content = "Reached destination.", Duration = 3})
 end
 
 -- Create Window
 local Window = Fluent:CreateWindow({
-    Title = "Devil Heart Utility v5.5 (Deep Scan)",
-    SubTitle = "Geometry-Aware Custom Movement",
+    Title = "Devil Heart Utility v6.0",
+    SubTitle = "Reactive Avoidance",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -129,27 +103,32 @@ local Tabs = {
 }
 
 -- [[ AUTOMATION TAB ]]
-Tabs.Automation:AddSection("Custom Movement (No Pathfinding Service)")
+Tabs.Automation:AddSection("Reactive Movement")
 
 Tabs.Automation:AddButton({
-    Title = "Scan & Walk to Heart",
-    Description = "Checks all map children for collisions before moving.",
+    Title = "Walk to Heart (Reactive)",
+    Description = "Detects walls while walking and tries to avoid them",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            calculatePath(heart.Position)
+            reactiveMoveTo(heart)
         else
-            Fluent:Notify({Title = "Error", Content = "Devil Heart not found.", Duration = 3})
+            Fluent:Notify({Title = "Error", Content = "No Devil Heart found.", Duration = 3})
         end
     end
 })
 
-Tabs.Automation:AddParagraph({
-    Title = "Geometry Scanning Info",
-    Content = "This scan checks for any 'CanCollide' parts within 'workspace.map'. It accounts for height (6 studs) to prevent walking into walls."
+Tabs.Automation:AddButton({
+    Title = "Stop Movement",
+    Callback = function()
+        isMoving = false
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChild("Humanoid")
+        if humanoid then humanoid:MoveTo(character.HumanoidRootPart.Position) end
+    end
 })
 
--- [[ SETTINGS & INITIALIZATION ]]
+-- [[ SETTINGS ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
