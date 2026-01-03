@@ -6,13 +6,15 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 local HttpService = game:GetService("HttpService")
 local TeleportService = game:GetService("TeleportService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local LocalPlayer = Players.LocalPlayer
 
 -- State Variables
-local isMoving = false
+local activeMovement = false
+local avoidanceDirection = 1 -- 1 for Right, -1 for Left
 
 -- Helper: Find Devil Heart
 local function findDevilHeart()
@@ -28,62 +30,70 @@ local function findDevilHeart()
     return nil
 end
 
--- Detection: Is something in front of us?
-local function getObstacleInFront()
-    local character = LocalPlayer.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
-
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
-    raycastParams.FilterDescendantsInstances = {character}
-
-    -- Cast a ray 5 studs forward from the face
-    local result = workspace:Raycast(root.Position, root.CFrame.LookVector * 5, raycastParams)
-    
-    if result and result.Instance.CanCollide then
-        return result.Instance
-    end
-    return nil
+-- Helper: Visualize Ray
+local function createVisualRay(pos, dir, color)
+    local p = Instance.new("Part")
+    p.Anchored = true
+    p.CanCollide = false
+    p.Size = Vector3.new(0.2, 0.2, dir.Magnitude)
+    p.CFrame = CFrame.lookAt(pos + dir/2, pos + dir)
+    p.Color = color
+    p.Material = Enum.Material.Neon
+    p.Parent = workspace:FindFirstChild("RayVisuals") or (function()
+        local f = Instance.new("Folder", workspace)
+        f.Name = "RayVisuals"
+        return f
+    end)()
+    task.delay(0.1, function() p:Destroy() end)
 end
 
--- Movement: Reactive Logic
-local function reactiveMoveTo(targetPart)
+-- Reactive Movement Logic
+local function reactiveMove(targetPart)
+    activeMovement = true
     local character = LocalPlayer.Character
-    local humanoid = character and character:FindFirstChild("Humanoid")
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not root then return end
-
-    isMoving = true
+    local root = character:WaitForChild("HumanoidRootPart")
+    local humanoid = character:WaitForChild("Humanoid")
     
-    while isMoving and targetPart.Parent do
-        local distance = (root.Position - targetPart.Position).Magnitude
-        if distance < 5 then break end
+    while activeMovement and targetPart and targetPart.Parent do
+        local startPos = root.Position
+        local targetPos = targetPart.Position
+        local toTarget = (targetPos - startPos).Unit
+        
+        -- Raycast to detect wall in front
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {character}
+        
+        -- Detect wall face-first (look ahead 7 studs)
+        local result = workspace:Raycast(startPos, toTarget * 7, rayParams)
+        createVisualRay(startPos, toTarget * 7, result and Color3.new(1,0,0) or Color3.new(0,1,0))
 
-        local obstacle = getObstacleInFront()
-
-        if obstacle then
-            -- We hit a wall! 
-            Fluent:Notify({Title = "Movement", Content = "Object detected: " .. obstacle.Name .. ". Maneuvering...", Duration = 2})
+        if result and result.Instance.CanCollide then
+            -- We hit a wall!
+            -- Calculate a direction to walk ALONG the wall
+            local wallNormal = result.Normal
+            local walkDir = Vector3.new(-wallNormal.Z, 0, wallNormal.X) * avoidanceDirection
             
-            -- Try to "Strafe" around it (Left/Right logic)
-            local strafeDirection = root.CFrame.RightVector * 8
-            humanoid:MoveTo(root.Position + strafeDirection)
-            humanoid.MoveToFinished:Wait(1) -- Move aside for 1 second
+            -- Jump if the wall is short or we are stuck
+            if result.Distance < 3 then
+                humanoid.Jump = true
+            end
             
-            -- Small jump to clear ledges
-            humanoid.Jump = true
-            task.wait(0.2)
+            -- Move sideways until the wall is gone
+            humanoid:Move(walkDir, false)
         else
-            -- Path is clear, walk straight to heart
-            humanoid:MoveTo(targetPart.Position)
+            -- Path is clear, move toward heart
+            humanoid:Move(toTarget, false)
         end
         
-        task.wait(0.1)
+        -- Stop if we are close enough
+        if (targetPos - startPos).Magnitude < 5 then
+            activeMovement = false
+            break
+        end
+        
+        task.wait()
     end
-    
-    isMoving = false
-    Fluent:Notify({Title = "Success", Content = "Reached destination.", Duration = 3})
 end
 
 -- Create Window
@@ -106,35 +116,43 @@ local Tabs = {
 Tabs.Automation:AddSection("Reactive Movement")
 
 Tabs.Automation:AddButton({
-    Title = "Walk to Heart (Reactive)",
-    Description = "Detects walls while walking and tries to avoid them",
+    Title = "Start Reactive Walk",
+    Description = "Walks to heart and navigates around walls on contact",
     Callback = function()
         local heart = findDevilHeart()
         if heart then
-            reactiveMoveTo(heart)
+            reactiveMove(heart)
         else
-            Fluent:Notify({Title = "Error", Content = "No Devil Heart found.", Duration = 3})
+            Fluent:Notify({Title = "Error", Content = "Devil Heart not found.", Duration = 3})
         end
     end
 })
 
 Tabs.Automation:AddButton({
     Title = "Stop Movement",
-    Callback = function()
-        isMoving = false
-        local character = LocalPlayer.Character
-        local humanoid = character and character:FindFirstChild("Humanoid")
-        if humanoid then humanoid:MoveTo(character.HumanoidRootPart.Position) end
+    Callback = function() activeMovement = false end
+})
+
+Tabs.Automation:AddDropdown("AvoidSide", {
+    Title = "Avoidance Direction",
+    Description = "Which side to prioritize when hitting a wall.",
+    Values = {"Left", "Right"},
+    Default = "Right",
+    Callback = function(Value)
+        avoidanceDirection = (Value == "Right" and 1 or -1)
     end
 })
 
--- [[ SETTINGS ]]
+Tabs.Automation:AddParagraph({
+    Title = "How it works",
+    Content = "The player walks toward the heart. If a red line (Raycast) hits a wall, the player will start strafing sideways until the line turns green (path clear), then continues forward."
+})
+
+-- [[ INITIALIZATION ]]
+Window:SelectTab(1)
 SaveManager:SetLibrary(Fluent)
-InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
-
-Window:SelectTab(1)
 SaveManager:LoadAutoloadConfig()
-task.wait(0.5)
 isInitialized = true
