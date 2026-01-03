@@ -3,42 +3,38 @@
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Added Pre-Load Interceptor: Automatically clicks 'Play' if the MainMenu exists.
-    - Preserved instant-start logic for Hopper via Config.
-    - Maintained ACBait safety protocols and Discord integration.
+    - Added Pre-Load Play Button clicker.
+    - Preserved Config-responsive Auto-Start logic.
+    - Integrated all Discord and Movement safety features.
 ]]
 
--- [[ PRE-LOAD INTERCEPTOR ]]
--- This section runs before the UI library loads to ensure the player is in-game.
-local function handleNativeMainMenu()
-    local lp = game:GetService("Players").LocalPlayer
-    if not lp then return end
+-- [[ PRE-INITIALIZATION ]]
+-- Logic to bypass the main menu before the script loads
+local function handlePlayButton()
+    local player = game:GetService("Players").LocalPlayer
+    local playerGui = player:FindFirstChild("PlayerGui")
     
-    local playerGui = lp:FindFirstChild("PlayerGui")
     if playerGui then
-        -- Path provided: .MainMenu.Menu.MainMenu.PlayButton
-        local playButton = playerGui:FindFirstChild("MainMenu") 
+        -- Navigate the specific path provided
+        local playButtonPath = playerGui:FindFirstChild("MainMenu") 
             and playerGui.MainMenu:FindFirstChild("Menu")
             and playerGui.MainMenu.Menu:FindFirstChild("MainMenu")
             and playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
 
-        if playButton and playButton:IsA("GuiButton") then
-            -- Simulate the click
-            print("[CSMDH] Native Play Button detected. Triggering enter...")
-            local virtualUser = game:GetService("VirtualUser")
-            -- We trigger the event directly for reliability
-            for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+        if playButtonPath and playButtonPath:IsA("GuiButton") then
+            -- Register a click using the standard event signal
+            -- We fire all associated functions connected to MouseButton1Click
+            for _, connection in ipairs(getconnections(playButtonPath.MouseButton1Click)) do
                 connection:Fire()
             end
-            -- Fallback for environments without getconnections
-            playButton:Activate()
         end
     end
 end
 
-handleNativeMainMenu()
+-- Run pre-load check
+handlePlayButton()
 
--- [[ LOAD LIBRARIES ]]
+-- [[ CORE SCRIPT LOAD ]]
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
@@ -64,7 +60,7 @@ local isInitialized = false
 local activeTweens = {}
 local stopRequested = false
 local velocityConnection = nil
-local isHopperRunning = false 
+local isHopperRunning = false
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -130,14 +126,6 @@ local function serverHop()
     end
 end
 
-function getHistory()
-    if isfile(SERVER_LOG_FILE) then
-        local success, data = pcall(function() return HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) end)
-        return success and data or {}
-    end
-    return {}
-end
-
 -- [[ MOVEMENT ENGINE ]]
 
 local function stopTween()
@@ -150,6 +138,25 @@ local function stopTween()
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
+end
+
+local function performTweenSegment(targetPos)
+    if stopRequested then return end
+    local character = LocalPlayer.Character
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return end
+
+    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    local easingStyle = Fluent.Options.TweenEasing.Value
+    local distance = (rootPart.Position - targetPos).Magnitude
+    local duration = (speed * distance) / 100
+
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[easingStyle], Enum.EasingDirection.Out)
+    local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
+    
+    table.insert(activeTweens, tween)
+    tween:Play()
+    tween.Completed:Wait()
 end
 
 local function startStagedTween(targetPos)
@@ -177,15 +184,10 @@ local function startStagedTween(targetPos)
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
             local nextStep = (useSegments and dist > maxDist) and (currentPos + (goalPos - currentPos).Unit * maxDist) or goalPos
+            
             if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
 
-            local duration = (Fluent.Options.TweenSpeed.Value * (rootPart.Position - nextStep).Magnitude) / 100
-            local tInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
-            local tw = TweenService:Create(rootPart, tInfo, {CFrame = CFrame.new(nextStep)})
-            table.insert(activeTweens, tw)
-            tw:Play()
-            tw.Completed:Wait()
-
+            performTweenSegment(nextStep)
             if not stopRequested and useSegments and (rootPart.Position - goalPos).Magnitude > 1 then task.wait(interval) end
         end
     end
@@ -211,13 +213,18 @@ local function runHopperLogic()
             local status, heartPos = findDevilHeart()
             
             if status == "ACBait" then
-                sendWebhook("⚠️ ACBait Detected", "Ignoring bait heart at Y: " .. heartPos.Y, 0xff0000)
+                sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y .. " in server: " .. game.JobId, 0xff0000)
                 serverHop()
             elseif status == "valid" then
                 sendWebhook("✅ Valid Heart Found!", "Target detected in server: " .. game.JobId)
+                
                 if Fluent.Options.AutoTweenOnFind.Value then
+                    Fluent:Notify({Title = "Auto-Discovery", Content = "Discovery complete. Starting Tween..."})
                     startStagedTween(heartPos)
+                else
+                    Fluent:Notify({Title = "Discovery", Content = "Heart found. Auto-Tween is OFF."})
                 end
+                
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
@@ -245,9 +252,13 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Configuration", Icon = "settings" })
 }
 
+-- [[ AUTOMATION TAB ]]
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
-HopperToggle:OnChanged(function() if HopperToggle.Value then runHopperLogic() end end)
+
+HopperToggle:OnChanged(function()
+    if HopperToggle.Value then runHopperLogic() end
+end)
 
 Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery", Default = true })
 
@@ -258,22 +269,7 @@ Tabs.Automation:AddButton({
     end
 })
 
-Tabs.Automation:AddButton({
-    Title = "Manual Scan",
-    Callback = function()
-        local status, heartPos = findDevilHeart()
-        Fluent:Notify({Title = status or "Not Found", Content = heartPos and tostring(heartPos) or "No heart detected."})
-    end
-})
-
-Tabs.Automation:AddSection("Movement Controls")
-Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
-    local status, hp = findDevilHeart() 
-    if status == "valid" then startStagedTween(hp) end
-end})
-Tabs.Automation:AddButton({Title = "Stop Tween", Callback = stopTween})
-
--- [[ SETTINGS ]]
+-- [[ CONFIGURATION TAB ]]
 Tabs.Settings:AddSection("Movement Logic")
 Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ and Y Movement", Default = false})
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Enable Segmented Movement", Default = false})
