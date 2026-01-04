@@ -1,13 +1,13 @@
 --[[
-    CSMDH meth | V1.2.0 (Custom Request)
+    CSMDH meth | V1.3.0 (Custom Request)
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Added STPS (Studs Per Second) Speed Limiter.
-    - Added Ground Follow Mode (Raycasts to keep player near floor).
-    - Fixed Segment Logic: Player anchors during waits (no floating).
-    - Added Anti-Clip: Detects if player ends tween inside objects and unstucks them.
-    - Preserves previous Auto-Hop and Webhook logic.
+    - V1.3.0: 
+      - Added AC Bait Collision Logic (Checks 'Collision Group' folder).
+      - Added Server Hop Expiry Slider (Auto-clears old servers).
+      - Fixed Ground Alignment (Strict height enforcement).
+      - Added Live Height Offset Status for Ground Mode.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -51,8 +51,9 @@ local Workspace = game:GetService("Workspace")
 local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
-local MIN_Y_LIMIT = 942
+local MIN_Y_LIMIT = 941
 local AC_BAIT_Y_LIMIT = 940
+local ALIGNMENT_OFFSET = 3.5 -- Height from floor to RootPart center
 
 -- State Variables
 local webhookURL = ""
@@ -66,6 +67,7 @@ local isHopperRunning = false
 -- UI Elements to update
 local StatusLabel = nil
 local SpeedLabel = nil 
+local HeightLabel = nil -- New label for ground status
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -90,12 +92,12 @@ local function unstuckCharacter()
     local parts = Workspace:GetPartsInPart(root, overlapParams)
     
     if #parts > 0 then
-        updateStatus("Detected collision, adjusting...")
+        -- Don't update status constantly to avoid flickering, just act
         local safe = false
         local attempts = 0
-        while #parts > 0 and attempts < 20 do
+        while #parts > 0 and attempts < 10 do
             -- Nudge up
-            root.CFrame = root.CFrame + Vector3.new(0, 2, 0)
+            root.CFrame = root.CFrame + Vector3.new(0, 1, 0)
             parts = Workspace:GetPartsInPart(root, overlapParams)
             attempts = attempts + 1
             task.wait()
@@ -105,22 +107,52 @@ end
 
 -- Raycast to find ground level
 local function getGroundPosition(targetX, targetZ)
-    local rayOrigin = Vector3.new(targetX, LocalPlayer.Character.HumanoidRootPart.Position.Y + 100, targetZ)
-    local rayDirection = Vector3.new(0, -1000, 0)
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
+    
+    -- Cast from high up downwards
+    local rayOrigin = Vector3.new(targetX, char.HumanoidRootPart.Position.Y + 100, targetZ)
+    local rayDirection = Vector3.new(0, -5000, 0) -- Long ray to find floor
     
     local raycastParams = RaycastParams.new()
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    raycastParams.FilterDescendantsInstances = {char}
     raycastParams.FilterType = Enum.RaycastFilterType.Exclude
     raycastParams.IgnoreWater = false
 
     local raycastResult = Workspace:Raycast(rayOrigin, rayDirection, raycastParams)
     
     if raycastResult then
-        -- Return position 3 studs above found ground
-        return Vector3.new(targetX, raycastResult.Position.Y + 3, targetZ)
+        -- Return exact floor position. Offset is applied in tween logic.
+        return Vector3.new(targetX, raycastResult.Position.Y, targetZ)
     else
         return nil
     end
+end
+
+-- New function to check for collision group barriers
+local function checkPathCollision(targetPos)
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return false end
+    
+    local map = workspace:FindFirstChild("map")
+    local rokyo = map and map:FindFirstChild("Rokyo")
+    local colGroup = rokyo and rokyo:FindFirstChild("Collision Group")
+    
+    -- If the folder exists, we check if the path hits it
+    if colGroup then
+        local origin = char.HumanoidRootPart.Position
+        local direction = targetPos - origin
+        
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Include -- ONLY hit the collision group
+        params.FilterDescendantsInstances = {colGroup}
+        
+        local result = workspace:Raycast(origin, direction, params)
+        if result then
+            return true -- We hit a barrier part
+        end
+    end
+    return false
 end
 
 local function findDevilHeart()
@@ -143,7 +175,6 @@ end
 
 local function sendWebhook(title, message, color)
     if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
-        updateStatus("Sending Webhook...")
         local data = {
             ["embeds"] = {{
                 ["title"] = title,
@@ -166,7 +197,21 @@ end
 local function serverHop()
     updateStatus("Preparing to hop...")
     local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
+    
+    -- Update current server
     history[game.JobId] = os.time()
+    
+    -- Cleanup Old Servers based on Configuration
+    local expireMinutes = Fluent.Options.ServerLogExpiry and Fluent.Options.ServerLogExpiry.Value or 30
+    local expireTime = expireMinutes * 60
+    local currentTime = os.time()
+    
+    for id, timestamp in pairs(history) do
+        if (currentTime - timestamp) > expireTime then
+            history[id] = nil
+        end
+    end
+    
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
     updateStatus("Fetching server list...")
@@ -225,6 +270,9 @@ local function performTweenSegment(targetPos)
         local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
         duration = (speed * distance) / 100
     end
+    
+    -- Safety check for 0 duration
+    if duration <= 0 then duration = 0.1 end
 
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
     local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
@@ -272,7 +320,8 @@ local function startStagedTween(targetPos)
             if Fluent.Options.GroundFollow.Value then
                 local groundPos = getGroundPosition(nextStep.X, nextStep.Z)
                 if groundPos then
-                    nextStep = groundPos
+                    -- STRICT ALIGNMENT: Use ground Y + Offset
+                    nextStep = Vector3.new(nextStep.X, groundPos.Y + ALIGNMENT_OFFSET, nextStep.Z)
                 else
                     -- Fallback: Enforce Min Y if no ground found (void)
                     if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
@@ -302,7 +351,6 @@ local function startStagedTween(targetPos)
     end
 
     if Fluent.Options.SplitToggle.Value then
-        -- For split toggle, we usually keep height, but Ground Follow overrides this
         local initialTargetY = math.max(rootPart.Position.Y, MIN_Y_LIMIT)
         if Fluent.Options.GroundFollow.Value then
             -- If ground follow is on, XZ movement should still adhere to ground
@@ -331,18 +379,25 @@ local function runHopperLogic()
         while Fluent.Options.HopperToggle.Value do
             local status, heartPos = findDevilHeart()
             
-            if status == "ACBait" then
-                updateStatus("ACBait detected! Skipping...")
+            if status == "valid" then
+                -- Perform Collision Group Check here
+                if checkPathCollision(heartPos) then
+                    updateStatus("Barrier Detected! Marking as Bait.")
+                    sendWebhook("⚠️ Collision Bait Detected", "Tween blocked by invisible wall. Hopping.", 0xff9900)
+                    serverHop()
+                else
+                    updateStatus("Heart found! Stopping hopper.")
+                    sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId)
+                    if Fluent.Options.AutoTweenOnFind.Value then
+                        startStagedTween(heartPos)
+                    end
+                    Fluent.Options.HopperToggle:SetValue(false)
+                    break
+                end
+            elseif status == "ACBait" then
+                updateStatus("ACBait (Height) detected! Skipping...")
                 sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y, 0xff0000)
                 serverHop()
-            elseif status == "valid" then
-                updateStatus("Heart found! Stopping hopper.")
-                sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId)
-                if Fluent.Options.AutoTweenOnFind.Value then
-                    startStagedTween(heartPos)
-                end
-                Fluent.Options.HopperToggle:SetValue(false)
-                break
             else
                 updateStatus("No heart found.")
                 serverHop()
@@ -360,9 +415,9 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.2.0",
+    SubTitle = "V1.3.0",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 500), -- Increased height slightly
+    Size = UDim2.fromOffset(580, 520), 
     Acrylic = true, 
     Theme = "Dark"
 })
@@ -408,7 +463,10 @@ Tabs.Automation:AddButton({
 Tabs.Automation:AddSection("Manual Actions")
 Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
     local status, hp = findDevilHeart()
-    updateStatus("Manual Scan Result: " .. (status or "None"))
+    local colCheck = hp and checkPathCollision(hp)
+    local res = status
+    if status == "valid" and colCheck then res = "Bait (Collision)" end
+    updateStatus("Manual Scan Result: " .. (res or "None"))
 end})
 
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
@@ -426,8 +484,25 @@ SpeedLabel = Tabs.Debug:AddParagraph({
 })
 
 -- Configuration Tab
+Tabs.Settings:AddSection("Server Hopping")
+Tabs.Settings:AddSlider("ServerLogExpiry", {
+    Title = "Server Block Duration",
+    Description = "Time until a visited server is valid again.",
+    Default = 30,
+    Min = 5,
+    Max = 120,
+    Rounding = 1,
+    Callback = function(Value) end
+})
+
 Tabs.Settings:AddSection("Movement Modes")
 Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ/Y", Default = false})
+
+HeightLabel = Tabs.Settings:AddParagraph({
+    Title = "Ground Offset: N/A",
+    Content = "Enable Ground Only to see height status."
+})
+
 Tabs.Settings:AddToggle("GroundFollow", {Title = "Ground Only (Raycast)", Default = false})
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Enable Segments", Default = false})
 
@@ -445,13 +520,35 @@ Tabs.Settings:AddSection("Discord Notifications")
 Tabs.Settings:AddInput("WebhookURL", {Title = "URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):OnChanged(function(v) webhookEnabled = v end)
 
--- [[ SPEED TRACKING LOGIC ]]
+-- [[ LOOPS ]]
+
+-- Speed and Height Tracking
 RunService.Heartbeat:Connect(function()
-    if SpeedLabel and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local velocity = LocalPlayer.Character.HumanoidRootPart.Velocity
-        -- Magnitude represents studs per second
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    
+    if SpeedLabel and root then
+        local velocity = root.Velocity
         local sps = math.floor(velocity.Magnitude + 0.5)
         SpeedLabel:SetTitle("Studs Per Second: " .. tostring(sps))
+    end
+
+    if HeightLabel and Fluent.Options.GroundFollow.Value and root then
+        local rayOrigin = root.Position
+        local rayDirection = Vector3.new(0, -100, 0)
+        local params = RaycastParams.new()
+        params.FilterDescendantsInstances = {char}
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        
+        local res = workspace:Raycast(rayOrigin, rayDirection, params)
+        if res then
+            local dist = math.floor((root.Position.Y - res.Position.Y) * 10) / 10
+            HeightLabel:SetTitle("Height Offset: " .. tostring(dist) .. " studs")
+        else
+            HeightLabel:SetTitle("Height Offset: Void")
+        end
+    elseif HeightLabel then
+         HeightLabel:SetTitle("Ground Offset: N/A")
     end
 end)
 
