@@ -1,11 +1,15 @@
 --[[
-    CSMDH meth | V1.1.7
+    CSMDH meth | V1.2.0
     Professional Devil Heart Automation Utility
     
-    Update Log V1.1.7:
-    - Added STPS (Studs Per Second) speed limiting system
-    - Added Ground-Only tween mode (keeps player within 3 studs of ground)
-    - Fixed split segmenting: no floating during waits, collision detection before segment end
+    Update Log:
+    - Added Dynamic Status System: Real-time feedback on script actions.
+    - Status updates integrated into Hopper, Tween, and Webhook logic.
+    - Preserves Manual/Auto-Start logic and getconnections() interceptor.
+    - NEW: Added Debug section with real-time Studs Per Second (SPS) tracker (Fixed logic).
+    - NEW: STPS (Studs Per Second) Speed Limiter.
+    - NEW: Ground Follow Mode (Clamps height to ground + 3 studs).
+    - CHANGED: Improved Segmenting logic (Anchors during wait, Anti-Clip/Unstuck mechanism).
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -50,7 +54,6 @@ local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 942
 local AC_BAIT_Y_LIMIT = 940
-local GROUND_OFFSET = 3 -- Max distance above ground in ground-only mode
 
 -- State Variables
 local webhookURL = ""
@@ -63,7 +66,7 @@ local isHopperRunning = false
 
 -- UI Elements to update
 local StatusLabel = nil
-local SpeedLabel = nil
+local SpeedLabel = nil 
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -82,7 +85,7 @@ local function findDevilHeart()
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
                 if object:FindFirstChildOfClass("PointLight") then 
                     local pos = object.Position
-                    if pos.Y &lt; AC_BAIT_Y_LIMIT then return "ACBait", pos end
+                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos end
                     return "valid", pos
                 end
             end
@@ -121,12 +124,12 @@ local function serverHop()
 
     updateStatus("Fetching server list...")
     local success, result = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&amp;limit=100"))
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
     end)
 
     if success and result and result.data then
         for _, server in ipairs(result.data) do
-            if server.playing &lt; server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
+            if server.playing < server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
                 updateStatus("Teleporting to: " .. server.id)
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
                 return
@@ -134,83 +137,6 @@ local function serverHop()
         end
     end
     updateStatus("No suitable servers found.")
-end
-
--- [[ NEW: Ground Detection ]]
-local function getGroundBelow(position)
-    -- Raycast downward to find ground
-    local rayOrigin = position
-    local rayDirection = Vector3.new(0, -500, 0) -- Cast 500 studs down
-    
-    local raycastParams = RaycastParams.new()
-    raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
-    raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
-    
-    local rayResult = workspace:Raycast(rayOrigin, rayDirection, raycastParams)
-    
-    if rayResult then
-        return rayResult.Position.Y
-    end
-    
-    return nil
-end
-
--- [[ NEW: Collision Detection ]]
-local function getCollidablePartsAtPosition(position, ignoreList)
-    -- Use GetPartBoundsInBox to detect parts at position
-    local region = Region3.new(position - Vector3.new(2, 2, 2), position + Vector3.new(2, 2, 2))
-    region = region:ExpandToGrid(4)
-    
-    local parts = {}
-    
-    -- Use OverlapParams for more accurate detection
-    local overlapParams = OverlapParams.new()
-    overlapParams.FilterType = Enum.RaycastFilterType.Blacklist
-    overlapParams.FilterDescendantsInstances = ignoreList or {LocalPlayer.Character}
-    
-    local overlappingParts = workspace:GetPartBoundsInBox(CFrame.new(position), Vector3.new(4, 4, 4), overlapParams)
-    
-    for _, part in ipairs(overlappingParts) do
-        if part.CanCollide then
-            table.insert(parts, part)
-        end
-    end
-    
-    return parts
-end
-
-local function isPositionInsideObject(position)
-    -- Check if position would place player inside a collidable object
-    local character = LocalPlayer.Character
-    if not character then return false end
-    
-    local overlappingParts = getCollidablePartsAtPosition(position, {character})
-    
-    for _, part in ipairs(overlappingParts) do
-        -- Check if it's a mesh or solid part
-        if part:IsA("MeshPart") or part:IsA("Part") or part:IsA("UnionOperation") then
-            -- Additional check: is it actually solid and not a trigger?
-            if part.CanCollide then
-                return true
-            end
-        end
-        
-        -- Check parent for Model/Folder
-        local parent = part.Parent
-        if parent and (parent:IsA("Model") or parent:IsA("Folder")) then
-            -- Check children of the group
-            for _, child in ipairs(parent:GetChildren()) do
-                if child:IsA("BasePart") and child.CanCollide then
-                    local distance = (child.Position - position).Magnitude
-                    if distance &lt; (child.Size.Magnitude / 2 + 2) then
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    
-    return false
 end
 
 -- [[ MOVEMENT ENGINE ]]
@@ -225,8 +151,29 @@ local function stopTween()
     if velocityConnection then velocityConnection:Disconnect() velocityConnection = nil end
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+    
+    if rootPart then rootPart.Anchored = false end -- Ensure not stuck
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
     updateStatus("Movement stopped.")
+end
+
+-- Unstuck function to handle "inside something" edge case
+local function unstuckCharacter(rootPart)
+    local params = OverlapParams.new()
+    params.FilterDescendantsInstances = {LocalPlayer.Character}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    
+    -- Try up to 10 times to nudge the player out of objects
+    for i = 1, 10 do
+        local parts = workspace:GetPartsInPart(rootPart, params)
+        if #parts > 0 then
+            -- We are inside something
+            rootPart.CFrame = rootPart.CFrame + Vector3.new(0, 1, 0) -- Nudge up
+        else
+            break
+        end
+    end
 end
 
 local function performTweenSegment(targetPos)
@@ -238,12 +185,11 @@ local function performTweenSegment(targetPos)
     local distance = (rootPart.Position - targetPos).Magnitude
     local duration
     
-    -- NEW: STPS Speed Limiting
-    if Fluent.Options.STPSToggle and Fluent.Options.STPSToggle.Value then
-        local targetSTPS = tonumber(Fluent.Options.STPSValue.Value) or 30
-        duration = distance / targetSTPS
+    -- Feature 1: STPS Calculation vs Legacy Calculation
+    if Fluent.Options.UseSTPS.Value then
+        local stps = tonumber(Fluent.Options.STPSValue.Value) or 30
+        duration = distance / math.max(stps, 1) -- Avoid division by zero
     else
-        -- Original speed calculation
         local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
         duration = (speed * distance) / 100
     end
@@ -252,35 +198,11 @@ local function performTweenSegment(targetPos)
     local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
     table.insert(activeTweens, tween)
-    
-    -- NEW: Ground-Only Mode - Adjust position during tween
-    local groundConnection
-    if Fluent.Options.GroundOnlyToggle and Fluent.Options.GroundOnlyToggle.Value then
-        groundConnection = RunService.Heartbeat:Connect(function()
-            if not rootPart or not rootPart.Parent then 
-                if groundConnection then groundConnection:Disconnect() end
-                return 
-            end
-            
-            local groundY = getGroundBelow(rootPart.Position)
-            if groundY then
-                local currentY = rootPart.Position.Y
-                local maxY = groundY + GROUND_OFFSET
-                
-                -- If player is too high above ground, pull them down
-                if currentY &gt; maxY then
-                    rootPart.CFrame = CFrame.new(rootPart.Position.X, maxY, rootPart.Position.Z)
-                end
-            end
-        end)
-    end
-    
     tween:Play()
     tween.Completed:Wait()
     
-    if groundConnection then
-        groundConnection:Disconnect()
-    end
+    -- Change 1: Check collision after tween
+    unstuckCharacter(rootPart)
 end
 
 local function startStagedTween(targetPos)
@@ -292,7 +214,7 @@ local function startStagedTween(targetPos)
     if not rootPart then return end
 
     velocityConnection = RunService.Stepped:Connect(function()
-        if rootPart and rootPart.Parent then
+        if rootPart and rootPart.Parent and not rootPart.Anchored then
             rootPart.Velocity = Vector3.new(0, -0.01, 0)
             rootPart.RotVelocity = Vector3.zero
         end
@@ -300,86 +222,53 @@ local function startStagedTween(targetPos)
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
 
     local function moveToGoal(goalPos, label)
-        while (rootPart.Position - goalPos).Magnitude &gt; 1 and not stopRequested do
+        while (rootPart.Position - goalPos).Magnitude > 1 and not stopRequested do
             updateStatus("Moving " .. label .. "...")
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
-            local nextStep = (Fluent.Options.SegmentToggle.Value and dist &gt; tonumber(Fluent.Options.TweenDist.Value)) 
+            
+            -- Calculate next step based on Segment settings
+            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > tonumber(Fluent.Options.TweenDist.Value)) 
                 and (currentPos + (goalPos - currentPos).Unit * tonumber(Fluent.Options.TweenDist.Value)) or goalPos
             
-            if nextStep.Y &lt; MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
-            
-            -- NEW: Ground-Only adjustment for next step
-            if Fluent.Options.GroundOnlyToggle and Fluent.Options.GroundOnlyToggle.Value then
-                local groundY = getGroundBelow(nextStep)
-                if groundY then
-                    nextStep = Vector3.new(nextStep.X, math.min(nextStep.Y, groundY + GROUND_OFFSET), nextStep.Z)
-                end
-            end
-            
-            -- NEW: Check if next position is inside an object before tweening
-            if isPositionInsideObject(nextStep) then
-                updateStatus("Collision detected, adjusting path...")
-                -- Try to find a clear position by moving slightly up
-                local adjustedStep = nextStep + Vector3.new(0, 5, 0)
-                if not isPositionInsideObject(adjustedStep) then
-                    nextStep = adjustedStep
+            -- Feature 2: Ground Follow
+            if Fluent.Options.GroundTween.Value then
+                local rayOrigin = Vector3.new(nextStep.X, currentPos.Y + 50, nextStep.Z) -- Cast from above
+                local rayDirection = Vector3.new(0, -500, 0)
+                local rayParams = RaycastParams.new()
+                rayParams.FilterDescendantsInstances = {character}
+                rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                
+                local rayResult = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+                if rayResult then
+                    -- Clamp to 3 studs above ground
+                    nextStep = Vector3.new(nextStep.X, rayResult.Position.Y + 3, nextStep.Z)
                 else
-                    -- If still inside, skip this segment
-                    updateStatus("Cannot find clear path, continuing...")
-                    break
+                    -- Fallback: Keep current Y if no ground found (safety)
+                    nextStep = Vector3.new(nextStep.X, currentPos.Y, nextStep.Z) 
                 end
+            else
+                -- Standard Y Limit Logic
+                if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
             end
             
             performTweenSegment(nextStep)
             
-            -- NEW: Improved segment wait - no floating
-            if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude &gt; 1 then 
+            -- Change 1: Gap handling (Anchor to prevent floating/drifting)
+            if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude > 1 then 
                 updateStatus("Segment Wait (" .. Fluent.Options.TweenInterval.Value .. "s)...")
                 
-                -- Temporarily restore normal state during wait to prevent floating
-                if humanoid then 
-                    humanoid:ChangeState(Enum.HumanoidStateType.Landed)
-                end
-                
-                -- Disconnect velocity override during wait
-                if velocityConnection then 
-                    velocityConnection:Disconnect() 
-                    velocityConnection = nil 
-                end
-                
-                task.wait(Fluent.Options.TweenInterval.Value)
-                
-                -- Re-enable physics mode and velocity control after wait
-                if humanoid and not stopRequested then 
-                    humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-                end
-                
-                if not stopRequested then
-                    velocityConnection = RunService.Stepped:Connect(function()
-                        if rootPart and rootPart.Parent then
-                            rootPart.Velocity = Vector3.new(0, -0.01, 0)
-                            rootPart.RotVelocity = Vector3.zero
-                        end
-                    end)
-                end
-            end
-            
-            -- NEW: Verify position is clear before ending segment
-            if not Fluent.Options.SegmentToggle.Value or (rootPart.Position - goalPos).Magnitude &lt;= 1 then
-                -- Check if we're inside something at the end
-                while isPositionInsideObject(rootPart.Position) and not stopRequested do
-                    updateStatus("Clearing collision zone...")
-                    -- Move slightly in direction of goal to get out
-                    local escapePos = rootPart.Position + (goalPos - rootPart.Position).Unit * 2
-                    performTweenSegment(escapePos)
-                    task.wait(0.1)
+                rootPart.Anchored = true -- Fix "Floating" issue by hard anchoring
+                task.wait(Fluent.Options.TweenInterval.Value) 
+                if not stopRequested then 
+                    rootPart.Anchored = false 
                 end
             end
         end
     end
 
     if Fluent.Options.SplitToggle.Value then
+        -- If GroundTween is on, XZ split logic naturally handles height via the Ground check inside moveToGoal
         moveToGoal(Vector3.new(targetPos.X, math.max(rootPart.Position.Y, MIN_Y_LIMIT), targetPos.Z), "Horizontally")
         if not stopRequested then moveToGoal(targetPos, "Vertically") end
     else
@@ -429,7 +318,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.7",
+    SubTitle = "V1.2.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -491,64 +380,4 @@ Tabs.Automation:AddButton({Title = "Stop Movement", Callback = stopTween})
 Tabs.Debug:AddSection("Live Statistics")
 SpeedLabel = Tabs.Debug:AddParagraph({
     Title = "Studs Per Second: 0",
-    Content = "Tracking live movement speed."
-})
-
--- Configuration Tab
-Tabs.Settings:AddSection("Movement Settings")
-Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ/Y", Default = false})
-Tabs.Settings:AddToggle("SegmentToggle", {Title = "Segments", Default = false})
-
--- NEW: STPS Speed Limiting
-Tabs.Settings:AddToggle("STPSToggle", {Title = "STPS Speed Limit", Default = false})
-Tabs.Settings:AddInput("STPSValue", {
-    Title = "Target STPS", 
-    Default = "30", 
-    Numeric = true,
-    Description = "Maximum studs per second"
-})
-
--- NEW: Ground-Only Mode
-Tabs.Settings:AddToggle("GroundOnlyToggle", {
-    Title = "Ground-Only Mode", 
-    Default = false,
-    Description = "Stay within 3 studs of ground"
-})
-
-Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed (Legacy)", Default = "0.5", Numeric = true})
-Tabs.Settings:AddInput("TweenDist", {Title = "Segment Dist", Default = "50", Numeric = true})
-Tabs.Settings:AddSlider("TweenInterval", {Title = "Interval", Default = 2, Min = 0.1, Max = 10, Rounding = 1})
-Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing", Values = {"Linear", "Quad", "Sine", "Cubic"}, Default = "Linear"})
-
-Tabs.Settings:AddSection("Discord Notifications")
-Tabs.Settings:AddInput("WebhookURL", {Title = "URL", Default = "", Callback = function(v) webhookURL = v end})
-Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):OnChanged(function(v) webhookEnabled = v end)
-
--- [[ SPEED TRACKING LOGIC ]]
-RunService.Heartbeat:Connect(function()
-    if SpeedLabel and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local velocity = LocalPlayer.Character.HumanoidRootPart.Velocity
-        local sps = math.floor(velocity.Magnitude + 0.5)
-        SpeedLabel:SetTitle("Studs Per Second: " .. tostring(sps))
-    end
-end)
-
--- Finalization and Auto-Load logic
-SaveManager:SetLibrary(Fluent)
-InterfaceManager:SetLibrary(Fluent)
-SaveManager:IgnoreThemeSettings()
-InterfaceManager:BuildInterfaceSection(Tabs.Settings)
-SaveManager:BuildConfigSection(Tabs.Settings)
-
-Window:SelectTab(1)
-updateStatus("Loading Config...")
-SaveManager:LoadAutoloadConfig()
-task.wait(0.5)
-isInitialized = true
-
-if HopperToggle.Value then
-    updateStatus("Auto-Starting (Config)...")
-    runHopperLogic()
-else
-    updateStatus("Idle")
-end
+    Content = "Tracking live
