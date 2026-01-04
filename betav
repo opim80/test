@@ -1,16 +1,17 @@
+--This is a roblox localscript ran by the player, and has no control over the server or access to changing the server
 --[[
-    CSMDH meth | V1.2.0
+    CSMDH meth | V1.3.0
     Professional Devil Heart Automation Utility
     
     Update Log:
+    - V1.3.0:
+      - Added "Floating Heart" (AC Bait) detection using Raycast.
+      - Added "Buried" detection (70% inside object).
+      - Added ProximityPrompt auto-hold logic.
+      - Added Inventory Check & "Tween on Max Hearts" configuration.
     - V1.2.0:
       - Added Position Notification when tweening.
-      - Fixed Direct Tween Y-Level logic (Bypasses safety limit when Split is OFF).
-      - Added "Drop Between Segments" toggle to control physics state during waits.
-    - V1.1.7: 
-      - Added AC Bait Collision Logic.
-      - Added Server Hop Expiry.
-      - Fixed Ground Alignment.
+      - Fixed Direct Tween Y-Level logic.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -49,6 +50,7 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local ProximityPromptService = game:GetService("ProximityPromptService")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
@@ -56,7 +58,7 @@ local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 941
 local AC_BAIT_Y_LIMIT = 911
-local ALIGNMENT_OFFSET = 3.5 -- Height from floor to RootPart center
+local ALIGNMENT_OFFSET = 3.5 
 
 -- State Variables
 local webhookURL = ""
@@ -67,10 +69,10 @@ local stopRequested = false
 local velocityConnection = nil
 local isHopperRunning = false
 
--- UI Elements to update
+-- UI Elements
 local StatusLabel = nil
 local SpeedLabel = nil 
-local HeightLabel = nil -- New label for ground status
+local HeightLabel = nil 
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -80,7 +82,28 @@ local function updateStatus(text)
     end
 end
 
--- Check if character is inside an object and unstuck them
+-- Inventory Check
+local function getHeartCount()
+    local count = 0
+    -- Check Backpack
+    if LocalPlayer:FindFirstChild("Backpack") then
+        for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") and (string.find(string.lower(tool.Name), "heart") or string.find(string.lower(tool.Name), "devil")) then
+                count = count + 1
+            end
+        end
+    end
+    -- Check Character (Equipped)
+    if LocalPlayer.Character then
+        for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
+            if tool:IsA("Tool") and (string.find(string.lower(tool.Name), "heart") or string.find(string.lower(tool.Name), "devil")) then
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
 local function unstuckCharacter()
     local char = LocalPlayer.Character
     if not char then return end
@@ -91,15 +114,11 @@ local function unstuckCharacter()
     overlapParams.FilterDescendantsInstances = {char}
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
 
-    -- Check if we are inside something
     local parts = Workspace:GetPartsInPart(root, overlapParams)
     
     if #parts > 0 then
-        -- Don't update status constantly to avoid flickering, just act
-        local safe = false
         local attempts = 0
         while #parts > 0 and attempts < 10 do
-            -- Nudge up
             root.CFrame = root.CFrame + Vector3.new(0, 1, 0)
             parts = Workspace:GetPartsInPart(root, overlapParams)
             attempts = attempts + 1
@@ -108,14 +127,12 @@ local function unstuckCharacter()
     end
 end
 
--- Raycast to find ground level
 local function getGroundPosition(targetX, targetZ)
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return nil end
     
-    -- Cast from high up downwards
     local rayOrigin = Vector3.new(targetX, char.HumanoidRootPart.Position.Y + 100, targetZ)
-    local rayDirection = Vector3.new(0, -5000, 0) -- Long ray to find floor
+    local rayDirection = Vector3.new(0, -5000, 0)
     
     local raycastParams = RaycastParams.new()
     raycastParams.FilterDescendantsInstances = {char}
@@ -125,14 +142,13 @@ local function getGroundPosition(targetX, targetZ)
     local raycastResult = Workspace:Raycast(rayOrigin, rayDirection, raycastParams)
     
     if raycastResult then
-        -- Return exact floor position. Offset is applied in tween logic.
         return Vector3.new(targetX, raycastResult.Position.Y, targetZ)
     else
         return nil
     end
 end
 
--- New function to check for collision group barriers
+-- Collision Group Check (Invisible Walls)
 local function checkPathCollision(targetPos)
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return false end
@@ -141,21 +157,63 @@ local function checkPathCollision(targetPos)
     local rokyo = map and map:FindFirstChild("Rokyo")
     local colGroup = rokyo and rokyo:FindFirstChild("Collision Group")
     
-    -- If the folder exists, we check if the path hits it
     if colGroup then
         local origin = char.HumanoidRootPart.Position
         local direction = targetPos - origin
         
         local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Include -- ONLY hit the collision group
+        params.FilterType = Enum.RaycastFilterType.Include
         params.FilterDescendantsInstances = {colGroup}
         
         local result = workspace:Raycast(origin, direction, params)
-        if result then
-            return true -- We hit a barrier part
-        end
+        if result then return true end
     end
     return false
+end
+
+-- Detailed Heart Analysis (Grounding & Burial)
+local function analyzeHeartPhysics(heartPart)
+    local pos = heartPart.Position
+
+    -- 1. Check if Buried (70% inside logic)
+    -- If the center of the heart is inside a CanCollide part, it is deeply buried.
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterDescendantsInstances = {heartPart, heartPart.Parent, LocalPlayer.Character}
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local partsInHeart = workspace:GetPartsInPart(heartPart, overlapParams)
+    for _, p in ipairs(partsInHeart) do
+        if p.CanCollide and p.Transparency < 1 then
+             -- If we are colliding with a solid visible part, consider it buried/bait
+            return "Buried", "Heart is inside " .. p.Name
+        end
+    end
+
+    -- 2. Check if Grounded (Downward Raycast)
+    -- Raycast 2 studs down from center + half size roughly.
+    local rayOrigin = heartPart.Position
+    local rayDir = Vector3.new(0, -3.5, 0) -- 3.5 studs down to be safe (Heart ~1-2 studs size)
+    
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {heartPart, heartPart.Parent, LocalPlayer.Character}
+    rayParams.IgnoreWater = false
+
+    local result = workspace:Raycast(rayOrigin, rayDir, rayParams)
+
+    if not result then
+        -- Ray hit nothing. Potential Floating Heart.
+        -- SAFETY: Check distance to account for StreamingEnabled false negatives.
+        local distFromPlayer = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) 
+            and (LocalPlayer.Character.HumanoidRootPart.Position - pos).Magnitude or 9999
+        
+        -- If we are relatively close (within 400 studs), the ground should be loaded.
+        -- If we are far, we assume it's valid to avoid skipping real hearts due to lag.
+        if distFromPlayer < 400 then
+            return "Floating", "Floating Heart (No ground detected)"
+        end
+    end
+
+    return "Valid", nil
 end
 
 local function findDevilHeart()
@@ -167,13 +225,22 @@ local function findDevilHeart()
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
                 if object:FindFirstChildOfClass("PointLight") then 
                     local pos = object.Position
-                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos end
-                    return "valid", pos
+                    
+                    -- Hard Height Check
+                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos, object end
+                    
+                    -- Physics Analysis (Floating/Buried)
+                    local status, reason = analyzeHeartPhysics(object)
+                    if status ~= "Valid" then
+                        return status, pos, object -- Returns "Floating" or "Buried"
+                    end
+
+                    return "valid", pos, object
                 end
             end
         end
     end
-    return nil, nil
+    return nil, nil, nil
 end
 
 local function sendWebhook(title, message, color)
@@ -201,10 +268,8 @@ local function serverHop()
     updateStatus("Preparing to hop...")
     local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
     
-    -- Update current server
     history[game.JobId] = os.time()
     
-    -- Cleanup Old Servers based on Configuration
     local expireMinutes = Fluent.Options.ServerLogExpiry and Fluent.Options.ServerLogExpiry.Value or 30
     local expireTime = expireMinutes * 60
     local currentTime = os.time()
@@ -236,7 +301,43 @@ end
 
 -- [[ MOVEMENT ENGINE ]]
 
-local function stopTween()
+local function collectHeart(targetPart)
+    if not targetPart then return end
+    updateStatus("Collecting Heart...")
+    
+    -- Try to find prompt
+    local prompt = targetPart:FindFirstChildOfClass("ProximityPrompt")
+    if not prompt then
+        -- Sometimes prompt is in parent or model
+        prompt = targetPart.Parent:FindFirstChildOfClass("ProximityPrompt")
+    end
+
+    if prompt then
+        local holdTime = prompt.HoldDuration or 0
+        
+        -- Fire prompt securely
+        if prompt.HoldDuration > 0 then
+            prompt:InputHoldBegin()
+            task.wait(holdTime + 0.1) -- Hold slightly longer to ensure register
+            prompt:InputHoldEnd()
+        else
+            prompt:InputHoldBegin()
+            prompt:InputHoldEnd()
+        end
+        
+        -- Fallback: standard fireproximityprompt if supported by executor
+        if fireproximityprompt then
+            fireproximityprompt(prompt)
+        end
+        
+        updateStatus("Heart collected.")
+        Fluent:Notify({Title = "Success", Content = "Heart Collected!", Duration = 3})
+    else
+        updateStatus("No Prompt Found.")
+    end
+end
+
+local function stopTween(finalPart)
     updateStatus("Stopping movement...")
     stopRequested = true
     for _, t in ipairs(activeTweens) do
@@ -253,6 +354,12 @@ local function stopTween()
         rootPart.Velocity = Vector3.zero 
     end
     if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
+    
+    -- If we arrived at a heart, collect it
+    if finalPart then
+        collectHeart(finalPart)
+    end
+    
     updateStatus("Movement stopped.")
 end
 
@@ -265,7 +372,6 @@ local function performTweenSegment(targetPos)
     local distance = (rootPart.Position - targetPos).Magnitude
     local duration
     
-    -- STPS Calculation Logic
     if Fluent.Options.UseSTPS.Value then
         local stps = tonumber(Fluent.Options.STPSValue.Value) or 30
         duration = distance / stps
@@ -274,7 +380,6 @@ local function performTweenSegment(targetPos)
         duration = (speed * distance) / 100
     end
     
-    -- Safety check for 0 duration
     if duration <= 0 then duration = 0.1 end
 
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
@@ -285,7 +390,7 @@ local function performTweenSegment(targetPos)
     tween.Completed:Wait()
 end
 
-local function startStagedTween(targetPos)
+local function startStagedTween(targetPos, targetObject)
     updateStatus("Initiating Tween...")
     stopRequested = false
     local character = LocalPlayer.Character
@@ -293,7 +398,6 @@ local function startStagedTween(targetPos)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
-    -- NOTIFICATION: Show Origin and Destination
     local startPos = rootPart.Position
     Fluent:Notify({
         Title = "Tween Started",
@@ -301,7 +405,6 @@ local function startStagedTween(targetPos)
         Duration = 5
     })
 
-    -- Keep player afloat unless we are pausing/anchoring
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent and not rootPart.Anchored then
             rootPart.Velocity = Vector3.new(0, -0.01, 0)
@@ -315,8 +418,6 @@ local function startStagedTween(targetPos)
         while (rootPart.Position - goalPos).Magnitude > 1 and not stopRequested do
             updateStatus("Moving " .. label .. "...")
             local currentPos = rootPart.Position
-            
-            -- Calculate Next Segment Point
             local dist = (currentPos - goalPos).Magnitude
             local stepDist = tonumber(Fluent.Options.TweenDist.Value)
             
@@ -327,49 +428,31 @@ local function startStagedTween(targetPos)
                 nextStep = goalPos
             end
             
-            -- Ground Follow Logic
             if Fluent.Options.GroundFollow.Value then
                 local groundPos = getGroundPosition(nextStep.X, nextStep.Z)
                 if groundPos then
-                    -- STRICT ALIGNMENT: Use ground Y + Offset
                     nextStep = Vector3.new(nextStep.X, groundPos.Y + ALIGNMENT_OFFSET, nextStep.Z)
                 else
-                    -- Fallback: Enforce Min Y if no ground found (void)
                     if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
                 end
             else
-                -- EDITED LOGIC: Handle X/Y Split Off Case
-                -- If SplitToggle is OFF, we want to go exactly to the XYZ coordinate.
-                -- We only enforce MIN_Y_LIMIT if Split is ON (safety) or if specifically desired.
                 if Fluent.Options.SplitToggle.Value then
                     if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
-                else
-                    -- Split is OFF: Tween directly to target (ignore Y Limit to reach hearts below void limit)
-                    -- nextStep stays as calculated (Linear interpolation to goal)
                 end
             end
 
             performTweenSegment(nextStep)
-            
-            -- Anti-Clip Check after movement
             unstuckCharacter()
 
             if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude > 1 then 
                 updateStatus("Segment Wait (" .. Fluent.Options.TweenInterval.Value .. "s)...")
-                
-                -- EDITED LOGIC: Segment Drop Configuration
                 if not Fluent.Options.SegmentDrop.Value then
-                    -- If Drop is OFF (default), Anchor to freeze position
                     rootPart.Anchored = true
                     rootPart.Velocity = Vector3.zero
                 end
-                
                 task.wait(Fluent.Options.TweenInterval.Value) 
-                
-                if not stopRequested then
-                    if not Fluent.Options.SegmentDrop.Value then
-                        rootPart.Anchored = false
-                    end
+                if not stopRequested and not Fluent.Options.SegmentDrop.Value then
+                    rootPart.Anchored = false
                 end
             end
         end
@@ -378,19 +461,17 @@ local function startStagedTween(targetPos)
     if Fluent.Options.SplitToggle.Value then
         local initialTargetY = math.max(rootPart.Position.Y, MIN_Y_LIMIT)
         if Fluent.Options.GroundFollow.Value then
-            -- If ground follow is on, XZ movement should still adhere to ground
             moveToGoal(Vector3.new(targetPos.X, rootPart.Position.Y, targetPos.Z), "Horizontally (Ground)")
         else
             moveToGoal(Vector3.new(targetPos.X, initialTargetY, targetPos.Z), "Horizontally")
         end
-        
         if not stopRequested then moveToGoal(targetPos, "Vertically/Final") end
     else
         moveToGoal(targetPos, "to Target")
     end
     
     updateStatus("Reached destination.")
-    stopTween()
+    stopTween(targetObject) -- Pass object for collection
 end
 
 -- [[ CORE HOPPER LOOP ]]
@@ -402,27 +483,50 @@ local function runHopperLogic()
     
     task.spawn(function()
         while Fluent.Options.HopperToggle.Value do
-            local status, heartPos = findDevilHeart()
+            local status, heartPos, heartObj = findDevilHeart()
             
+            -- INVENTORY CHECK
+            local currentHearts = getHeartCount()
+            local maxHeartsAllowed = Fluent.Options.MaxHeartLimit.Value
+            local isMaxed = currentHearts >= maxHeartsAllowed
+
             if status == "valid" then
-                -- Perform Collision Group Check here
                 if checkPathCollision(heartPos) then
                     updateStatus("Barrier Detected! Marking as Bait.")
                     sendWebhook("⚠️ Collision Bait Detected", "Tween blocked by invisible wall. Hopping.", 0xff9900)
                     serverHop()
+                elseif isMaxed and not Fluent.Options.TweenOnMax.Value then
+                    updateStatus("Max hearts reached. Hopping...")
+                    sendWebhook("ℹ️ Heart Found (Skipped)", "Server " .. game.JobId .. " has a heart, but " .. LocalPlayer.Name .. " is already max on hearts.", 0x00aaff)
+                    serverHop()
                 else
                     updateStatus("Heart found! Stopping hopper.")
-                    sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId)
+                    sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId .. "\nStatus: Valid", 0x00ff00)
                     if Fluent.Options.AutoTweenOnFind.Value then
-                        startStagedTween(heartPos)
+                        startStagedTween(heartPos, heartObj)
                     end
                     Fluent.Options.HopperToggle:SetValue(false)
                     break
                 end
-            elseif status == "ACBait" then
-                updateStatus("ACBait (Height) detected! Skipping...")
-                sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y, 0xff0000)
+
+            elseif status == "Floating" then
+                -- BAIT: Floating Heart
+                updateStatus("Floating Heart (AC Bait) Detected!")
+                sendWebhook("⚠️ AC Bait Detected", "Reason: Floating Heart (No Ground). Server: " .. game.JobId, 0xff0000)
                 serverHop()
+
+            elseif status == "Buried" then
+                -- BAIT: Buried Heart
+                updateStatus("Buried Heart (AC Bait) Detected!")
+                sendWebhook("⚠️ AC Bait Detected", "Reason: Heart Buried inside Object. Server: " .. game.JobId, 0xff0000)
+                serverHop()
+
+            elseif status == "ACBait" then
+                -- BAIT: Y-Level
+                updateStatus("ACBait (Height) detected! Skipping...")
+                sendWebhook("⚠️ AC Bait Detected", "Reason: Height (Y < 911). Server: " .. game.JobId, 0xff0000)
+                serverHop()
+                
             else
                 updateStatus("No heart found.")
                 serverHop()
@@ -440,7 +544,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.2.0",
+    SubTitle = "Beta",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 520), 
     Acrylic = true, 
@@ -473,6 +577,14 @@ end)
 
 Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery", Default = true })
 
+Tabs.Automation:AddSection("Inventory Logic")
+Tabs.Automation:AddSlider("MaxHeartLimit", {Title = "Max Hearts Allowed", Default = 1, Min = 1, Max = 10, Rounding = 1})
+Tabs.Automation:AddToggle("TweenOnMax", {
+    Title = "Tween on Max Hearts", 
+    Default = false,
+    Description = "If OFF: Skips heart and hops if inventory is full."
+})
+
 Tabs.Automation:AddButton({
     Title = "Start Hopper",
     Callback = function()
@@ -487,7 +599,7 @@ Tabs.Automation:AddButton({
 
 Tabs.Automation:AddSection("Manual Actions")
 Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
-    local status, hp = findDevilHeart()
+    local status, hp, obj = findDevilHeart()
     local colCheck = hp and checkPathCollision(hp)
     local res = status
     if status == "valid" and colCheck then res = "Bait (Collision)" end
@@ -495,11 +607,11 @@ Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
 end})
 
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
-    local status, hp = findDevilHeart() 
-    if status == "valid" then startStagedTween(hp) end 
+    local status, hp, obj = findDevilHeart() 
+    if status == "valid" then startStagedTween(hp, obj) end 
 end})
 
-Tabs.Automation:AddButton({Title = "Stop Movement", Callback = stopTween})
+Tabs.Automation:AddButton({Title = "Stop Movement", Callback = function() stopTween(nil) end})
 
 -- Debug Tab
 Tabs.Debug:AddSection("Live Statistics")
@@ -541,7 +653,6 @@ Tabs.Settings:AddInput("TweenDist", {Title = "Segment Distance", Default = "50",
 Tabs.Settings:AddSlider("TweenInterval", {Title = "Wait Interval", Default = 1, Min = 0.1, Max = 10, Rounding = 1})
 Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing", Values = {"Linear", "Quad", "Sine", "Cubic"}, Default = "Linear"})
 
--- NEW TOGGLE: Drop Between Segments
 Tabs.Settings:AddToggle("SegmentDrop", {
     Title = "Drop Between Segments", 
     Default = false, 
@@ -554,7 +665,6 @@ Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):O
 
 -- [[ LOOPS ]]
 
--- Speed and Height Tracking
 RunService.Heartbeat:Connect(function()
     local char = LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -584,7 +694,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- Finalization and Auto-Load logic
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
