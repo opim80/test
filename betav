@@ -55,7 +55,7 @@ local MESH_ID_TARGET = "rbxassetid://12439777368"
 local SERVER_LOG_FILE = "fluent_server_history.json"
 local LocalPlayer = Players.LocalPlayer
 local MIN_Y_LIMIT = 941
-local AC_BAIT_Y_LIMIT = 940
+local AC_BAIT_Y_LIMIT = 911
 local ALIGNMENT_OFFSET = 3.5 -- Height from floor to RootPart center
 
 -- State Variables
