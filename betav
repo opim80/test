@@ -1,9 +1,9 @@
 --[[
-    CSMDH meth | V1.3.1 (Custom Edit)
+    CSMDH meth | V1.1.7 (Custom Edit)
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - V1.3.1: 
+    - V1.1.7: 
       - Fixed XYZ Tweening: Direct pathing when Split Mode is OFF (ignores height limits).
       - Added 'Drop Between Segments' Config: Optional unanchoring during segment waits.
     - V1.3.0: 
@@ -429,7 +429,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.3.1",
+    SubTitle = "V1.1.7",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 520), 
     Acrylic = true, 
