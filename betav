@@ -1,12 +1,12 @@
 --[[
-    CSMDH meth | V1.1.6
+    CSMDH meth | V1.1.7
     Professional Devil Heart Automation Utility
     
     Update Log:
-    - Added Dynamic Status System: Real-time feedback on script actions.
-    - Status updates integrated into Hopper, Tween, and Webhook logic.
-    - Preserves Manual/Auto-Start logic and getconnections() interceptor.
-    - NEW: Added Debug section with real-time Studs Per Second (SPS) tracker.
+    - Added STPS (Studs Per Second) constant speed mode.
+    - Added Ground-Following logic (stays 3 studs above floor).
+    - Fixed Segment Floating: Players now fall naturally during intervals.
+    - Added Anti-Stuck: Tweens won't end inside parts/meshes.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -61,9 +61,9 @@ local stopRequested = false
 local velocityConnection = nil
 local isHopperRunning = false
 
--- UI Elements to update
+-- UI Elements
 local StatusLabel = nil
-local SpeedLabel = nil -- New label for debug tracking
+local SpeedLabel = nil 
 
 -- [[ HELPER FUNCTIONS ]]
 
@@ -71,6 +71,29 @@ local function updateStatus(text)
     if StatusLabel then
         StatusLabel:SetTitle("Status: " .. text)
     end
+end
+
+-- Checks if the player is inside any part/mesh
+local function isInsideObject(pos)
+    local region = Region3.new(pos - Vector3.new(1,1,1), pos + Vector3.new(1,1,1))
+    local parts = workspace:FindPartsInRegion3(region, LocalPlayer.Character, 10)
+    for _, part in ipairs(parts) do
+        if part.CanCollide then return true end
+    end
+    return false
+end
+
+-- Ground following logic
+local function getGroundY(currentPos)
+    local rayParam = RaycastParams.new()
+    rayParam.FilterDescendantsInstances = {LocalPlayer.Character}
+    rayParam.FilterType = Enum.RaycastFilterType.Exclude
+
+    local result = workspace:Raycast(currentPos + Vector3.new(0, 5, 0), Vector3.new(0, -500, 0), rayParam)
+    if result then
+        return result.Position.Y + 3
+    end
+    return currentPos.Y
 end
 
 local function findDevilHeart()
@@ -93,7 +116,6 @@ end
 
 local function sendWebhook(title, message, color)
     if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
-        updateStatus("Sending Webhook...")
         local data = {
             ["embeds"] = {{
                 ["title"] = title,
@@ -119,7 +141,6 @@ local function serverHop()
     history[game.JobId] = os.time()
     writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
 
-    updateStatus("Fetching server list...")
     local success, result = pcall(function()
         return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"))
     end)
@@ -127,19 +148,16 @@ local function serverHop()
     if success and result and result.data then
         for _, server in ipairs(result.data) do
             if server.playing < server.maxPlayers and not history[server.id] and server.id ~= game.JobId then
-                updateStatus("Teleporting to: " .. server.id)
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, server.id)
                 return
             end
         end
     end
-    updateStatus("No suitable servers found.")
 end
 
 -- [[ MOVEMENT ENGINE ]]
 
 local function stopTween()
-    updateStatus("Stopping movement...")
     stopRequested = true
     for _, t in ipairs(activeTweens) do
         if t.PlaybackState == Enum.PlaybackState.Playing then t:Cancel() end
@@ -148,7 +166,9 @@ local function stopTween()
     if velocityConnection then velocityConnection:Disconnect() velocityConnection = nil end
     local character = LocalPlayer.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Landed) end
+    if humanoid then 
+        humanoid:ChangeState(Enum.HumanoidStateType.Landed) 
+    end
     updateStatus("Movement stopped.")
 end
 
@@ -158,9 +178,23 @@ local function performTweenSegment(targetPos)
     local rootPart = character and character:FindFirstChild("HumanoidRootPart")
     if not rootPart then return end
 
-    local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+    -- Ground Following Adjustment
+    if Fluent.Options.GroundOnly.Value then
+        local groundY = getGroundY(targetPos)
+        targetPos = Vector3.new(targetPos.X, groundY, targetPos.Z)
+    end
+
     local distance = (rootPart.Position - targetPos).Magnitude
-    local duration = (speed * distance) / 100
+    local duration = 0
+    
+    -- Speed Mode Selection
+    if Fluent.Options.SpeedMode.Value == "STPS (Constant)" then
+        local stps = tonumber(Fluent.Options.TweenSTPS.Value) or 30
+        duration = distance / stps
+    else
+        local speed = tonumber(Fluent.Options.TweenSpeed.Value) or 0.5
+        duration = (speed * distance) / 100
+    end
 
     local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle[Fluent.Options.TweenEasing.Value], Enum.EasingDirection.Out)
     local tween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPos)})
@@ -168,6 +202,13 @@ local function performTweenSegment(targetPos)
     table.insert(activeTweens, tween)
     tween:Play()
     tween.Completed:Wait()
+
+    -- Anti-Stuck Check
+    while isInsideObject(rootPart.Position) and not stopRequested do
+        updateStatus("Anti-Stuck: Adjusting...")
+        rootPart.CFrame = rootPart.CFrame * CFrame.new(0, 2, 0)
+        task.wait(0.1)
+    end
 end
 
 local function startStagedTween(targetPos)
@@ -178,27 +219,41 @@ local function startStagedTween(targetPos)
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not rootPart then return end
 
-    velocityConnection = RunService.Stepped:Connect(function()
-        if rootPart and rootPart.Parent then
-            rootPart.Velocity = Vector3.new(0, -0.01, 0)
-            rootPart.RotVelocity = Vector3.zero
-        end
-    end)
-    if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
+    local function setNoVelocity()
+        if velocityConnection then velocityConnection:Disconnect() end
+        velocityConnection = RunService.Stepped:Connect(function()
+            if rootPart and rootPart.Parent then
+                rootPart.Velocity = Vector3.new(0, -0.01, 0)
+                rootPart.RotVelocity = Vector3.zero
+            end
+        end)
+    end
 
     local function moveToGoal(goalPos, label)
-        while (rootPart.Position - goalPos).Magnitude > 1 and not stopRequested do
+        while (rootPart.Position - goalPos).Magnitude > 2 and not stopRequested do
+            setNoVelocity()
+            if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Physics) end
+            
             updateStatus("Moving " .. label .. "...")
             local currentPos = rootPart.Position
             local dist = (currentPos - goalPos).Magnitude
-            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > tonumber(Fluent.Options.TweenDist.Value)) 
-                and (currentPos + (goalPos - currentPos).Unit * tonumber(Fluent.Options.TweenDist.Value)) or goalPos
             
-            if nextStep.Y < MIN_Y_LIMIT then nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) end
+            local segmentDist = tonumber(Fluent.Options.TweenDist.Value) or 50
+            local nextStep = (Fluent.Options.SegmentToggle.Value and dist > segmentDist) 
+                and (currentPos + (goalPos - currentPos).Unit * segmentDist) or goalPos
+            
+            if nextStep.Y < MIN_Y_LIMIT and not Fluent.Options.GroundOnly.Value then 
+                nextStep = Vector3.new(nextStep.X, MIN_Y_LIMIT, nextStep.Z) 
+            end
+            
             performTweenSegment(nextStep)
             
-            if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude > 1 then 
-                updateStatus("Segment Wait (" .. Fluent.Options.TweenInterval.Value .. "s)...")
+            -- Segment Interval handling (Falling)
+            if not stopRequested and Fluent.Options.SegmentToggle.Value and (rootPart.Position - goalPos).Magnitude > 2 then 
+                if velocityConnection then velocityConnection:Disconnect() velocityConnection = nil end
+                if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Falling) end
+                
+                updateStatus("Segment Wait (Gravity Active)...")
                 task.wait(Fluent.Options.TweenInterval.Value) 
             end
         end
@@ -210,6 +265,7 @@ local function startStagedTween(targetPos)
     else
         moveToGoal(targetPos, "to Target")
     end
+    
     updateStatus("Reached destination.")
     stopTween()
 end
@@ -219,34 +275,24 @@ end
 local function runHopperLogic()
     if isHopperRunning then return end
     isHopperRunning = true
-    updateStatus("Hopper Started.")
     
     task.spawn(function()
         while Fluent.Options.HopperToggle.Value do
             local status, heartPos = findDevilHeart()
-            
             if status == "ACBait" then
-                updateStatus("ACBait detected! Skipping...")
                 sendWebhook("⚠️ ACBait Detected", "Ignoring heart at Y: " .. heartPos.Y, 0xff0000)
                 serverHop()
             elseif status == "valid" then
-                updateStatus("Heart found! Stopping hopper.")
                 sendWebhook("✅ Valid Heart Found!", "Target in server: " .. game.JobId)
-                if Fluent.Options.AutoTweenOnFind.Value then
-                    startStagedTween(heartPos)
-                end
+                if Fluent.Options.AutoTweenOnFind.Value then startStagedTween(heartPos) end
                 Fluent.Options.HopperToggle:SetValue(false)
                 break
             else
-                updateStatus("No heart found.")
                 serverHop()
             end
-            
-            updateStatus("Wait interval...")
             task.wait(10)
         end
         isHopperRunning = false
-        updateStatus("Hopper Disabled.")
     end)
 end
 
@@ -254,78 +300,49 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.1.6",
+    SubTitle = "V1.1.7",
     TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
+    Size = UDim2.fromOffset(580, 520),
     Acrylic = true, 
     Theme = "Dark"
 })
 
 local Tabs = {
     Automation = Window:AddTab({ Title = "Automation", Icon = "play" }),
-    Debug = Window:AddTab({ Title = "Debug", Icon = "bug" }), -- Added Debug Tab
+    Debug = Window:AddTab({ Title = "Debug", Icon = "bug" }),
     Settings = Window:AddTab({ Title = "Configuration", Icon = "settings" })
 }
 
--- Automation Tab
-StatusLabel = Tabs.Automation:AddParagraph({
-    Title = "Status: Idle",
-    Content = "The script is currently awaiting instructions."
-})
+StatusLabel = Tabs.Automation:AddParagraph({ Title = "Status: Idle", Content = "Awaiting instructions." })
 
 Tabs.Automation:AddSection("Heart Detector")
 local HopperToggle = Tabs.Automation:AddToggle("HopperToggle", {Title = "Auto-Hop Loop", Default = false })
-
-HopperToggle:OnChanged(function()
-    if HopperToggle.Value then
-        updateStatus("Hopper Toggle ON (Awaiting Start)")
-        Fluent:Notify({Title = "Hopper Ready", Content = "Loop enabled. Press 'Start' to begin.", Duration = 3})
-    else
-        updateStatus("Idle")
-    end
-end)
-
 Tabs.Automation:AddToggle("AutoTweenOnFind", {Title = "Auto-Tween on Discovery", Default = true })
-
-Tabs.Automation:AddButton({
-    Title = "Start Hopper",
-    Callback = function()
-        if HopperToggle.Value then
-            runHopperLogic()
-        else
-            updateStatus("Error: Toggle off")
-            Fluent:Notify({Title = "Warning", Content = "Enable the 'Auto-Hop Loop' toggle first.", Duration = 3})
-        end
-    end
-})
+Tabs.Automation:AddButton({ Title = "Start Hopper", Callback = runHopperLogic })
 
 Tabs.Automation:AddSection("Manual Actions")
-Tabs.Automation:AddButton({Title = "Check Server", Callback = function()
-    local status, hp = findDevilHeart()
-    updateStatus("Manual Scan Result: " .. (status or "None"))
-end})
-
 Tabs.Automation:AddButton({Title = "Tween to Heart", Callback = function() 
     local status, hp = findDevilHeart() 
     if status == "valid" then startStagedTween(hp) end 
 end})
-
 Tabs.Automation:AddButton({Title = "Stop Movement", Callback = stopTween})
 
--- Debug Tab (NEW)
+-- Debug Tab
 Tabs.Debug:AddSection("Live Statistics")
-SpeedLabel = Tabs.Debug:AddParagraph({
-    Title = "Studs Per Second: 0",
-    Content = "Tracking live movement speed."
-})
+SpeedLabel = Tabs.Debug:AddParagraph({ Title = "Studs Per Second: 0", Content = "Real-time velocity." })
 
 -- Configuration Tab
-Tabs.Settings:AddSection("Movement Settings")
+Tabs.Settings:AddSection("Movement Modes")
+Tabs.Settings:AddDropdown("SpeedMode", {Title = "Speed Method", Values = {"Classic (Time Multiplier)", "STPS (Constant)"}, Default = "STPS (Constant)"})
+Tabs.Settings:AddInput("TweenSTPS", {Title = "Constant STPS", Default = "30", Numeric = true})
+Tabs.Settings:AddInput("TweenSpeed", {Title = "Classic Speed Multiplier", Default = "0.5", Numeric = true})
+Tabs.Settings:AddToggle("GroundOnly", {Title = "Ground Only Mode (Stay +3 Studs)", Default = false})
+
+Tabs.Settings:AddSection("Segmentation & Split")
 Tabs.Settings:AddToggle("SplitToggle", {Title = "Split XZ/Y", Default = false})
 Tabs.Settings:AddToggle("SegmentToggle", {Title = "Segments", Default = false})
-Tabs.Settings:AddInput("TweenSpeed", {Title = "Speed", Default = "0.5", Numeric = true})
-Tabs.Settings:AddInput("TweenDist", {Title = "Segment Dist", Default = "50", Numeric = true})
-Tabs.Settings:AddSlider("TweenInterval", {Title = "Interval", Default = 2, Min = 0.1, Max = 10, Rounding = 1})
+Tabs.Settings:AddInput("TweenDist", {Title = "Segment Distance", Default = "50", Numeric = true})
+Tabs.Settings:AddSlider("TweenInterval", {Title = "Segment Interval", Default = 2, Min = 0.1, Max = 10, Rounding = 1})
 Tabs.Settings:AddDropdown("TweenEasing", {Title = "Easing", Values = {"Linear", "Quad", "Sine", "Cubic"}, Default = "Linear"})
 
 Tabs.Settings:AddSection("Discord Notifications")
@@ -335,29 +352,16 @@ Tabs.Settings:AddToggle("WebhookEnable", {Title = "Enable", Default = false }):O
 -- [[ SPEED TRACKING LOGIC ]]
 RunService.Heartbeat:Connect(function()
     if SpeedLabel and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
-        local velocity = LocalPlayer.Character.HumanoidRootPart.Velocity
-        -- Magnitude represents studs per second
-        local sps = math.floor(velocity.Magnitude + 0.5)
+        local sps = math.floor(LocalPlayer.Character.HumanoidRootPart.Velocity.Magnitude + 0.5)
         SpeedLabel:SetTitle("Studs Per Second: " .. tostring(sps))
     end
 end)
 
--- Finalization and Auto-Load logic
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
-SaveManager:IgnoreThemeSettings()
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
-
 Window:SelectTab(1)
-updateStatus("Loading Config...")
 SaveManager:LoadAutoloadConfig()
-task.wait(0.5)
-isInitialized = true
 
-if HopperToggle.Value then
-    updateStatus("Auto-Starting (Config)...")
-    runHopperLogic()
-else
-    updateStatus("Idle")
-end
+updateStatus("V1.1.7 Ready")
