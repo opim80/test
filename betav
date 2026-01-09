@@ -205,11 +205,13 @@ end
 
 -- Detailed Heart Analysis (Grounding & Burial)
 local function analyzeHeartPhysics(heartPart)
+    updateStatus("DEBUG: Physics - analyzing...")
     local pos = heartPart.Position
 
     -- Optimization: Use pcall to prevent crashes on physics errors
     local success, result, failureReason = pcall(function()
         -- 1. Check if Buried
+        updateStatus("DEBUG: Physics - Checking burial...")
         local overlapParams = OverlapParams.new()
         overlapParams.FilterDescendantsInstances = {heartPart, heartPart.Parent, LocalPlayer.Character}
         overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -217,11 +219,13 @@ local function analyzeHeartPhysics(heartPart)
         local partsInHeart = workspace:GetPartsInPart(heartPart, overlapParams)
         for _, p in ipairs(partsInHeart) do
             if p.CanCollide and p.Transparency < 1 then
+                updateStatus("DEBUG: Physics - Buried inside " .. p.Name)
                 return "Buried", "Heart is inside " .. p.Name
             end
         end
 
         -- 2. Check if Grounded
+        updateStatus("DEBUG: Physics - Checking float...")
         local rayOrigin = heartPart.Position
         local rayDir = Vector3.new(0, -3.5, 0)
         local rayParams = RaycastParams.new()
@@ -235,49 +239,72 @@ local function analyzeHeartPhysics(heartPart)
                 and (LocalPlayer.Character.HumanoidRootPart.Position - pos).Magnitude or 9999
             
             if distFromPlayer < 400 then
+                 updateStatus("DEBUG: Physics - is Floating.")
                  return "Floating", "Floating Heart (No ground detected)"
             end
         end
+        updateStatus("DEBUG: Physics - Valid.")
         return "Valid", nil
     end)
 
-    if not success then return "Valid", nil end -- Assume valid if physics check fails (fail-open)
+    if not success then 
+        updateStatus("DEBUG: Physics - Pcall Error.")
+        return "Valid", nil 
+    end -- Assume valid if physics check fails (fail-open)
     if result then return result, failureReason end
 
     return "Valid", nil
 end
 
 local function findDevilHeart()
-    updateStatus("Scanning for heart...")
+    updateStatus("DEBUG: Starting Heart Scan...")
     local map = workspace:FindFirstChild("map")
     local rokyos = map and map:FindFirstChild("Rokyo")
     
+    if not map then updateStatus("DEBUG: 'map' folder not found!") end
+    if not rokyos then updateStatus("DEBUG: 'Rokyo' folder not found!") end
+
     if rokyos then
         local children = rokyos:GetChildren() -- Snapshot children
+        updateStatus("DEBUG: Scanning " .. #children .. " objects in Rokyo...")
         for i, object in ipairs(children) do
             -- Optimization: Only yield if processing many items to prevent hang
-            if i % 100 == 0 then task.wait() end 
+            if i % 100 == 0 then 
+                updateStatus("DEBUG: Scanned " .. i .. "/" .. #children .. " objects...")
+                task.wait() 
+            end 
 
             if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
+                updateStatus("DEBUG: Potential Heart Mesh found at index " .. i)
                 if object:FindFirstChildOfClass("PointLight") then 
+                    updateStatus("DEBUG: PointLight confirmed. Checking coords...")
                     local pos = object.Position
                     currentHeartRef = object -- Cache for Debug
                     
                     -- Hard Height Check
-                    if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos, object end
+                    if pos.Y < AC_BAIT_Y_LIMIT then 
+                        updateStatus("DEBUG: Heart below Y limit (Is Bait).")
+                        return "ACBait", pos, object 
+                    end
                     
                     -- Physics Analysis
+                    updateStatus("DEBUG: Running Physics Analysis...")
                     local status, reason = analyzeHeartPhysics(object)
                     if status ~= "Valid" then
+                        updateStatus("DEBUG: Physics invalid: " .. status)
                         return status, pos, object
                     end
 
+                    updateStatus("DEBUG: Heart Validated! Returning target.")
                     return "valid", pos, object
+                else
+                    updateStatus("DEBUG: Mesh found but missing PointLight.")
                 end
             end
         end
     end
     currentHeartRef = nil
+    updateStatus("DEBUG: Scan finished. No heart found.")
     return nil, nil, nil
 end
 
