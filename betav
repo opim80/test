@@ -1,17 +1,22 @@
---[[
-    CSMDH meth | V1.3.1
-    Professional Devil Heart Automation Utility
-    
-    Update Log:
-    - V1.3.1:
-      - OPTIMIZATION: Fixed memory leak in velocity connections.
-      - OPTIMIZATION: Added timeouts to movement loops to prevent getting stuck.
-      - DEBUG: Added "View Heart" camera toggle.
-      - DEBUG: Added "Heart Highlight" (Outline only, AlwaysOnTop).
-      - DEBUG: Added detailed Stat calculator (Floating/Colliding/Bait %).
-      - FIX: Addressed freeze/hang during scanning logic.
-    - V1.3.0:
-      - Added Physics Analysis (Raycast/GetPartsInPart).
+--[[ CSMDH meth | V1.3.2
+Professional Devil Heart Automation Utility
+
+Update Log:
+- V1.3.2:
+  - OPTIMIZATION: Fixed memory leaks in velocity connections and highlight instances.
+  - OPTIMIZATION: Added timeouts to movement loops to prevent script hang.
+  - DEBUG: Standardized emoji formatting (✅/❌) in all heart analysis outputs.
+  - FIX: Addressed freeze during physics analysis when hearts are floating.
+  - FIX: Resolved emoji inconsistencies in debug messages.
+- V1.3.1:
+  - OPTIMIZATION: Fixed memory leak in velocity connections.
+  - OPTIMIZATION: Added timeouts to movement loops to prevent getting stuck.
+  - DEBUG: Added "View Heart" camera toggle.
+  - DEBUG: Added "Heart Highlight" (Outline only, AlwaysOnTop).
+  - DEBUG: Added detailed Stat calculator (Floating/Colliding/Bait %).
+  - FIX: Addressed freeze/hang during scanning logic.
+- V1.3.0:
+  - Added Physics Analysis (Raycast/GetPartsInPart).
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -643,7 +648,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.3.1",
+    SubTitle = "V1.3.2",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 520), 
     Acrylic = true, 
