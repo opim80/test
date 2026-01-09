@@ -31,6 +31,14 @@ local function handleNativeMainMenu()
                 for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
                     connection:Fire()
                 end
+            else
+                -- Fallback for executors without getconnections
+                local pos = playButton.AbsolutePosition
+                local size = playButton.AbsoluteSize
+                local center = pos + (size / 2)
+                game:GetService("VirtualInputManager"):SendMouseButtonEvent(center.X, center.Y, 0, true, game, 1)
+                task.wait(0.1)
+                game:GetService("VirtualInputManager"):SendMouseButtonEvent(center.X, center.Y, 0, false, game, 1)
             end
         end
     end
@@ -50,7 +58,6 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
-local ProximityPromptService = game:GetService("ProximityPromptService")
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
@@ -82,7 +89,7 @@ local function updateStatus(text)
     end
 end
 
--- Inventory Check
+-- Inventory Check to prevent picking up hearts when full
 local function getHeartCount()
     local count = 0
     -- Check Backpack
@@ -119,6 +126,7 @@ local function unstuckCharacter()
     if #parts > 0 then
         local attempts = 0
         while #parts > 0 and attempts < 10 do
+            if not root or not root.Parent then break end
             root.CFrame = root.CFrame + Vector3.new(0, 1, 0)
             parts = Workspace:GetPartsInPart(root, overlapParams)
             attempts = attempts + 1
@@ -148,7 +156,7 @@ local function getGroundPosition(targetX, targetZ)
     end
 end
 
--- Collision Group Check (Invisible Walls)
+-- Collision Group Check (Invisible Walls/Barriers)
 local function checkPathCollision(targetPos)
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return false end
@@ -171,7 +179,7 @@ local function checkPathCollision(targetPos)
     return false
 end
 
--- Detailed Heart Analysis (Grounding & Burial)
+-- Detailed Heart Analysis (Grounding & Burial) to detect Anti-Cheat Bait
 local function analyzeHeartPhysics(heartPart)
     local pos = heartPart.Position
 
@@ -190,9 +198,9 @@ local function analyzeHeartPhysics(heartPart)
     end
 
     -- 2. Check if Grounded (Downward Raycast)
-    -- Raycast 2 studs down from center + half size roughly.
+    -- Raycast 3.5 studs down.
     local rayOrigin = heartPart.Position
-    local rayDir = Vector3.new(0, -3.5, 0) -- 3.5 studs down to be safe (Heart ~1-2 studs size)
+    local rayDir = Vector3.new(0, -3.5, 0) 
     
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {heartPart, heartPart.Parent, LocalPlayer.Character}
@@ -202,12 +210,12 @@ local function analyzeHeartPhysics(heartPart)
 
     if not result then
         -- Ray hit nothing. Potential Floating Heart.
-        -- SAFETY: Check distance to account for StreamingEnabled false negatives.
-        local distFromPlayer = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) 
-            and (LocalPlayer.Character.HumanoidRootPart.Position - pos).Magnitude or 9999
+        -- SAFETY: Check distance to account for StreamingEnabled or unloaded chunks.
+        local char = LocalPlayer.Character
+        local distFromPlayer = (char and char:FindFirstChild("HumanoidRootPart")) 
+            and (char.HumanoidRootPart.Position - pos).Magnitude or 9999
         
-        -- If we are relatively close (within 400 studs), the ground should be loaded.
-        -- If we are far, we assume it's valid to avoid skipping real hearts due to lag.
+        -- If we are relatively close (within 400 studs), the ground should have loaded.
         if distFromPlayer < 400 then
             return "Floating", "Floating Heart (No ground detected)"
         end
@@ -226,7 +234,7 @@ local function findDevilHeart()
                 if object:FindFirstChildOfClass("PointLight") then 
                     local pos = object.Position
                     
-                    -- Hard Height Check
+                    -- Hard Height Check (Anti-Cheat Bait is usually very low)
                     if pos.Y < AC_BAIT_Y_LIMIT then return "ACBait", pos, object end
                     
                     -- Physics Analysis (Floating/Buried)
@@ -244,7 +252,7 @@ local function findDevilHeart()
 end
 
 local function sendWebhook(title, message, color)
-    if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord.com/api/webhooks") then
+    if webhookEnabled and webhookURL ~= "" and webhookURL:find("discord") then
         local data = {
             ["embeds"] = {{
                 ["title"] = title,
@@ -296,7 +304,9 @@ local function serverHop()
             end
         end
     end
-    updateStatus("No suitable servers found.")
+    updateStatus("No suitable servers found. Retrying...")
+    task.wait(2)
+    serverHop()
 end
 
 -- [[ MOVEMENT ENGINE ]]
@@ -305,18 +315,27 @@ local function collectHeart(targetPart)
     if not targetPart then return end
     updateStatus("Collecting Heart...")
     
+    -- Ensure user is exactly on the prompt to pass max distance checks
+    local char = LocalPlayer.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        char.HumanoidRootPart.CFrame = targetPart.CFrame
+        task.wait(0.1)
+    end
+
     -- Try to find prompt
     local prompt = targetPart:FindFirstChildOfClass("ProximityPrompt")
     if not prompt then
-        -- Sometimes prompt is in parent or model
         prompt = targetPart.Parent:FindFirstChildOfClass("ProximityPrompt")
     end
 
-    if prompt then
+    if prompt and prompt.Enabled then
         local holdTime = prompt.HoldDuration or 0
         
-        -- Fire prompt securely
-        if prompt.HoldDuration > 0 then
+        -- Logic: If we can instafire, try it. If not, manual hold.
+        -- Note: Some anti-cheats flag instant fire on hold prompts.
+        -- We perform the manual hold first for safety/legitimacy.
+        
+        if holdTime > 0 then
             prompt:InputHoldBegin()
             task.wait(holdTime + 0.1) -- Hold slightly longer to ensure register
             prompt:InputHoldEnd()
@@ -325,7 +344,7 @@ local function collectHeart(targetPart)
             prompt:InputHoldEnd()
         end
         
-        -- Fallback: standard fireproximityprompt if supported by executor
+        -- Fallback: standard fireproximityprompt if supported by executor and manual failed
         if fireproximityprompt then
             fireproximityprompt(prompt)
         end
@@ -405,6 +424,7 @@ local function startStagedTween(targetPos, targetObject)
         Duration = 5
     })
 
+    -- Anti-Fall logic
     velocityConnection = RunService.Stepped:Connect(function()
         if rootPart and rootPart.Parent and not rootPart.Anchored then
             rootPart.Velocity = Vector3.new(0, -0.01, 0)
