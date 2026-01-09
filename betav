@@ -1,16 +1,16 @@
 --[[
-    CSMDH meth | V1.3.4
+    CSMDH meth | V1.3.5
     Professional Devil Heart Automation Utility
     
     Update Log:
+    - V1.3.5:
+      - NEW: "Server List" Tab. View all available servers and cached servers.
+      - NEW: Join servers directly from the UI.
+      - NEW: Shows expiry timers for cached servers.
+      - LOGIC: If no new servers are found (list exhausted), the script now stops hopping and sends a Discord Webhook.
     - V1.3.4:
       - NEW: Manual Server Hop, Clear Cache, and Test Webhook buttons.
       - NEW: Performance Section (Fast Mode / ULTRA Fast Mode).
-      - FIX: Revised Discord Webhook headers (restored functionality from 1.1.5).
-      - UI: Added more Fluent notifications for user feedback.
-    - V1.3.3: (Previous)
-      - Separated Data/Statistics.
-      - Watchdog timers.
 ]]
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
@@ -78,6 +78,9 @@ local velocityConnection = nil
 local isHopperRunning = false
 local watchdogStart = 0
 
+-- UI State for Server List
+local serverListElements = {}
+
 -- Debug State
 local currentHeartRef = nil
 local highlightInstance = nil
@@ -88,6 +91,8 @@ local viewingHeart = false
 local StatusLabel = nil
 local SpeedLabel = nil 
 local HeightLabel = nil 
+local ServerCountLabel = nil
+
 -- Data Labels
 local DataFoundLabel = nil
 local DataFloatLabel = nil
@@ -99,6 +104,22 @@ local DataConfLabel = nil
 local function updateStatus(text)
     if StatusLabel then
         StatusLabel:SetTitle("Status: " .. text)
+    end
+end
+
+local function sendWebhook(title, msg, color)
+    if webhookEnabled and webhookURL:find("http") then
+        local data = {
+            embeds = {{
+                title = title, description = msg, color = color,
+                footer = { text = "CSMDH Automation V1.3.5" },
+                timestamp = DateTime.now():ToIsoDate()
+            }}
+        }
+        local headers = {
+            ["Content-Type"] = "application/json"
+        }
+        request({Url = webhookURL, Method = "POST", Headers = headers, Body = HttpService:JSONEncode(data)})
     end
 end
 
@@ -327,6 +348,39 @@ local function checkPathCollision(targetPos)
     return false
 end
 
+-- [[ SERVER LOGIC ]]
+
+local function fetchServerData()
+    local PlaceId = game.PlaceId
+    local success, result = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")).data
+    end)
+    return success and result or {}
+end
+
+local function loadHistory()
+    if isfile(SERVER_LOG_FILE) then
+        return HttpService:JSONDecode(readfile(SERVER_LOG_FILE))
+    end
+    return {}
+end
+
+local function saveHistory(hist)
+    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(hist))
+end
+
+local function cleanHistory(hist, interval)
+    local changed = false
+    local now = os.time()
+    for id, time in pairs(hist) do
+        if (now - time) > (interval * 60) then 
+            hist[id] = nil 
+            changed = true
+        end
+    end
+    return hist, changed
+end
+
 local function serverHop()
     cleanupMovement()
     restoreCamera()
@@ -337,47 +391,36 @@ local function serverHop()
     local JobId = game.JobId
     local PlaceId = game.PlaceId
     
-    local history = isfile(SERVER_LOG_FILE) and HttpService:JSONDecode(readfile(SERVER_LOG_FILE)) or {}
-    history[JobId] = os.time()
+    local history = loadHistory()
+    history[JobId] = os.time() -- Log current
     
     local interval = Fluent.Options.ServerLogExpiry and Fluent.Options.ServerLogExpiry.Value or 30
-    for id, time in pairs(history) do
-        if (os.time() - time) > (interval * 60) then history[id] = nil end
-    end
-    writefile(SERVER_LOG_FILE, HttpService:JSONEncode(history))
+    local _, _ = cleanHistory(history, interval)
+    saveHistory(history)
 
-    local function tryTeleport()
-        local servers = HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")).data
-        for _, s in ipairs(servers) do
-            if s.playing < s.maxPlayers and s.id ~= JobId and not history[s.id] then
-                TeleportService:TeleportToPlaceInstance(PlaceId, s.id)
-                return true
-            end
+    local servers = fetchServerData()
+    local candidates = {}
+
+    for _, s in ipairs(servers) do
+        if s.playing < s.maxPlayers and s.id ~= JobId and not history[s.id] then
+            table.insert(candidates, s)
         end
-        return false
     end
-    
-    if not pcall(tryTeleport) then
-        updateStatus("Hop Failed. Retrying...")
-        task.wait(2)
-        serverHop()
-    end
-end
 
-local function sendWebhook(title, msg, color)
-    if webhookEnabled and webhookURL:find("http") then
-        local data = {
-            embeds = {{
-                title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation" },
-                timestamp = DateTime.now():ToIsoDate()
-            }}
-        }
-        -- Fixed Headers to match 1.1.5 behavior (Discord requires application/json)
-        local headers = {
-            ["Content-Type"] = "application/json"
-        }
-        request({Url = webhookURL, Method = "POST", Headers = headers, Body = HttpService:JSONEncode(data)})
+    if #candidates > 0 then
+        -- Randomize slightly to prevent bottle-necking 
+        local target = candidates[math.random(1, math.min(3, #candidates))]
+        TeleportService:TeleportToPlaceInstance(PlaceId, target.id)
+    else
+        -- NO SERVERS FOUND LOGIC
+        updateStatus("Hop Failed: No Servers.")
+        if Fluent.Options.HopperToggle.Value then
+            Fluent.Options.HopperToggle:SetValue(false)
+            sendWebhook("Automation Stopped", "No new servers available (List Exhausted).", 0xFF0000)
+            Fluent:Notify({Title = "Stop", Content = "No valid servers remaining. Sending Webhook.", Duration = 5})
+        else
+             Fluent:Notify({Title = "Hop Failed", Content = "No valid servers found in list.", Duration = 3})
+        end
     end
 end
 
@@ -648,7 +691,7 @@ end
 
 local Window = Fluent:CreateWindow({
     Title = "CSMDH meth",
-    SubTitle = "V1.3.4",
+    SubTitle = "V1.3.5",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 520), 
     Acrylic = true, 
@@ -657,6 +700,7 @@ local Window = Fluent:CreateWindow({
 
 local Tabs = {
     Main = Window:AddTab({ Title = "Automation", Icon = "play" }),
+    ServerList = Window:AddTab({ Title = "Server List", Icon = "list" }),
     Debug = Window:AddTab({ Title = "Debug Check", Icon = "bug" }),
     Config = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
@@ -676,6 +720,64 @@ Tabs.Main:AddButton({Title = "Start Loop", Callback = function()
 end})
 Tabs.Main:AddButton({Title = "Manual Hop", Callback = serverHop})
 Tabs.Main:AddButton({Title = "Emergency Stop", Callback = function() stopRequested = true cleanupMovement() updateStatus("Stopped.") end})
+
+-- Server List Tab Logic
+ServerCountLabel = Tabs.ServerList:AddParagraph({Title = "Server Status", Content = "0/0 Servers Loaded"})
+
+local function populateServerList()
+    -- Attempt to clear previous elements (Logic limitation: Fluent elements don't delete easily, so we use a refresh button strategy)
+    Fluent:Notify({Title = "Loading", Content = "Fetching servers... Lag spike expected.", Duration = 2})
+    
+    local servers = fetchServerData()
+    local history = loadHistory()
+    local now = os.time()
+    local expiryMin = Fluent.Options.ServerLogExpiry and Fluent.Options.ServerLogExpiry.Value or 30
+
+    local validCount = 0
+    local cachedCount = 0
+    
+    Tabs.ServerList:AddSection("Joinable Servers")
+    
+    for _, s in ipairs(servers) do
+        if not history[s.id] and s.id ~= game.JobId and s.playing < s.maxPlayers then
+            validCount = validCount + 1
+            Tabs.ServerList:AddButton({
+                Title = "Join: " .. s.playing .. "/" .. s.maxPlayers .. " Ping: " .. s.ping,
+                Description = "ID: " .. s.id:sub(1,8).."...",
+                Callback = function()
+                     TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id)
+                end
+            })
+        end
+    end
+
+    Tabs.ServerList:AddSection("Cached / Cooldown Servers")
+
+    for id, time in pairs(history) do
+        cachedCount = cachedCount + 1
+        local elapsed = (now - time) / 60
+        local remaining = expiryMin - elapsed
+        local statusText = ""
+        
+        if remaining > 0 then
+            statusText = "Expires in " .. math.floor(remaining*10)/10 .. " min"
+        else
+            statusText = "EXPIRED (Ready to join)"
+        end
+        
+        Tabs.ServerList:AddParagraph({
+            Title = "Server: " .. id:sub(1,8).."...",
+            Content = statusText
+        })
+    end
+    
+    ServerCountLabel:SetTitle("Servers Loaded: " .. validCount + cachedCount)
+    ServerCountLabel:SetDesc("Joinable: " .. validCount .. " | Cached: " .. cachedCount)
+end
+
+Tabs.ServerList:AddButton({Title = "Refresh List", Callback = populateServerList})
+Tabs.ServerList:AddParagraph({Title = "Note", Content = "Refreshing allows you to see new servers. Cached servers are ones you visited recently."})
+
 
 -- Debug
 Tabs.Debug:AddSection("Tools")
@@ -730,7 +832,7 @@ Tabs.Config:AddSection("Webhook")
 Tabs.Config:AddInput("WebhookURL", {Title = "Discord URL", Default = "", Callback = function(v) webhookURL = v end})
 Tabs.Config:AddToggle("WebhookEnable", {Title = "Send Logs", Default = false }):OnChanged(function(v) webhookEnabled = v end)
 Tabs.Config:AddButton({Title = "Test Webhook", Callback = function()
-    sendWebhook("Test", "This is a test notification from V1.3.4", 0xFFFFFF)
+    sendWebhook("Test", "This is a test notification from V1.3.5", 0xFFFFFF)
     Fluent:Notify({Title = "Webhook", Content = "Test sent (if enabled).", Duration = 3})
 end})
 
