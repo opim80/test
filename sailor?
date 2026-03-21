@@ -1,0 +1,244 @@
+--[[
+    Combat & Aura Utility | V1.0.0
+    Section 1: Combat Module
+    
+    Features:
+    - Dynamic Weapon & Mob mapping
+    - Custom KillAura with Velocity/Position manipulation
+    - Target locking (Single Mob vs Kill All)
+]]
+
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+
+-- Services
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- State Variables
+local killAuraActive = false
+local killAllActive = false
+local selectedMob = nil
+local selectedWeapon = nil
+local auraTask = nil
+
+-- [[ HELPER FUNCTIONS ]]
+
+-- Fetches all available tools in backpack and character
+local function getWeapons()
+    local weapons = {}
+    if LocalPlayer.Backpack then
+        for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then table.insert(weapons, tool.Name) end
+        end
+    end
+    if LocalPlayer.Character then
+        for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
+            if tool:IsA("Tool") then table.insert(weapons, tool.Name) end
+        end
+    end
+    return weapons
+end
+
+-- Fetches all unique mob names from workspace.NPCs
+local function getAvailableMobs()
+    local mobs = {}
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if npcFolder then
+        for _, npc in ipairs(npcFolder:GetChildren()) do
+            if npc:FindFirstChild("Humanoid") and npc.Humanoid.Health > 0 then
+                -- Prevent duplicates in the dropdown
+                local nameExists = false
+                for _, name in ipairs(mobs) do
+                    if name == npc.Name then nameExists = true; break end
+                end
+                if not nameExists then table.insert(mobs, npc.Name) end
+            end
+        end
+    end
+    return mobs
+end
+
+-- Equips the selected weapon from the backpack
+local function equipWeapon(weaponName)
+    if not weaponName or weaponName == "" then return end
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer.Backpack
+    if not char or not backpack then return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local tool = backpack:FindFirstChild(weaponName)
+    
+    if tool and humanoid then
+        humanoid:EquipTool(tool)
+    end
+end
+
+-- [[ KILLAURA LOGIC ]]
+
+local function startKillAura()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    -- 1. Break Velocity
+    hrp.Velocity = Vector3.zero
+    hrp.RotVelocity = Vector3.zero
+
+    -- 2. Find ground and TP 20 studs above
+    local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+    local hitPart, hitPos = workspace:FindPartOnRay(ray, char)
+    
+    if hitPos then
+        hrp.CFrame = CFrame.new(hrp.Position.X, hitPos.Y + 20, hrp.Position.Z)
+        hrp.Anchored = true -- Anchor to prevent falling while aura is active
+    end
+
+    -- 3. Aura Loop
+    auraTask = task.spawn(function()
+        local npcFolder = workspace:FindFirstChild("NPCs")
+        local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
+
+        while killAuraActive and npcFolder do
+            equipWeapon(selectedWeapon)
+
+            local targetToKill = nil
+
+            -- Find a valid target based on toggles
+            for _, npc in ipairs(npcFolder:GetChildren()) do
+                local hum = npc:FindFirstChild("Humanoid")
+                local targetHrp = npc:FindFirstChild("HumanoidRootPart")
+                
+                if hum and targetHrp and hum.Health > 0 then
+                    if killAllActive or npc.Name == selectedMob then
+                        targetToKill = npc
+                        break -- Lock onto the first valid mob found
+                    end
+                end
+            end
+
+            -- Attack the locked target until dead
+            if targetToKill then
+                local hum = targetToKill:FindFirstChild("Humanoid")
+                local targetHrp = targetToKill:FindFirstChild("HumanoidRootPart")
+                
+                while killAuraActive and hum and hum.Health > 0 and targetHrp do
+                    local args = {
+                        Vector3.new(targetHrp.Position.X, targetHrp.Position.Y, targetHrp.Position.Z)
+                    }
+                    
+                    pcall(function()
+                        remote:FireServer(unpack(args))
+                    end)
+                    
+                    task.wait(0.35)
+                end
+            else
+                -- If no targets found, wait a moment before scanning again to prevent crashing
+                task.wait(0.5) 
+            end
+        end
+    end)
+end
+
+local function stopKillAura()
+    killAuraActive = false
+    if auraTask then
+        task.cancel(auraTask)
+        auraTask = nil
+    end
+
+    -- Fix player velocity and unanchor
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Anchored = false
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
+end
+
+-- [[ UI INITIALIZATION ]]
+
+local Window = Fluent:CreateWindow({
+    Title = "Combat Module",
+    SubTitle = "WIP Build",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true, 
+    Theme = "Dark"
+})
+
+local Tabs = {
+    Combat = Window:AddTab({ Title = "Combat", Icon = "swords" })
+}
+
+Tabs.Combat:AddSection("Targeting Settings")
+
+local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill All Available Mobs", Default = false})
+KillAllToggle:OnChanged(function()
+    killAllActive = KillAllToggle.Value
+end)
+
+local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {
+    Title = "Select Mob",
+    Values = getAvailableMobs(),
+    Multi = false,
+    Default = "",
+})
+MobDropdown:OnChanged(function(Value)
+    selectedMob = Value
+end)
+
+Tabs.Combat:AddButton({
+    Title = "Refresh Mob List",
+    Callback = function()
+        MobDropdown:SetValues(getAvailableMobs())
+    end
+})
+
+Tabs.Combat:AddSection("Weapon & Aura")
+
+local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {
+    Title = "Select Weapon",
+    Values = getWeapons(),
+    Multi = false,
+    Default = "",
+})
+WeaponDropdown:OnChanged(function(Value)
+    selectedWeapon = Value
+end)
+
+Tabs.Combat:AddButton({
+    Title = "Refresh Weapons",
+    Callback = function()
+        WeaponDropdown:SetValues(getWeapons())
+    end
+})
+
+local AuraToggle = Tabs.Combat:AddToggle("AuraToggle", {Title = "KillAura", Default = false})
+AuraToggle:OnChanged(function()
+    killAuraActive = AuraToggle.Value
+    
+    if killAuraActive then
+        if not selectedWeapon or selectedWeapon == "" then
+            Fluent:Notify({Title = "Warning", Content = "Please select a weapon first!", Duration = 3})
+            AuraToggle:SetValue(false)
+            return
+        end
+        if not killAllActive and (not selectedMob or selectedMob == "") then
+            Fluent:Notify({Title = "Warning", Content = "Please select a mob or turn on 'Kill All'!", Duration = 3})
+            AuraToggle:SetValue(false)
+            return
+        end
+        
+        startKillAura()
+        Fluent:Notify({Title = "KillAura", Content = "Engaged. Hovering 20 studs up.", Duration = 2})
+    else
+        stopKillAura()
+        Fluent:Notify({Title = "KillAura", Content = "Disengaged. Velocity restored.", Duration = 2})
+    end
+end)
+
+Window:SelectTab(1)
