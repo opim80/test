@@ -19,13 +19,18 @@ local selectedMob = ""
 local selectedWeapon = ""
 local auraTask = nil
 local evasionTask = nil
+local currentTarget = nil -- Used for Camera Tracking
+
+local cameraTrackActive = false
+local cameraTask = nil
 
 local autoStatActive = false
 local statTarget = "Melee"
 local statAmount = 1
 
 local autoDungeonActive = false
-local selectedDungeon = "Double"
+local autoRequestActive = false
+local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
@@ -68,8 +73,32 @@ local function equipWeapon(weaponName)
     if tool and humanoid then humanoid:EquipTool(tool) end
 end
 
+-- [[ CAMERA TRACKING ]]
+local function startCameraTracking()
+    if cameraTask then cameraTask:Disconnect() end
+    
+    local camera = workspace.CurrentCamera
+    cameraTask = RunService.RenderStepped:Connect(function()
+        if cameraTrackActive and currentTarget and currentTarget:FindFirstChild("HumanoidRootPart") then
+            local targetPos = currentTarget.HumanoidRootPart.Position
+            -- Point the camera's front face toward the target while maintaining its current position
+            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, targetPos)
+        end
+    end)
+end
+
+local function stopCameraTracking()
+    if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
+    local camera = workspace.CurrentCamera
+    camera.CameraType = Enum.CameraType.Custom
+    camera.CameraSubject = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+end
+
 -- [[ KILLAURA & EVASION LOGIC ]]
 local function startDynamicEvasion()
+    -- Disconnect any existing loop to prevent movement interference
+    if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -128,36 +157,46 @@ local function startKillAura()
     if not killAuraActive then return end
     startDynamicEvasion()
 
+    if auraTask then task.cancel(auraTask); auraTask = nil end
+
     auraTask = task.spawn(function()
         local npcFolder = workspace:FindFirstChild("NPCs")
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive and npcFolder do
             equipWeapon(selectedWeapon)
-            local targetToKill = nil
+            currentTarget = nil
 
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 local targetHrp = npc:FindFirstChild("HumanoidRootPart")
                 if hum and targetHrp and hum.Health > 0 then
                     if killAllActive or npc.Name == selectedMob then
-                        targetToKill = npc
+                        currentTarget = npc
                         break 
                     end
                 end
             end
 
-            if targetToKill then
-                local hum = targetToKill:FindFirstChild("Humanoid")
-                local targetHrp = targetToKill:FindFirstChild("HumanoidRootPart")
+            if currentTarget then
+                local hum = currentTarget:FindFirstChild("Humanoid")
+                local targetHrp = currentTarget:FindFirstChild("HumanoidRootPart")
                 
+                -- If camera tracking is on, switch to scriptable so we can force lookAt
+                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
+
                 while killAuraActive and hum and hum.Health > 0 and targetHrp do
                     pcall(function()
                         remote:FireServer(Vector3.new(targetHrp.Position.X, targetHrp.Position.Y, targetHrp.Position.Z))
                     end)
                     task.wait(0.35)
                 end
+                
+                -- Clear target once dead so camera doesn't stare at a corpse
+                currentTarget = nil 
             else
+                -- If no targets, allow free camera look temporarily
+                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
                 task.wait(0.5) 
             end
         end
@@ -166,42 +205,39 @@ end
 
 local function stopKillAura()
     killAuraActive = false
+    currentTarget = nil
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
 end
 
--- [[ STATS LOGIC ]]
-local function startAutoStats()
-    task.spawn(function()
-        while autoStatActive do
-            local statPointsFolder = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
-            if statPointsFolder and tonumber(statPointsFolder.Value) >= statAmount then
-                local args = { statTarget, statAmount }
-                pcall(function()
-                    ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer(unpack(args))
-                end)
-            end
-            task.wait(1)
-        end
-    end)
-end
-
 -- [[ RAIDS LOGIC ]]
 local function startAutoDungeon()
+    if dungeonLoopTask then task.cancel(dungeonLoopTask); dungeonLoopTask = nil end
+
     dungeonLoopTask = task.spawn(function()
         while autoDungeonActive do
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             local dungeonUI = playerGui and playerGui:FindFirstChild("DungeonUI")
             
-            if dungeonUI and dungeonUI:FindFirstChild("ContentFrame") and dungeonUI.ContentFrame.Visible then
-                pcall(function()
-                    ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
-                end)
-                
-                if not killAuraActive then
-                    killAllActive = true 
-                    killAuraActive = true
-                    startKillAura()
+            if dungeonUI and dungeonUI:FindFirstChild("ContentFrame") then
+                if dungeonUI.ContentFrame.Visible then
+                    -- Menu is visible, vote for difficulty
+                    pcall(function()
+                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
+                    end)
+                    
+                    if not killAuraActive then
+                        killAllActive = true 
+                        killAuraActive = true
+                        startKillAura()
+                    end
+                else
+                    -- Menu is NOT visible, request portal if toggled on
+                    if autoRequestActive then
+                        pcall(function()
+                            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
+                        end)
+                    end
                 end
             end
             task.wait(2)
@@ -212,7 +248,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.2.0",
+    SubTitle = "V1.3.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -239,6 +275,16 @@ Tabs.Combat:AddSection("Weapon & Aura")
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
 WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
+
+local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Camera Lock on Target", Default = false})
+CamToggle:OnChanged(function(Value)
+    cameraTrackActive = Value
+    if cameraTrackActive then
+        startCameraTracking()
+    else
+        stopCameraTracking()
+    end
+end)
 
 local AuraToggle = Tabs.Combat:AddToggle("AuraToggle", {Title = "KillAura (Single/All)", Default = false})
 AuraToggle:OnChanged(function()
@@ -271,10 +317,14 @@ end)
 -- RAIDS TAB
 Tabs.Raids:AddSection("Dungeon Setup")
 Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
-Tabs.Raids:AddButton({Title = "Request Dungeon Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
+Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
 
 Tabs.Raids:AddSection("Auto Raid Loop")
 Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) selectedDifficulty = Value end)
+
+local AutoRequestToggle = Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false})
+AutoRequestToggle:OnChanged(function(Value) autoRequestActive = Value end)
+
 Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon & Vote", Default = false}):OnChanged(function(Value)
     autoDungeonActive = Value
     if autoDungeonActive then 
@@ -288,17 +338,11 @@ end)
 -- [[ CONFIG & SETTINGS LOGIC ]]
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
-
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetIgnoreIndexes({})
-
--- Set the folder name where configs will be saved in your workspace folder
 SaveManager:SetFolder("UltimateHub")
-
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-
--- Load the autoload config if the user has set one
 SaveManager:LoadAutoloadConfig()
