@@ -7,7 +7,10 @@ local LocalPlayer = Players.LocalPlayer
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
+-- [[ UI & CONFIG LIBRARIES ]]
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
 -- State Variables
 local killAuraActive = false
@@ -27,7 +30,6 @@ local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
 -- [[ HELPER FUNCTIONS ]]
-
 local function getWeapons()
     local weapons = {}
     if LocalPlayer.Backpack then
@@ -67,13 +69,11 @@ local function equipWeapon(weaponName)
 end
 
 -- [[ KILLAURA & EVASION LOGIC ]]
-
 local function startDynamicEvasion()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- Break Velocity
     hrp.Velocity = Vector3.zero
     hrp.RotVelocity = Vector3.zero
     
@@ -94,7 +94,6 @@ local function startDynamicEvasion()
         local closestDist = math.huge
         local closestNPCY = baseGroundY
 
-        -- Find closest NPC
         if npcFolder then
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local targetHrp = npc:FindFirstChild("HumanoidRootPart")
@@ -111,26 +110,22 @@ local function startDynamicEvasion()
 
         local targetY
         if closestDist <= 50 then
-            -- Proximity Evasion
             targetY = closestNPCY + 70
         else
-            -- Bounce Mechanics
             bounceTimer = bounceTimer + deltaTime
-            if bounceTimer >= 2 then -- Swap every 2 seconds
+            if bounceTimer >= 2 then
                 bounceUp = not bounceUp
                 bounceTimer = 0
             end
             targetY = baseGroundY + (bounceUp and 20 or 10)
         end
 
-        -- Lerp for smooth movement instead of snapping
         hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(hrp.Position.X, targetY, hrp.Position.Z), 0.1)
     end)
 end
 
 local function startKillAura()
     if not killAuraActive then return end
-    
     startDynamicEvasion()
 
     auraTask = task.spawn(function()
@@ -186,7 +181,7 @@ local function startAutoStats()
                     ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer(unpack(args))
                 end)
             end
-            task.wait(1) -- Check every second
+            task.wait(1)
         end
     end)
 end
@@ -203,7 +198,6 @@ local function startAutoDungeon()
                     ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
                 end)
                 
-                -- Ensure aura turns on when dungeon starts
                 if not killAuraActive then
                     killAllActive = true 
                     killAuraActive = true
@@ -216,10 +210,9 @@ local function startAutoDungeon()
 end
 
 -- [[ UI INITIALIZATION ]]
-
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.1.0",
+    SubTitle = "V1.2.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -229,7 +222,8 @@ local Window = Fluent:CreateWindow({
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
     Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }),
-    Raids = Window:AddTab({ Title = "Raids", Icon = "skull" })
+    Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
 -- COMBAT TAB
@@ -259,31 +253,16 @@ end)
 -- STATS TAB
 Tabs.Stats:AddSection("Stat Information")
 local StatDisplay = Tabs.Stats:AddParagraph({Title = "Available Stat Points", Content = "Calculating..."})
-
--- Live update the stat points display
 task.spawn(function()
     while task.wait(1) do
         local points = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
-        if points then
-            StatDisplay:SetDesc("Points: " .. tostring(points.Value))
-        end
+        if points then StatDisplay:SetDesc("Points: " .. tostring(points.Value)) end
     end
 end)
 
 Tabs.Stats:AddSection("Auto Allocation")
-Tabs.Stats:AddDropdown("StatDropdown", {
-    Title = "Target Stat", 
-    Values = {"Melee", "Defense", "Sword", "Power"}, 
-    Multi = false, 
-    Default = "Melee"
-}):OnChanged(function(Value) statTarget = Value end)
-
-Tabs.Stats:AddInput("StatAmount", {
-    Title = "Allocate Amount", 
-    Default = "1", 
-    Numeric = true
-}):OnChanged(function(Value) statAmount = tonumber(Value) or 1 end)
-
+Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(Value) statTarget = Value end)
+Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(Value) statAmount = tonumber(Value) or 1 end)
 Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(Value)
     autoStatActive = Value
     if autoStatActive then startAutoStats() end
@@ -291,30 +270,11 @@ end)
 
 -- RAIDS TAB
 Tabs.Raids:AddSection("Dungeon Setup")
-Tabs.Raids:AddDropdown("DungeonType", {
-    Title = "Dungeon Type", 
-    Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, 
-    Multi = false, 
-    Default = "DoubleDungeon"
-}):OnChanged(function(Value) selectedDungeon = Value end)
-
-Tabs.Raids:AddButton({
-    Title = "Request Dungeon Portal",
-    Callback = function()
-        pcall(function()
-            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
-        end)
-    end
-})
+Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
+Tabs.Raids:AddButton({Title = "Request Dungeon Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
 
 Tabs.Raids:AddSection("Auto Raid Loop")
-Tabs.Raids:AddDropdown("DifficultyType", {
-    Title = "Difficulty", 
-    Values = {"Easy", "Medium", "Hard", "Extreme"}, 
-    Multi = false, 
-    Default = "Easy"
-}):OnChanged(function(Value) selectedDifficulty = Value end)
-
+Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) selectedDifficulty = Value end)
 Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon & Vote", Default = false}):OnChanged(function(Value)
     autoDungeonActive = Value
     if autoDungeonActive then 
@@ -325,4 +285,20 @@ Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon & Vote", Defaul
     end
 end)
 
+-- [[ CONFIG & SETTINGS LOGIC ]]
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+
+-- Set the folder name where configs will be saved in your workspace folder
+SaveManager:SetFolder("UltimateHub")
+
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
 Window:SelectTab(1)
+
+-- Load the autoload config if the user has set one
+SaveManager:LoadAutoloadConfig()
