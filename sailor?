@@ -1,31 +1,33 @@
---[[
-    Combat & Aura Utility | V1.0.0
-    Section 1: Combat Module
-    
-    Features:
-    - Dynamic Weapon & Mob mapping
-    - Custom KillAura with Velocity/Position manipulation
-    - Target locking (Single Mob vs Kill All)
-]]
-
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-
--- Services
+-- Wait for Game & Player to load completely
+if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
+repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+
 -- State Variables
 local killAuraActive = false
 local killAllActive = false
-local selectedMob = nil
-local selectedWeapon = nil
+local selectedMob = ""
+local selectedWeapon = ""
 local auraTask = nil
+local evasionTask = nil
+
+local autoStatActive = false
+local statTarget = "Melee"
+local statAmount = 1
+
+local autoDungeonActive = false
+local selectedDungeon = "Double"
+local selectedDifficulty = "Easy"
+local dungeonLoopTask = nil
 
 -- [[ HELPER FUNCTIONS ]]
 
--- Fetches all available tools in backpack and character
 local function getWeapons()
     local weapons = {}
     if LocalPlayer.Backpack then
@@ -41,101 +43,126 @@ local function getWeapons()
     return weapons
 end
 
--- Fetches all unique mob names from workspace.NPCs
 local function getAvailableMobs()
     local mobs = {}
     local npcFolder = workspace:FindFirstChild("NPCs")
     if npcFolder then
         for _, npc in ipairs(npcFolder:GetChildren()) do
             if npc:FindFirstChild("Humanoid") and npc.Humanoid.Health > 0 then
-                -- Prevent duplicates in the dropdown
-                local nameExists = false
-                for _, name in ipairs(mobs) do
-                    if name == npc.Name then nameExists = true; break end
-                end
-                if not nameExists then table.insert(mobs, npc.Name) end
+                if not table.find(mobs, npc.Name) then table.insert(mobs, npc.Name) end
             end
         end
     end
     return mobs
 end
 
--- Equips the selected weapon from the backpack
 local function equipWeapon(weaponName)
     if not weaponName or weaponName == "" then return end
     local char = LocalPlayer.Character
     local backpack = LocalPlayer.Backpack
     if not char or not backpack then return end
-
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local tool = backpack:FindFirstChild(weaponName)
-    
-    if tool and humanoid then
-        humanoid:EquipTool(tool)
-    end
+    if tool and humanoid then humanoid:EquipTool(tool) end
 end
 
--- [[ KILLAURA LOGIC ]]
+-- [[ KILLAURA & EVASION LOGIC ]]
 
-local function startKillAura()
+local function startDynamicEvasion()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- 1. Break Velocity
+    -- Break Velocity
     hrp.Velocity = Vector3.zero
     hrp.RotVelocity = Vector3.zero
-
-    -- 2. Find ground and TP 20 studs above
-    local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-    local hitPart, hitPos = workspace:FindPartOnRay(ray, char)
     
-    if hitPos then
-        hrp.CFrame = CFrame.new(hrp.Position.X, hitPos.Y + 20, hrp.Position.Z)
-        hrp.Anchored = true -- Anchor to prevent falling while aura is active
-    end
+    local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+    local hitPart, groundPos = workspace:FindPartOnRay(ray, char)
+    local baseGroundY = groundPos and groundPos.Y or hrp.Position.Y
 
-    -- 3. Aura Loop
+    local bounceUp = false
+    local bounceTimer = 0
+
+    evasionTask = RunService.Heartbeat:Connect(function(deltaTime)
+        if not hrp or not hrp.Parent then return end
+        
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+        
+        local npcFolder = workspace:FindFirstChild("NPCs")
+        local closestDist = math.huge
+        local closestNPCY = baseGroundY
+
+        -- Find closest NPC
+        if npcFolder then
+            for _, npc in ipairs(npcFolder:GetChildren()) do
+                local targetHrp = npc:FindFirstChild("HumanoidRootPart")
+                local hum = npc:FindFirstChild("Humanoid")
+                if targetHrp and hum and hum.Health > 0 then
+                    local dist = (hrp.Position - targetHrp.Position).Magnitude
+                    if dist < closestDist then
+                        closestDist = dist
+                        closestNPCY = targetHrp.Position.Y
+                    end
+                end
+            end
+        end
+
+        local targetY
+        if closestDist <= 50 then
+            -- Proximity Evasion
+            targetY = closestNPCY + 70
+        else
+            -- Bounce Mechanics
+            bounceTimer = bounceTimer + deltaTime
+            if bounceTimer >= 2 then -- Swap every 2 seconds
+                bounceUp = not bounceUp
+                bounceTimer = 0
+            end
+            targetY = baseGroundY + (bounceUp and 20 or 10)
+        end
+
+        -- Lerp for smooth movement instead of snapping
+        hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(hrp.Position.X, targetY, hrp.Position.Z), 0.1)
+    end)
+end
+
+local function startKillAura()
+    if not killAuraActive then return end
+    
+    startDynamicEvasion()
+
     auraTask = task.spawn(function()
         local npcFolder = workspace:FindFirstChild("NPCs")
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive and npcFolder do
             equipWeapon(selectedWeapon)
-
             local targetToKill = nil
 
-            -- Find a valid target based on toggles
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 local targetHrp = npc:FindFirstChild("HumanoidRootPart")
-                
                 if hum and targetHrp and hum.Health > 0 then
                     if killAllActive or npc.Name == selectedMob then
                         targetToKill = npc
-                        break -- Lock onto the first valid mob found
+                        break 
                     end
                 end
             end
 
-            -- Attack the locked target until dead
             if targetToKill then
                 local hum = targetToKill:FindFirstChild("Humanoid")
                 local targetHrp = targetToKill:FindFirstChild("HumanoidRootPart")
                 
                 while killAuraActive and hum and hum.Health > 0 and targetHrp do
-                    local args = {
-                        Vector3.new(targetHrp.Position.X, targetHrp.Position.Y, targetHrp.Position.Z)
-                    }
-                    
                     pcall(function()
-                        remote:FireServer(unpack(args))
+                        remote:FireServer(Vector3.new(targetHrp.Position.X, targetHrp.Position.Y, targetHrp.Position.Z))
                     end)
-                    
                     task.wait(0.35)
                 end
             else
-                -- If no targets found, wait a moment before scanning again to prevent crashing
                 task.wait(0.5) 
             end
         end
@@ -144,26 +171,55 @@ end
 
 local function stopKillAura()
     killAuraActive = false
-    if auraTask then
-        task.cancel(auraTask)
-        auraTask = nil
-    end
+    if auraTask then task.cancel(auraTask); auraTask = nil end
+    if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+end
 
-    -- Fix player velocity and unanchor
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.Anchored = false
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
-    end
+-- [[ STATS LOGIC ]]
+local function startAutoStats()
+    task.spawn(function()
+        while autoStatActive do
+            local statPointsFolder = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
+            if statPointsFolder and tonumber(statPointsFolder.Value) >= statAmount then
+                local args = { statTarget, statAmount }
+                pcall(function()
+                    ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer(unpack(args))
+                end)
+            end
+            task.wait(1) -- Check every second
+        end
+    end)
+end
+
+-- [[ RAIDS LOGIC ]]
+local function startAutoDungeon()
+    dungeonLoopTask = task.spawn(function()
+        while autoDungeonActive do
+            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+            local dungeonUI = playerGui and playerGui:FindFirstChild("DungeonUI")
+            
+            if dungeonUI and dungeonUI:FindFirstChild("ContentFrame") and dungeonUI.ContentFrame.Visible then
+                pcall(function()
+                    ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
+                end)
+                
+                -- Ensure aura turns on when dungeon starts
+                if not killAuraActive then
+                    killAllActive = true 
+                    killAuraActive = true
+                    startKillAura()
+                end
+            end
+            task.wait(2)
+        end
+    end)
 end
 
 -- [[ UI INITIALIZATION ]]
 
 local Window = Fluent:CreateWindow({
-    Title = "Combat Module",
-    SubTitle = "WIP Build",
+    Title = "Ultimate Hub",
+    SubTitle = "V1.1.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -171,73 +227,101 @@ local Window = Fluent:CreateWindow({
 })
 
 local Tabs = {
-    Combat = Window:AddTab({ Title = "Combat", Icon = "swords" })
+    Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
+    Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }),
+    Raids = Window:AddTab({ Title = "Raids", Icon = "skull" })
 }
 
+-- COMBAT TAB
 Tabs.Combat:AddSection("Targeting Settings")
-
 local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill All Available Mobs", Default = false})
-KillAllToggle:OnChanged(function()
-    killAllActive = KillAllToggle.Value
-end)
+KillAllToggle:OnChanged(function() killAllActive = KillAllToggle.Value end)
 
-local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {
-    Title = "Select Mob",
-    Values = getAvailableMobs(),
-    Multi = false,
-    Default = "",
-})
-MobDropdown:OnChanged(function(Value)
-    selectedMob = Value
-end)
-
-Tabs.Combat:AddButton({
-    Title = "Refresh Mob List",
-    Callback = function()
-        MobDropdown:SetValues(getAvailableMobs())
-    end
-})
+local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob", Values = getAvailableMobs(), Multi = false, Default = ""})
+MobDropdown:OnChanged(function(Value) selectedMob = Value end)
+Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
 
 Tabs.Combat:AddSection("Weapon & Aura")
+local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
+WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
+Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
-local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {
-    Title = "Select Weapon",
-    Values = getWeapons(),
-    Multi = false,
-    Default = "",
-})
-WeaponDropdown:OnChanged(function(Value)
-    selectedWeapon = Value
+local AuraToggle = Tabs.Combat:AddToggle("AuraToggle", {Title = "KillAura (Single/All)", Default = false})
+AuraToggle:OnChanged(function()
+    if AuraToggle.Value then
+        killAuraActive = true
+        startKillAura()
+    else
+        stopKillAura()
+    end
 end)
 
-Tabs.Combat:AddButton({
-    Title = "Refresh Weapons",
+-- STATS TAB
+Tabs.Stats:AddSection("Stat Information")
+local StatDisplay = Tabs.Stats:AddParagraph({Title = "Available Stat Points", Content = "Calculating..."})
+
+-- Live update the stat points display
+task.spawn(function()
+    while task.wait(1) do
+        local points = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
+        if points then
+            StatDisplay:SetDesc("Points: " .. tostring(points.Value))
+        end
+    end
+end)
+
+Tabs.Stats:AddSection("Auto Allocation")
+Tabs.Stats:AddDropdown("StatDropdown", {
+    Title = "Target Stat", 
+    Values = {"Melee", "Defense", "Sword", "Power"}, 
+    Multi = false, 
+    Default = "Melee"
+}):OnChanged(function(Value) statTarget = Value end)
+
+Tabs.Stats:AddInput("StatAmount", {
+    Title = "Allocate Amount", 
+    Default = "1", 
+    Numeric = true
+}):OnChanged(function(Value) statAmount = tonumber(Value) or 1 end)
+
+Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(Value)
+    autoStatActive = Value
+    if autoStatActive then startAutoStats() end
+end)
+
+-- RAIDS TAB
+Tabs.Raids:AddSection("Dungeon Setup")
+Tabs.Raids:AddDropdown("DungeonType", {
+    Title = "Dungeon Type", 
+    Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, 
+    Multi = false, 
+    Default = "DoubleDungeon"
+}):OnChanged(function(Value) selectedDungeon = Value end)
+
+Tabs.Raids:AddButton({
+    Title = "Request Dungeon Portal",
     Callback = function()
-        WeaponDropdown:SetValues(getWeapons())
+        pcall(function()
+            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
+        end)
     end
 })
 
-local AuraToggle = Tabs.Combat:AddToggle("AuraToggle", {Title = "KillAura", Default = false})
-AuraToggle:OnChanged(function()
-    killAuraActive = AuraToggle.Value
-    
-    if killAuraActive then
-        if not selectedWeapon or selectedWeapon == "" then
-            Fluent:Notify({Title = "Warning", Content = "Please select a weapon first!", Duration = 3})
-            AuraToggle:SetValue(false)
-            return
-        end
-        if not killAllActive and (not selectedMob or selectedMob == "") then
-            Fluent:Notify({Title = "Warning", Content = "Please select a mob or turn on 'Kill All'!", Duration = 3})
-            AuraToggle:SetValue(false)
-            return
-        end
-        
-        startKillAura()
-        Fluent:Notify({Title = "KillAura", Content = "Engaged. Hovering 20 studs up.", Duration = 2})
-    else
-        stopKillAura()
-        Fluent:Notify({Title = "KillAura", Content = "Disengaged. Velocity restored.", Duration = 2})
+Tabs.Raids:AddSection("Auto Raid Loop")
+Tabs.Raids:AddDropdown("DifficultyType", {
+    Title = "Difficulty", 
+    Values = {"Easy", "Medium", "Hard", "Extreme"}, 
+    Multi = false, 
+    Default = "Easy"
+}):OnChanged(function(Value) selectedDifficulty = Value end)
+
+Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon & Vote", Default = false}):OnChanged(function(Value)
+    autoDungeonActive = Value
+    if autoDungeonActive then 
+        startAutoDungeon() 
+    elseif dungeonLoopTask then
+        task.cancel(dungeonLoopTask)
+        dungeonLoopTask = nil
     end
 end)
 
