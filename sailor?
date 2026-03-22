@@ -1,3 +1,9 @@
+-- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
+-- If the script was already executed, clean up the old loops, connections, and UI
+if getgenv().CSMDH_Cleanup then
+    pcall(function() getgenv().CSMDH_Cleanup() end)
+end
+
 -- Wait for Game & Player to load completely
 if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
@@ -12,15 +18,14 @@ local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
 
--- State Variables
+-- [[ STATE VARIABLES ]]
 local killAuraActive = false
 local killAllActive = false
-local selectedMob = ""
+local selectedMobs = {} 
 local selectedWeapon = ""
 local auraTask = nil
 local evasionTask = nil
-local currentTarget = nil -- Used for Camera Tracking
-
+local currentTarget = nil 
 local cameraTrackActive = false
 local cameraTask = nil
 
@@ -34,7 +39,34 @@ local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
+-- Store new cleanup function globally for the NEXT time you execute
+getgenv().CSMDH_Cleanup = function()
+    if auraTask then task.cancel(auraTask) end
+    if dungeonLoopTask then task.cancel(dungeonLoopTask) end
+    if evasionTask then evasionTask:Disconnect() end
+    if cameraTask then cameraTask:Disconnect() end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
+    
+    local cam = workspace.CurrentCamera
+    cam.CameraType = Enum.CameraType.Custom
+    cam.CameraSubject = char and char:FindFirstChild("Humanoid")
+    
+    if getgenv().CSMDH_Window then
+        pcall(function() getgenv().CSMDH_Window:Destroy() end)
+    end
+end
+
 -- [[ HELPER FUNCTIONS ]]
+local function getBaseName(name)
+    return string.gsub(name, "[%s%d]+$", "")
+end
+
 local function getWeapons()
     local weapons = {}
     if LocalPlayer.Backpack then
@@ -55,8 +87,10 @@ local function getAvailableMobs()
     local npcFolder = workspace:FindFirstChild("NPCs")
     if npcFolder then
         for _, npc in ipairs(npcFolder:GetChildren()) do
-            if npc:FindFirstChild("Humanoid") and npc.Humanoid.Health > 0 then
-                if not table.find(mobs, npc.Name) then table.insert(mobs, npc.Name) end
+            local hum = npc:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then
+                local baseName = getBaseName(npc.Name)
+                if not table.find(mobs, baseName) then table.insert(mobs, baseName) end
             end
         end
     end
@@ -76,13 +110,10 @@ end
 -- [[ CAMERA TRACKING ]]
 local function startCameraTracking()
     if cameraTask then cameraTask:Disconnect() end
-    
     local camera = workspace.CurrentCamera
     cameraTask = RunService.RenderStepped:Connect(function()
         if cameraTrackActive and currentTarget and currentTarget:FindFirstChild("HumanoidRootPart") then
-            local targetPos = currentTarget.HumanoidRootPart.Position
-            -- Point the camera's front face toward the target while maintaining its current position
-            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, targetPos)
+            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, currentTarget.HumanoidRootPart.Position)
         end
     end)
 end
@@ -94,68 +125,53 @@ local function stopCameraTracking()
     camera.CameraSubject = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
 end
 
--- [[ KILLAURA & EVASION LOGIC ]]
-local function startDynamicEvasion()
-    -- Disconnect any existing loop to prevent movement interference
+-- [[ KILLAURA & MOVEMENT LOGIC ]]
+local function startDynamicMovement()
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
 
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    hrp.Velocity = Vector3.zero
-    hrp.RotVelocity = Vector3.zero
-    
-    local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-    local hitPart, groundPos = workspace:FindPartOnRay(ray, char)
-    local baseGroundY = groundPos and groundPos.Y or hrp.Position.Y
-
-    local bounceUp = false
-    local bounceTimer = 0
-
     evasionTask = RunService.Heartbeat:Connect(function(deltaTime)
         if not hrp or not hrp.Parent then return end
         
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
-        
-        local npcFolder = workspace:FindFirstChild("NPCs")
-        local closestDist = math.huge
-        local closestNPCY = baseGroundY
 
-        if npcFolder then
-            for _, npc in ipairs(npcFolder:GetChildren()) do
-                local targetHrp = npc:FindFirstChild("HumanoidRootPart")
-                local hum = npc:FindFirstChild("Humanoid")
-                if targetHrp and hum and hum.Health > 0 then
-                    local dist = (hrp.Position - targetHrp.Position).Magnitude
-                    if dist < closestDist then
-                        closestDist = dist
-                        closestNPCY = targetHrp.Position.Y
-                    end
+        local targetPos = hrp.Position
+        local targetY = hrp.Position.Y
+
+        if currentTarget then
+            local tPos = currentTarget:GetPivot().Position
+            local dist2D = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(tPos.X, 0, tPos.Z)).Magnitude
+
+            targetY = tPos.Y + 20
+
+            if dist2D > 15 then
+                local direction = (tPos - hrp.Position) * Vector3.new(1, 0, 1)
+                if direction.Magnitude > 0 then
+                    local moveSpeed = 65 
+                    local step = direction.Unit * moveSpeed * deltaTime
+                    if step.Magnitude > dist2D then step = direction end
+                    targetPos = hrp.Position + step
                 end
+            else
+                targetPos = Vector3.new(tPos.X, hrp.Position.Y, tPos.Z)
             end
-        end
-
-        local targetY
-        if closestDist <= 50 then
-            targetY = closestNPCY + 70
         else
-            bounceTimer = bounceTimer + deltaTime
-            if bounceTimer >= 2 then
-                bounceUp = not bounceUp
-                bounceTimer = 0
-            end
-            targetY = baseGroundY + (bounceUp and 20 or 10)
+            local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+            local _, groundPos = workspace:FindPartOnRay(ray, char)
+            if groundPos then targetY = groundPos.Y + 20 end
         end
 
-        hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(hrp.Position.X, targetY, hrp.Position.Z), 0.1)
+        hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(targetPos.X, targetY, targetPos.Z), 0.15)
     end)
 end
 
 local function startKillAura()
     if not killAuraActive then return end
-    startDynamicEvasion()
+    startDynamicMovement()
 
     if auraTask then task.cancel(auraTask); auraTask = nil end
 
@@ -166,36 +182,43 @@ local function startKillAura()
         while killAuraActive and npcFolder do
             equipWeapon(selectedWeapon)
             currentTarget = nil
+            
+            local bestTarget = nil
+            local closestDist = math.huge
+            local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
 
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
-                local targetHrp = npc:FindFirstChild("HumanoidRootPart")
-                if hum and targetHrp and hum.Health > 0 then
-                    if killAllActive or npc.Name == selectedMob then
-                        currentTarget = npc
-                        break 
+                if hum and hum.Health > 0 then
+                    local baseName = getBaseName(npc.Name)
+                    if killAllActive or selectedMobs[baseName] then
+                        local dist = (charPos - npc:GetPivot().Position).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            bestTarget = npc
+                        end
                     end
                 end
             end
 
+            currentTarget = bestTarget
+
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
-                local targetHrp = currentTarget:FindFirstChild("HumanoidRootPart")
-                
-                -- If camera tracking is on, switch to scriptable so we can force lookAt
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
 
-                while killAuraActive and hum and hum.Health > 0 and targetHrp do
-                    pcall(function()
-                        remote:FireServer(Vector3.new(targetHrp.Position.X, targetHrp.Position.Y, targetHrp.Position.Z))
-                    end)
+                while killAuraActive and currentTarget and hum and hum.Health > 0 do
+                    local tPos = currentTarget:GetPivot().Position
+                    local distToTarget = (LocalPlayer.Character:GetPivot().Position - tPos).Magnitude
+                    
+                    if distToTarget <= 25 then
+                        pcall(function() remote:FireServer(Vector3.new(tPos.X, tPos.Y, tPos.Z)) end)
+                    end
                     task.wait(0.35)
                 end
                 
-                -- Clear target once dead so camera doesn't stare at a corpse
                 currentTarget = nil 
             else
-                -- If no targets, allow free camera look temporarily
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
                 task.wait(0.5) 
             end
@@ -208,9 +231,30 @@ local function stopKillAura()
     currentTarget = nil
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
 end
 
--- [[ RAIDS LOGIC ]]
+-- [[ STATS LOGIC ]]
+local function startAutoStats()
+    task.spawn(function()
+        while autoStatActive do
+            local statPointsFolder = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
+            if statPointsFolder and tonumber(statPointsFolder.Value) >= statAmount then
+                local args = { statTarget, statAmount }
+                pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer(unpack(args)) end)
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+-- [[ RAIDS LOGIC (UPDATED WITH REPLAY) ]]
 local function startAutoDungeon()
     if dungeonLoopTask then task.cancel(dungeonLoopTask); dungeonLoopTask = nil end
 
@@ -219,25 +263,35 @@ local function startAutoDungeon()
             local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
             local dungeonUI = playerGui and playerGui:FindFirstChild("DungeonUI")
             
-            if dungeonUI and dungeonUI:FindFirstChild("ContentFrame") then
-                if dungeonUI.ContentFrame.Visible then
-                    -- Menu is visible, vote for difficulty
+            if dungeonUI then
+                local replayFrame = dungeonUI:FindFirstChild("ReplayDungeonFrameVisibleOnlyWhenClearingDungeon")
+                local contentFrame = dungeonUI:FindFirstChild("ContentFrame")
+                
+                -- Check for Replay Vote First
+                if replayFrame and replayFrame.Visible then
+                    local args = {"sponsor"}
+                    pcall(function()
+                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveReplayVote"):FireServer(unpack(args))
+                    end)
+                
+                -- Then Check for Start/Difficulty Vote
+                elseif contentFrame and contentFrame.Visible then
                     pcall(function()
                         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
                     end)
                     
+                    -- Engage Aura if it isn't running
                     if not killAuraActive then
                         killAllActive = true 
                         killAuraActive = true
                         startKillAura()
                     end
-                else
-                    -- Menu is NOT visible, request portal if toggled on
-                    if autoRequestActive then
-                        pcall(function()
-                            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
-                        end)
-                    end
+                
+                -- If neither are visible and we are outside, request portal
+                elseif autoRequestActive then
+                    pcall(function()
+                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
+                    end)
                 end
             end
             task.wait(2)
@@ -248,12 +302,15 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.3.0",
+    SubTitle = "V1.4.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
     Theme = "Dark"
 })
+
+-- Store Window in getgenv so it can be destroyed upon re-execution
+getgenv().CSMDH_Window = Window
 
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
@@ -264,14 +321,15 @@ local Tabs = {
 
 -- COMBAT TAB
 Tabs.Combat:AddSection("Targeting Settings")
-local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill All Available Mobs", Default = false})
+local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
+local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false})
 KillAllToggle:OnChanged(function() killAllActive = KillAllToggle.Value end)
 
-local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob", Values = getAvailableMobs(), Multi = false, Default = ""})
-MobDropdown:OnChanged(function(Value) selectedMob = Value end)
+local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob Groups", Values = getAvailableMobs(), Multi = true, Default = {}})
+MobDropdown:OnChanged(function(Value) selectedMobs = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
 
-Tabs.Combat:AddSection("Weapon & Aura")
+Tabs.Combat:AddSection("Weapon & Extras")
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
 WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
@@ -279,16 +337,11 @@ Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDr
 local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Camera Lock on Target", Default = false})
 CamToggle:OnChanged(function(Value)
     cameraTrackActive = Value
-    if cameraTrackActive then
-        startCameraTracking()
-    else
-        stopCameraTracking()
-    end
+    if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
 end)
 
-local AuraToggle = Tabs.Combat:AddToggle("AuraToggle", {Title = "KillAura (Single/All)", Default = false})
-AuraToggle:OnChanged(function()
-    if AuraToggle.Value then
+MasterAuraToggle:OnChanged(function()
+    if MasterAuraToggle.Value then
         killAuraActive = true
         startKillAura()
     else
@@ -325,7 +378,7 @@ Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy"
 local AutoRequestToggle = Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false})
 AutoRequestToggle:OnChanged(function(Value) autoRequestActive = Value end)
 
-Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon & Vote", Default = false}):OnChanged(function(Value)
+Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon (Vote & Replay)", Default = false}):OnChanged(function(Value)
     autoDungeonActive = Value
     if autoDungeonActive then 
         startAutoDungeon() 
