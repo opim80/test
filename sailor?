@@ -38,7 +38,7 @@ local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
-local StatusDisplay = nil -- Will hold the UI element for updates
+local StatusDisplay = nil
 
 -- Store new cleanup function globally for the NEXT time you execute
 getgenv().CSMDH_Cleanup = function()
@@ -165,27 +165,35 @@ local function startDynamicMovement()
         local targetPos = hrp.Position
         local targetY = hrp.Position.Y
 
+        -- Always find the ground beneath us to hover 20 studs up
+        local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+        local _, groundPos = workspace:FindPartOnRay(ray, char)
+        local hoverHeight = groundPos and (groundPos.Y + 20) or (hrp.Position.Y)
+
         if currentTarget then
-            local tPos = currentTarget:GetPivot().Position
-            local dist2D = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(tPos.X, 0, tPos.Z)).Magnitude
-
-            targetY = tPos.Y + 20
-
-            if dist2D > 15 then
+            local targetPart = getTargetPart(currentTarget)
+            
+            if targetPart then
+                -- The mob is rendered! We don't need to tween horizontally. Just hover in place.
+                targetPos = Vector3.new(hrp.Position.X, hrp.Position.Y, hrp.Position.Z)
+                targetY = hoverHeight
+            else
+                -- The mob is selected but unrendered (no part found). Tween horizontally toward its pivot as backup.
+                local tPos = currentTarget:GetPivot().Position
+                targetY = hoverHeight
+                
                 local direction = (tPos - hrp.Position) * Vector3.new(1, 0, 1)
                 if direction.Magnitude > 0 then
                     local moveSpeed = 65 
                     local step = direction.Unit * moveSpeed * deltaTime
-                    if step.Magnitude > dist2D then step = direction end
+                    -- Move towards the unrendered mob
                     targetPos = hrp.Position + step
                 end
-            else
-                targetPos = Vector3.new(tPos.X, hrp.Position.Y, tPos.Z)
             end
         else
-            local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-            local _, groundPos = workspace:FindPartOnRay(ray, char)
-            if groundPos then targetY = groundPos.Y + 20 end
+            -- No target, just hover in place safely
+            targetPos = hrp.Position
+            targetY = hoverHeight
         end
 
         hrp.CFrame = hrp.CFrame:Lerp(CFrame.new(targetPos.X, targetY, targetPos.Z), 0.15)
@@ -194,7 +202,7 @@ end
 
 local function startKillAura()
     if not killAuraActive then return end
-    updateStatus("Initializing KillAura & Evasion...")
+    updateStatus("Initializing KillAura & Global Hover...")
     startDynamicMovement()
 
     if auraTask then task.cancel(auraTask); auraTask = nil end
@@ -211,7 +219,7 @@ local function startKillAura()
                 continue 
             end
 
-            updateStatus("Scanning for valid targets in NPCs folder...")
+            updateStatus("Scanning for valid targets...")
             equipWeapon(selectedWeapon)
             currentTarget = nil
             
@@ -221,16 +229,16 @@ local function startKillAura()
 
             local validMobFound = false
 
+            -- Selection logic NO LONGER requires `targetPart` to exist. This allows targeting unrendered mobs.
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
-                local targetPart = getTargetPart(npc)
                 
-                if hum and hum.Health > 0 and targetPart then
+                if hum and hum.Health > 0 then
                     local baseName = getBaseName(npc.Name)
                     
                     if isMobSelected(npc.Name, baseName) then
                         validMobFound = true
-                        local dist = (charPos - targetPart.Position).Magnitude
+                        local dist = (charPos - npc:GetPivot().Position).Magnitude
                         if dist < closestDist then
                             closestDist = dist
                             bestTarget = npc
@@ -243,36 +251,39 @@ local function startKillAura()
                 if not killAllActive and next(selectedMobs) == nil then
                     updateStatus("No mobs selected in dropdown and KillAll is OFF.")
                 else
-                    updateStatus("No selected mobs are currently alive/rendered.")
+                    updateStatus("No selected mobs are currently alive.")
                 end
             end
 
             currentTarget = bestTarget
 
             if currentTarget then
-                updateStatus("Locked onto: " .. currentTarget.Name .. " | Tweening to target...")
                 local hum = currentTarget:FindFirstChild("Humanoid")
-                local targetPart = getTargetPart(currentTarget)
-                
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
 
-                while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 and targetPart do
-                    local tPos = targetPart.Position
+                while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+                    -- We check for the part dynamically inside the attack loop
+                    local targetPart = getTargetPart(currentTarget)
                     
-                    local args = {
-                        vector.create(tPos)
-                    }
-                    
-                    updateStatus("Attacking: " .. currentTarget.Name .. " | Health: " .. tostring(math.floor(hum.Health)))
-                    
-                    pcall(function() 
-                        remote:FireServer(unpack(args)) 
-                    end)
+                    if targetPart then
+                        updateStatus("Global Strike: " .. currentTarget.Name .. " | Health: " .. tostring(math.floor(hum.Health)))
+                        local tPos = targetPart.Position
+                        
+                        local args = {
+                            vector.create(tPos)
+                        }
+                        
+                        pcall(function() 
+                            remote:FireServer(unpack(args)) 
+                        end)
+                    else
+                        updateStatus("Target unrendered. Tweening to pivot: " .. currentTarget.Name)
+                    end
                     
                     task.wait(0.35)
                 end
                 
-                updateStatus("Target defeated or despawned. Searching again...")
+                updateStatus("Target defeated. Searching again...")
                 currentTarget = nil 
             else
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
@@ -353,7 +364,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.7.0 (Debug Build)",
+    SubTitle = "V1.8.0 (Global Strike Build)",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
