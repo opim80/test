@@ -62,60 +62,105 @@ getgenv().CSMDH_Cleanup = function()
     end
 end
 
--- [[ HELPER FUNCTIONS ]]
+-- [[ UPDATED HELPER FUNCTIONS ]]
 local function getBaseName(name)
-    -- Strips numbers, spaces, and underscores from the end of the name
     return string.gsub(name, "[_%s%d]+$", "")
 end
 
-local function isMobSelected(baseName)
+local function isMobSelected(rawName, baseName)
     if killAllActive then return true end
     if type(selectedMobs) == "table" then
-        return selectedMobs[baseName] == true or table.find(selectedMobs, baseName) ~= nil
+        -- Checks both the filtered name (Quincy) and the raw name (Quincy1) just in case
+        if selectedMobs[baseName] or selectedMobs[rawName] then return true end
+        if table.find(selectedMobs, baseName) or table.find(selectedMobs, rawName) then return true end
     end
     return false
 end
 
-local function getWeapons()
-    local weapons = {}
-    if LocalPlayer.Backpack then
-        for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
-            if tool:IsA("Tool") then table.insert(weapons, tool.Name) end
-        end
-    end
-    if LocalPlayer.Character then
-        for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
-            if tool:IsA("Tool") then table.insert(weapons, tool.Name) end
-        end
-    end
-    return weapons
+local function getTargetPart(npc)
+    -- Fallbacks in case the game uses different rig types
+    return npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Torso") or npc.PrimaryPart
 end
 
-local function getAvailableMobs()
-    local mobs = {}
-    local npcFolder = workspace:FindFirstChild("NPCs")
-    if npcFolder then
-        for _, npc in ipairs(npcFolder:GetChildren()) do
-            local hum = npc:FindFirstChild("Humanoid")
-            if hum and hum.Health > 0 then
-                local baseName = getBaseName(npc.Name)
-                if not table.find(mobs, baseName) then table.insert(mobs, baseName) end
+-- [[ BULLETPROOF KILLAURA LOGIC ]]
+local function startKillAura()
+    if not killAuraActive then return end
+    startDynamicMovement()
+
+    if auraTask then task.cancel(auraTask); auraTask = nil end
+
+    auraTask = task.spawn(function()
+        local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
+
+        -- FIX 1: The loop now runs infinitely while toggled, checking for the folder internally
+        while killAuraActive do
+            local npcFolder = workspace:FindFirstChild("NPCs")
+            
+            -- If the folder unloads or is missing, wait and try again instead of breaking the script
+            if not npcFolder then 
+                task.wait(0.5)
+                continue 
+            end
+
+            equipWeapon(selectedWeapon)
+            currentTarget = nil
+            
+            local bestTarget = nil
+            local closestDist = math.huge
+            local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
+
+            -- Scan for valid targets
+            for _, npc in ipairs(npcFolder:GetChildren()) do
+                local hum = npc:FindFirstChild("Humanoid")
+                local targetPart = getTargetPart(npc) -- FIX 2: Dynamic part finding
+                
+                if hum and hum.Health > 0 and targetPart then
+                    local baseName = getBaseName(npc.Name)
+                    
+                    if isMobSelected(npc.Name, baseName) then
+                        local dist = (charPos - targetPart.Position).Magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            bestTarget = npc
+                        end
+                    end
+                end
+            end
+
+            currentTarget = bestTarget
+
+            -- If we successfully locked onto a mob
+            if currentTarget then
+                local hum = currentTarget:FindFirstChild("Humanoid")
+                local targetPart = getTargetPart(currentTarget)
+                
+                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
+
+                -- Loop attack while target is alive and hasn't despawned
+                while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 and targetPart do
+                    local tPos = targetPart.Position
+                    
+                    -- Using vector.create as requested
+                    local args = {
+                        vector.create(tPos)
+                    }
+                    
+                    pcall(function() 
+                        remote:FireServer(unpack(args)) 
+                    end)
+                    
+                    task.wait(0.35)
+                end
+                
+                currentTarget = nil 
+            else
+                -- Restore camera temporarily if no mobs are currently found
+                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
+                task.wait(0.5) 
             end
         end
-    end
-    return mobs
+    end)
 end
-
-local function equipWeapon(weaponName)
-    if not weaponName or weaponName == "" then return end
-    local char = LocalPlayer.Character
-    local backpack = LocalPlayer.Backpack
-    if not char or not backpack then return end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    local tool = backpack:FindFirstChild(weaponName)
-    if tool and humanoid then humanoid:EquipTool(tool) end
-end
-
 -- [[ CAMERA TRACKING ]]
 local function startCameraTracking()
     if cameraTask then cameraTask:Disconnect() end
