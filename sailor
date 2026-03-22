@@ -22,6 +22,7 @@ local killAuraActive = false
 local killAllActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
+local backupTweenSpeed = 65 -- Added variable for the slider
 local auraTask = nil
 local evasionTask = nil
 local currentTarget = nil 
@@ -132,10 +133,19 @@ local function startCameraTracking()
     if cameraTask then cameraTask:Disconnect() end
     local camera = workspace.CurrentCamera
     cameraTask = RunService.RenderStepped:Connect(function()
-        if cameraTrackActive and currentTarget then
-            local targetPart = getTargetPart(currentTarget)
-            if targetPart then
-                camera.CFrame = CFrame.lookAt(camera.CFrame.Position, targetPart.Position)
+        if cameraTrackActive then
+            if currentTarget then
+                local hum = currentTarget:FindFirstChild("Humanoid")
+                -- Spectate the mob by setting the CameraSubject
+                if hum and camera.CameraSubject ~= hum then
+                    camera.CameraSubject = hum
+                end
+            else
+                -- If no target, snap back to the player
+                local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                if myHum and camera.CameraSubject ~= myHum then
+                    camera.CameraSubject = myHum
+                end
             end
         end
     end)
@@ -144,8 +154,10 @@ end
 local function stopCameraTracking()
     if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
     local camera = workspace.CurrentCamera
-    camera.CameraType = Enum.CameraType.Custom
-    camera.CameraSubject = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+    local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+    if myHum then 
+        camera.CameraSubject = myHum 
+    end
 end
 
 -- [[ KILLAURA & MOVEMENT LOGIC ]]
@@ -181,8 +193,8 @@ local function startDynamicMovement()
                 
                 local direction = (tPos - hrp.Position) * Vector3.new(1, 0, 1)
                 if direction.Magnitude > 0 then
-                    local moveSpeed = 65 
-                    local step = direction.Unit * moveSpeed * deltaTime
+                    -- Replaced hardcoded 65 with the slider variable
+                    local step = direction.Unit * backupTweenSpeed * deltaTime
                     targetPos = hrp.Position + step
                 end
             end
@@ -253,7 +265,6 @@ local function startKillAura()
 
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
-                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
 
                 while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
                     local targetPart = getTargetPart(currentTarget)
@@ -261,11 +272,8 @@ local function startKillAura()
                     if targetPart then
                         updateStatus("Global Strike: " .. currentTarget.Name .. " | Health: " .. tostring(math.floor(hum.Health)))
                         
-                        -- THE CRITICAL FIX IS HERE
                         pcall(function() 
                             local tPos = targetPart.Position
-                            -- Safely construct the vector inside the protected call
-                            -- By passing X, Y, Z it will no longer crash Luau's vector creation
                             local args = {
                                 vector.create(tPos.X, tPos.Y, tPos.Z)
                             }
@@ -282,7 +290,6 @@ local function startKillAura()
                 updateStatus("Target defeated. Searching again...")
                 currentTarget = nil 
             else
-                if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
                 task.wait(0.5) 
             end
         end
@@ -360,9 +367,9 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.9.0 (Global Strike Fix)",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
+    SubTitle = "V2.0.0 (Mobile Optimized)",
+    TabWidth = 140,
+    Size = UDim2.fromOffset(420, 320), -- Shrunk resolution for Mobile compatibility
     Acrylic = true, 
     Theme = "Dark"
 })
@@ -396,7 +403,18 @@ local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Selec
 WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
-local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Camera Lock on Target", Default = false})
+Tabs.Combat:AddSlider("TweenSpeedSlider", {
+    Title = "Backup Tween Speed",
+    Description = "Speed when moving to unrendered mobs",
+    Default = 65,
+    Min = 10,
+    Max = 200,
+    Rounding = 1
+}):OnChanged(function(Value)
+    backupTweenSpeed = Value
+end)
+
+local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
 CamToggle:OnChanged(function(Value)
     cameraTrackActive = Value
     if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
