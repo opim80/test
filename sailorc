@@ -284,8 +284,9 @@ local function startKillAura()
                         
                         pcall(function() 
                             local tPos = targetPart.Position
+                            -- Reverted exactly to your original vector.create format
                             local args = {
-                                vector.create(tPos.X, tPos.Y, tPos.Z)
+                                vector.create(tPos)
                             }
                             remote:FireServer(unpack(args)) 
                         end)
@@ -377,7 +378,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.3.0 (Flight Path Fix)",
+    SubTitle = "V2.4.0 (Original Remote Format)",
     TabWidth = 140,
     Size = UDim2.fromOffset(420, 320),
     Acrylic = true, 
