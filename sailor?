@@ -1,5 +1,4 @@
 -- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
--- If the script was already executed, clean up the old loops, connections, and UI
 if getgenv().CSMDH_Cleanup then
     pcall(function() getgenv().CSMDH_Cleanup() end)
 end
@@ -49,6 +48,7 @@ getgenv().CSMDH_Cleanup = function()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
+        hrp.Anchored = false
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
     end
@@ -64,7 +64,16 @@ end
 
 -- [[ HELPER FUNCTIONS ]]
 local function getBaseName(name)
-    return string.gsub(name, "[%s%d]+$", "")
+    -- Strips numbers, spaces, and underscores from the end of the name
+    return string.gsub(name, "[_%s%d]+$", "")
+end
+
+local function isMobSelected(baseName)
+    if killAllActive then return true end
+    if type(selectedMobs) == "table" then
+        return selectedMobs[baseName] == true or table.find(selectedMobs, baseName) ~= nil
+    end
+    return false
 end
 
 local function getWeapons()
@@ -189,10 +198,12 @@ local function startKillAura()
 
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
-                if hum and hum.Health > 0 then
+                local targetHrp = npc:FindFirstChild("HumanoidRootPart")
+                
+                if hum and hum.Health > 0 and targetHrp then
                     local baseName = getBaseName(npc.Name)
-                    if killAllActive or selectedMobs[baseName] then
-                        local dist = (charPos - npc:GetPivot().Position).Magnitude
+                    if isMobSelected(baseName) then
+                        local dist = (charPos - targetHrp.Position).Magnitude
                         if dist < closestDist then
                             closestDist = dist
                             bestTarget = npc
@@ -205,15 +216,21 @@ local function startKillAura()
 
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
+                local targetHrp = currentTarget:FindFirstChild("HumanoidRootPart")
+                
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
 
-                while killAuraActive and currentTarget and hum and hum.Health > 0 do
-                    local tPos = currentTarget:GetPivot().Position
-                    local distToTarget = (LocalPlayer.Character:GetPivot().Position - tPos).Magnitude
+                while killAuraActive and currentTarget and hum and hum.Health > 0 and targetHrp do
+                    local tPos = targetHrp.Position
                     
-                    if distToTarget <= 25 then
-                        pcall(function() remote:FireServer(Vector3.new(tPos.X, tPos.Y, tPos.Z)) end)
-                    end
+                    local args = {
+                        vector.create(tPos)
+                    }
+                    
+                    pcall(function() 
+                        remote:FireServer(unpack(args)) 
+                    end)
+                    
                     task.wait(0.35)
                 end
                 
@@ -254,7 +271,7 @@ local function startAutoStats()
     end)
 end
 
--- [[ RAIDS LOGIC (UPDATED WITH REPLAY) ]]
+-- [[ RAIDS LOGIC ]]
 local function startAutoDungeon()
     if dungeonLoopTask then task.cancel(dungeonLoopTask); dungeonLoopTask = nil end
 
@@ -267,27 +284,21 @@ local function startAutoDungeon()
                 local replayFrame = dungeonUI:FindFirstChild("ReplayDungeonFrameVisibleOnlyWhenClearingDungeon")
                 local contentFrame = dungeonUI:FindFirstChild("ContentFrame")
                 
-                -- Check for Replay Vote First
                 if replayFrame and replayFrame.Visible then
                     local args = {"sponsor"}
                     pcall(function()
                         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveReplayVote"):FireServer(unpack(args))
                     end)
-                
-                -- Then Check for Start/Difficulty Vote
                 elseif contentFrame and contentFrame.Visible then
                     pcall(function()
                         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
                     end)
                     
-                    -- Engage Aura if it isn't running
                     if not killAuraActive then
                         killAllActive = true 
                         killAuraActive = true
                         startKillAura()
                     end
-                
-                -- If neither are visible and we are outside, request portal
                 elseif autoRequestActive then
                     pcall(function()
                         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
@@ -302,14 +313,13 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.4.0",
+    SubTitle = "V1.5.0",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
     Theme = "Dark"
 })
 
--- Store Window in getgenv so it can be destroyed upon re-execution
 getgenv().CSMDH_Window = Window
 
 local Tabs = {
