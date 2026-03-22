@@ -170,41 +170,49 @@ local function startDynamicMovement()
     evasionTask = RunService.Heartbeat:Connect(function(deltaTime)
         if not hrp or not hrp.Parent then return end
         
-        -- Lock physics completely to prevent sliding or fling glitches
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
 
-        local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-        local _, groundPos = workspace:FindPartOnRay(ray, char)
-        local hoverHeight = groundPos and (groundPos.Y + 20) or (hrp.Position.Y)
-
         local nextX = hrp.Position.X
+        local nextY = hrp.Position.Y
         local nextZ = hrp.Position.Z
 
         if currentTarget then
             local targetPart = getTargetPart(currentTarget)
             
-            -- If mob is unrendered, tween horizontally at exact slider speed
-            if not targetPart then
-                local tPos = currentTarget:GetPivot().Position
-                local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
-                local dist2D = direction.Magnitude
+            if targetPart then
+                -- Target is rendered. Hover 20 studs above local ground.
+                local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+                local _, groundPos = workspace:FindPartOnRay(ray, char)
+                local hoverHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
                 
-                if dist2D > 1 then -- Prevent jittering when perfectly on top of target
+                nextY = hrp.Position.Y + (hoverHeight - hrp.Position.Y) * 0.15
+            else
+                -- Target is unrendered. Ignore ground entirely and fly straight to target pivot.
+                local tPos = currentTarget:GetPivot().Position
+                local target3D = Vector3.new(tPos.X, tPos.Y + 20, tPos.Z)
+                local direction = target3D - hrp.Position
+                local dist3D = direction.Magnitude
+                
+                if dist3D > 1 then
                     local stepDist = backupTweenSpeed * deltaTime
-                    if stepDist > dist2D then stepDist = dist2D end -- Prevent overshooting
+                    if stepDist > dist3D then stepDist = dist3D end 
                     
                     local moveVector = direction.Unit * stepDist
                     nextX = hrp.Position.X + moveVector.X
+                    nextY = hrp.Position.Y + moveVector.Y
                     nextZ = hrp.Position.Z + moveVector.Z
                 end
             end
+        else
+            -- No target. Hover 20 studs above local ground.
+            local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+            local _, groundPos = workspace:FindPartOnRay(ray, char)
+            local hoverHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
+            
+            nextY = hrp.Position.Y + (hoverHeight - hrp.Position.Y) * 0.15
         end
 
-        -- Smoothly interpolate ONLY the Y axis for the hover effect
-        local nextY = hrp.Position.Y + (hoverHeight - hrp.Position.Y) * 0.15
-        
-        -- Apply the exact horizontal position and the smoothed vertical position
         hrp.CFrame = CFrame.new(nextX, nextY, nextZ)
     end)
 end
@@ -369,7 +377,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.2.0 (True Speed Patch)",
+    SubTitle = "V2.3.0 (Flight Path Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(420, 320),
     Acrylic = true, 
