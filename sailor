@@ -165,7 +165,6 @@ local function startDynamicMovement()
         local targetPos = hrp.Position
         local targetY = hrp.Position.Y
 
-        -- Always find the ground beneath us to hover 20 studs up
         local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
         local _, groundPos = workspace:FindPartOnRay(ray, char)
         local hoverHeight = groundPos and (groundPos.Y + 20) or (hrp.Position.Y)
@@ -174,11 +173,9 @@ local function startDynamicMovement()
             local targetPart = getTargetPart(currentTarget)
             
             if targetPart then
-                -- The mob is rendered! We don't need to tween horizontally. Just hover in place.
                 targetPos = Vector3.new(hrp.Position.X, hrp.Position.Y, hrp.Position.Z)
                 targetY = hoverHeight
             else
-                -- The mob is selected but unrendered (no part found). Tween horizontally toward its pivot as backup.
                 local tPos = currentTarget:GetPivot().Position
                 targetY = hoverHeight
                 
@@ -186,12 +183,10 @@ local function startDynamicMovement()
                 if direction.Magnitude > 0 then
                     local moveSpeed = 65 
                     local step = direction.Unit * moveSpeed * deltaTime
-                    -- Move towards the unrendered mob
                     targetPos = hrp.Position + step
                 end
             end
         else
-            -- No target, just hover in place safely
             targetPos = hrp.Position
             targetY = hoverHeight
         end
@@ -229,7 +224,6 @@ local function startKillAura()
 
             local validMobFound = false
 
-            -- Selection logic NO LONGER requires `targetPart` to exist. This allows targeting unrendered mobs.
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 
@@ -262,20 +256,22 @@ local function startKillAura()
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Scriptable end
 
                 while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
-                    -- We check for the part dynamically inside the attack loop
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
                         updateStatus("Global Strike: " .. currentTarget.Name .. " | Health: " .. tostring(math.floor(hum.Health)))
-                        local tPos = targetPart.Position
                         
-                        local args = {
-                            vector.create(tPos)
-                        }
-                        
+                        -- THE CRITICAL FIX IS HERE
                         pcall(function() 
+                            local tPos = targetPart.Position
+                            -- Safely construct the vector inside the protected call
+                            -- By passing X, Y, Z it will no longer crash Luau's vector creation
+                            local args = {
+                                vector.create(tPos.X, tPos.Y, tPos.Z)
+                            }
                             remote:FireServer(unpack(args)) 
                         end)
+                        
                     else
                         updateStatus("Target unrendered. Tweening to pivot: " .. currentTarget.Name)
                     end
@@ -364,7 +360,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.8.0 (Global Strike Build)",
+    SubTitle = "V1.9.0 (Global Strike Fix)",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
