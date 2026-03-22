@@ -38,6 +38,8 @@ local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
+local StatusDisplay = nil -- Will hold the UI element for updates
+
 -- Store new cleanup function globally for the NEXT time you execute
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
@@ -62,15 +64,19 @@ getgenv().CSMDH_Cleanup = function()
 end
 
 -- [[ HELPER FUNCTIONS ]]
+local function updateStatus(msg)
+    if StatusDisplay then
+        StatusDisplay:SetDesc(msg)
+    end
+end
+
 local function getBaseName(name)
-    -- Strips numbers, spaces, and underscores from the end of the name
     return string.gsub(name, "[_%s%d]+$", "")
 end
 
 local function isMobSelected(rawName, baseName)
     if killAllActive then return true end
     if type(selectedMobs) == "table" then
-        -- Checks both the filtered name (Quincy) and the raw name (Quincy1)
         if selectedMobs[baseName] or selectedMobs[rawName] then return true end
         if table.find(selectedMobs, baseName) or table.find(selectedMobs, rawName) then return true end
     end
@@ -78,7 +84,6 @@ local function isMobSelected(rawName, baseName)
 end
 
 local function getTargetPart(npc)
-    -- Fallbacks in case the game uses different rig types (like R6 Torso)
     return npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Torso") or npc.PrimaryPart
 end
 
@@ -189,6 +194,7 @@ end
 
 local function startKillAura()
     if not killAuraActive then return end
+    updateStatus("Initializing KillAura & Evasion...")
     startDynamicMovement()
 
     if auraTask then task.cancel(auraTask); auraTask = nil end
@@ -200,16 +206,20 @@ local function startKillAura()
             local npcFolder = workspace:FindFirstChild("NPCs")
             
             if not npcFolder then 
+                updateStatus("Waiting for workspace.NPCs folder to load...")
                 task.wait(0.5)
                 continue 
             end
 
+            updateStatus("Scanning for valid targets in NPCs folder...")
             equipWeapon(selectedWeapon)
             currentTarget = nil
             
             local bestTarget = nil
             local closestDist = math.huge
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
+
+            local validMobFound = false
 
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
@@ -219,6 +229,7 @@ local function startKillAura()
                     local baseName = getBaseName(npc.Name)
                     
                     if isMobSelected(npc.Name, baseName) then
+                        validMobFound = true
                         local dist = (charPos - targetPart.Position).Magnitude
                         if dist < closestDist then
                             closestDist = dist
@@ -228,9 +239,18 @@ local function startKillAura()
                 end
             end
 
+            if not validMobFound then
+                if not killAllActive and next(selectedMobs) == nil then
+                    updateStatus("No mobs selected in dropdown and KillAll is OFF.")
+                else
+                    updateStatus("No selected mobs are currently alive/rendered.")
+                end
+            end
+
             currentTarget = bestTarget
 
             if currentTarget then
+                updateStatus("Locked onto: " .. currentTarget.Name .. " | Tweening to target...")
                 local hum = currentTarget:FindFirstChild("Humanoid")
                 local targetPart = getTargetPart(currentTarget)
                 
@@ -243,6 +263,8 @@ local function startKillAura()
                         vector.create(tPos)
                     }
                     
+                    updateStatus("Attacking: " .. currentTarget.Name .. " | Health: " .. tostring(math.floor(hum.Health)))
+                    
                     pcall(function() 
                         remote:FireServer(unpack(args)) 
                     end)
@@ -250,6 +272,7 @@ local function startKillAura()
                     task.wait(0.35)
                 end
                 
+                updateStatus("Target defeated or despawned. Searching again...")
                 currentTarget = nil 
             else
                 if cameraTrackActive then workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end
@@ -262,6 +285,7 @@ end
 local function stopKillAura()
     killAuraActive = false
     currentTarget = nil
+    updateStatus("KillAura Stopped. Idle.")
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
     
@@ -329,7 +353,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V1.6.0",
+    SubTitle = "V1.7.0 (Debug Build)",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -346,6 +370,11 @@ local Tabs = {
 }
 
 -- COMBAT TAB
+StatusDisplay = Tabs.Combat:AddParagraph({
+    Title = "Current Script Status",
+    Content = "Idle. Awaiting execution."
+})
+
 Tabs.Combat:AddSection("Targeting Settings")
 local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
 local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false})
