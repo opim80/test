@@ -409,20 +409,31 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
-            -- Failsafe 1: Weapon Loss Check
+            -- Failsafe 1: BULLETPROOF WEAPON LOSS CHECK
             if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then
-                updateStatus("Weapon '" .. selectedWeapon .. "' lost! Resetting character...")
+                updateStatus("Weapon '" .. selectedWeapon .. "' lost! Forcing character reset...")
                 isRecalibrating = true 
                 if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
                 
                 local char = LocalPlayer.Character
                 if char then
                     local hum = char:FindFirstChild("Humanoid")
-                    if hum then hum.Health = 0 else char:BreakJoints() end
+                    if hum then 
+                        hum.Health = 0 
+                        hum:TakeDamage(math.huge)
+                    end
+                    char:BreakJoints()
+                    -- Core engine override to guarantee death
+                    local head = char:FindFirstChild("Head")
+                    if head then head:Destroy() end 
                 end
                 
-                local newChar = LocalPlayer.CharacterAdded:Wait()
-                newChar:WaitForChild("HumanoidRootPart", 10)
+                -- Wait for respawn with a safe timeout
+                local waitStart = tick()
+                repeat 
+                    task.wait(0.2) 
+                until (LocalPlayer.Character and LocalPlayer.Character ~= char and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) or (tick() - waitStart > 15)
+                
                 task.wait(2.5) -- Buffer for game to restore backpack tools
                 
                 isRecalibrating = false
@@ -505,7 +516,7 @@ local function startKillAura()
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
-                    -- Re-check weapon mid-fight in case it breaks or drops
+                    -- Re-check weapon mid-fight
                     if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then break end
                     
                     local targetPart = getTargetPart(currentTarget)
@@ -618,7 +629,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.0.0 (Weapon Recovery Build)",
+    SubTitle = "V3.1.0 (Reset Override)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
