@@ -125,6 +125,15 @@ local function getWeapons()
     return weapons
 end
 
+local function hasWeapon(weaponName)
+    if not weaponName or weaponName == "" then return false end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    local char = LocalPlayer.Character
+    if backpack and backpack:FindFirstChild(weaponName) then return true end
+    if char and char:FindFirstChild(weaponName) then return true end
+    return false
+end
+
 local function getAvailableMobs()
     local mobs = {}
     local npcFolder = workspace:FindFirstChild("NPCs")
@@ -196,10 +205,8 @@ local function getBestQuestNPC()
             
             if prompt and prompt.ObjectText then
                 local text = prompt.ObjectText
-                -- Parses "Lvl 10750-99999"
                 local minLvl, maxLvl = string.match(text, "(%d+)%s*%-%s*(%d+)")
                 
-                -- Fallback for "Lvl 10750+"
                 if not minLvl then
                     minLvl = string.match(text, "(%d+)%+")
                     maxLvl = 9999999
@@ -232,7 +239,6 @@ local function startAutoQuest()
             local questUI = pGui and pGui:FindFirstChild("QuestUI")
             local questFrame = questUI and questUI:FindFirstChild("Quest")
             
-            -- If the Quest UI is missing or NOT visible, we need a new quest
             if questFrame and not questFrame.Visible then
                 local npcId, npcInst = getBestQuestNPC()
                 
@@ -244,13 +250,12 @@ local function startAutoQuest()
                     if hrp then
                         local dist = (hrp.Position - npcInst:GetPivot().Position).Magnitude
                         
-                        -- If we are close enough to the NPC, accept the quest
                         if dist < 15 then
                             updateStatus("Accepting Quest from: " .. npcId)
                             pcall(function()
                                 ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcId)
                             end)
-                            task.wait(1.5) -- Wait for the server to process and UI to update
+                            task.wait(1.5) 
                         else
                             updateStatus("Tweening to " .. npcId .. " for new quest...")
                         end
@@ -261,7 +266,6 @@ local function startAutoQuest()
                     updateStatus("AutoQuest: No suitable quest found for Level " .. tostring(LocalPlayer.Data.Level.Value))
                 end
             else
-                -- Quest is active, release movement priority back to combat
                 isQuesting = false
                 currentQuestNPC = nil
             end
@@ -323,7 +327,6 @@ local function startDynamicMovement()
         local _, groundPos = workspace:FindPartOnRay(ray, char)
         local baseHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
         
-        -- Bounce Logic
         local targetY = baseHeight
         if bounceActive then
             bounceTimer = bounceTimer + deltaTime
@@ -334,10 +337,9 @@ local function startDynamicMovement()
             targetY = baseHeight + (bounceUp and 10 or 0)
         end
 
-        -- PRIORITY 1: QUEST MOVEMENT
         if isQuesting and currentQuestNPC then
             local tPos = currentQuestNPC:GetPivot().Position
-            local target3D = Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) -- Hover slightly above NPC to avoid clipping
+            local target3D = Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) 
             local direction = target3D - hrp.Position
             local dist3D = direction.Magnitude
             
@@ -346,13 +348,11 @@ local function startDynamicMovement()
                 if stepDist > dist3D then stepDist = dist3D end
                 local moveVector = direction.Unit * stepDist
                 nextX = hrp.Position.X + moveVector.X
-                targetY = hrp.Position.Y + moveVector.Y -- Override Y to fly straight to them
+                targetY = hrp.Position.Y + moveVector.Y 
                 nextZ = hrp.Position.Z + moveVector.Z
             else
-                targetY = hrp.Position.Y -- Stop moving Y when arrived
+                targetY = hrp.Position.Y 
             end
-
-        -- PRIORITY 2: COMBAT MOVEMENT
         else
             if alwaysTakeCenterActive then
                 if tick() - lastCenterUpdate >= centerUpdateInterval then
@@ -409,7 +409,31 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
-            -- Failsafe: Recalibration Logic
+            -- Failsafe 1: Weapon Loss Check
+            if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then
+                updateStatus("Weapon '" .. selectedWeapon .. "' lost! Resetting character...")
+                isRecalibrating = true 
+                if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+                
+                local char = LocalPlayer.Character
+                if char then
+                    local hum = char:FindFirstChild("Humanoid")
+                    if hum then hum.Health = 0 else char:BreakJoints() end
+                end
+                
+                local newChar = LocalPlayer.CharacterAdded:Wait()
+                newChar:WaitForChild("HumanoidRootPart", 10)
+                task.wait(2.5) -- Buffer for game to restore backpack tools
+                
+                isRecalibrating = false
+                if killAuraActive then
+                    startDynamicMovement()
+                    updateStatus("Character restored. Resuming KillAura...")
+                end
+                continue
+            end
+
+            -- Failsafe 2: Recalibration Logic
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
@@ -481,6 +505,9 @@ local function startKillAura()
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+                    -- Re-check weapon mid-fight in case it breaks or drops
+                    if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then break end
+                    
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
@@ -591,7 +618,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.9.0 (Quests & Movement)",
+    SubTitle = "V3.0.0 (Weapon Recovery Build)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
