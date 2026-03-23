@@ -46,6 +46,10 @@ local recalibrateDuration = 3
 local lastRecalibrate = tick()
 local isRecalibrating = false
 
+-- Title Variables
+local untilTitleActive = false
+local MasterAuraToggle = nil -- Declared here so the aura loop can turn it off automatically
+
 -- Quest Variables
 local autoQuestActive = false
 local isQuesting = false
@@ -127,7 +131,6 @@ local function getWeapons()
         end
     end
     
-    -- MEMORY FIX: Always inject the saved weapon into the list so it never vanishes from Config
     if selectedWeapon ~= "" and not table.find(weapons, selectedWeapon) then
         table.insert(weapons, selectedWeapon)
     end
@@ -155,7 +158,6 @@ local function equipWeapon(weaponName)
     local char = LocalPlayer.Character
     local backpack = LocalPlayer.Backpack
     if not char or not backpack then return end
-    
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local tool = backpack:FindFirstChild(weaponName) or char:FindFirstChild(weaponName)
     
@@ -415,6 +417,7 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
+            -- Failsafe 1: Recalibration Logic
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
@@ -437,6 +440,32 @@ local function startKillAura()
                     updateStatus("Recalibration complete. Resuming...")
                 end
                 continue
+            end
+            
+            -- Failsafe 2: Until Title & Boss Spawn Logic
+            if untilTitleActive then
+                local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+                if pGui then
+                    -- Check if Title has been obtained
+                    local titlesUI = pGui:FindFirstChild("TitlesUI")
+                    local lockedFrame = titlesUI and titlesUI:FindFirstChild("MainFrame") and titlesUI.MainFrame:FindFirstChild("Frame") and titlesUI.MainFrame.Frame:FindFirstChild("Content") and titlesUI.MainFrame.Frame.Content:FindFirstChild("Holder") and titlesUI.MainFrame.Frame.Content.Holder:FindFirstChild("Title_TranscendentBeing") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing:FindFirstChild("BuffButtonsHolder") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing.BuffButtonsHolder:FindFirstChild("Locked")
+                    
+                    if lockedFrame and not lockedFrame.Visible then
+                        updateStatus("Title Unlocked! Halting Script.")
+                        if MasterAuraToggle then MasterAuraToggle:SetValue(false) end
+                        break
+                    end
+                    
+                    -- Check if Boss is currently spawned
+                    local bossUI = pGui:FindFirstChild("BossUI")
+                    local bossMain = bossUI and bossUI:FindFirstChild("MainFrame")
+                    
+                    if bossMain and not bossMain.Visible then
+                        updateStatus("Boss not spawned. Waiting...")
+                        task.wait(1)
+                        continue -- Skips the attack loop until the boss UI reappears
+                    end
+                end
             end
 
             local npcFolder = workspace:FindFirstChild("NPCs")
@@ -486,6 +515,13 @@ local function startKillAura()
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+                    -- Double check Boss/Title status in the middle of active combat
+                    if untilTitleActive then
+                        local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+                        local bossMain = pGui and pGui:FindFirstChild("BossUI") and pGui.BossUI:FindFirstChild("MainFrame")
+                        if bossMain and not bossMain.Visible then break end -- Break out of attack loop if boss despawns/dies
+                    end
+                    
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
@@ -596,7 +632,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.0.0 (Persistent Memory & Quests)",
+    SubTitle = "V3.1.0 (Title Farmer & Quests)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -636,7 +672,7 @@ local Tabs = {
 StatusDisplay = Tabs.Combat:AddParagraph({Title = "Current Script Status", Content = "Idle. Awaiting execution."})
 
 Tabs.Combat:AddSection("Targeting Settings")
-local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
+MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
 local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false})
 KillAllToggle:OnChanged(function() killAllActive = KillAllToggle.Value end)
 
@@ -646,7 +682,6 @@ Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDrop
 
 Tabs.Combat:AddSection("Weapon & Attacks")
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
--- MEMORY FIX: Only assign if Value is valid, preventing wiped configs
 WeaponDropdown:OnChanged(function(Value) 
     if Value and Value ~= "" then selectedWeapon = Value end 
 end)
@@ -673,6 +708,8 @@ CamToggle:OnChanged(function(Value)
 end)
 
 Tabs.Combat:AddSection("Failsafes")
+Tabs.Combat:AddToggle("UntilTitleToggle", {Title = "Farm Until Transcendent Title", Default = false}):OnChanged(function(Value) untilTitleActive = Value end)
+
 Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(Value) 
     recalibrateActive = Value 
     lastRecalibrate = tick() 
@@ -752,7 +789,6 @@ SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
 
--- Allow tools to spawn before loading config so dropdown correctly assigns saved weapon
 task.wait(1.5)
 if Tabs.Combat then WeaponDropdown:SetValues(getWeapons()) end
 SaveManager:LoadAutoloadConfig()
