@@ -43,6 +43,7 @@ local bounceUp = false
 local recalibrateActive = false
 local recalibrateInterval = 5
 local recalibrateDuration = 3
+local stuckTimeout = 15 -- New Variable for the Damage Tracker
 local lastRecalibrate = tick()
 local isRecalibrating = false
 
@@ -134,6 +135,44 @@ local function hasWeapon(weaponName)
     return false
 end
 
+local function equipWeapon(weaponName)
+    if not weaponName or weaponName == "" then return end
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer.Backpack
+    if not char or not backpack then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local tool = backpack:FindFirstChild(weaponName)
+    if tool and humanoid then humanoid:EquipTool(tool) end
+end
+
+local function forceCharacterReset(reason)
+    updateStatus(reason)
+    isRecalibrating = true 
+    if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+    
+    local char = LocalPlayer.Character
+    if char then
+        local hum = char:FindFirstChild("Humanoid")
+        if hum then 
+            hum.Health = 0 
+            hum:TakeDamage(math.huge)
+        end
+        char:BreakJoints()
+        local head = char:FindFirstChild("Head")
+        if head then head:Destroy() end 
+    end
+    
+    local waitStart = tick()
+    repeat 
+        task.wait(0.2) 
+    until (LocalPlayer.Character and LocalPlayer.Character ~= char and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) or (tick() - waitStart > 15)
+    
+    task.wait(2.5) -- Buffer for game to restore backpack tools
+    
+    isRecalibrating = false
+    -- We don't need to call startDynamicMovement here because the main loop will detect isRecalibrating is false and naturally resume
+end
+
 local function getAvailableMobs()
     local mobs = {}
     local npcFolder = workspace:FindFirstChild("NPCs")
@@ -147,16 +186,6 @@ local function getAvailableMobs()
         end
     end
     return mobs
-end
-
-local function equipWeapon(weaponName)
-    if not weaponName or weaponName == "" then return end
-    local char = LocalPlayer.Character
-    local backpack = LocalPlayer.Backpack
-    if not char or not backpack then return end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    local tool = backpack:FindFirstChild(weaponName)
-    if tool and humanoid then humanoid:EquipTool(tool) end
 end
 
 local function getCenterPosition()
@@ -409,42 +438,7 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
-            -- Failsafe 1: BULLETPROOF WEAPON LOSS CHECK
-            if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then
-                updateStatus("Weapon '" .. selectedWeapon .. "' lost! Forcing character reset...")
-                isRecalibrating = true 
-                if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
-                
-                local char = LocalPlayer.Character
-                if char then
-                    local hum = char:FindFirstChild("Humanoid")
-                    if hum then 
-                        hum.Health = 0 
-                        hum:TakeDamage(math.huge)
-                    end
-                    char:BreakJoints()
-                    -- Core engine override to guarantee death
-                    local head = char:FindFirstChild("Head")
-                    if head then head:Destroy() end 
-                end
-                
-                -- Wait for respawn with a safe timeout
-                local waitStart = tick()
-                repeat 
-                    task.wait(0.2) 
-                until (LocalPlayer.Character and LocalPlayer.Character ~= char and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")) or (tick() - waitStart > 15)
-                
-                task.wait(2.5) -- Buffer for game to restore backpack tools
-                
-                isRecalibrating = false
-                if killAuraActive then
-                    startDynamicMovement()
-                    updateStatus("Character restored. Resuming KillAura...")
-                end
-                continue
-            end
-
-            -- Failsafe 2: Recalibration Logic
+            -- Periodic Normal Recalibration Check (Drops you to ground)
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
@@ -514,10 +508,38 @@ local function startKillAura()
 
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
+                local timeStuck = 0
+                local lastHp = hum.Health
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
-                    -- Re-check weapon mid-fight
-                    if selectedWeapon ~= "" and not hasWeapon(selectedWeapon) then break end
+                    
+                    -- Failsafe 1: Tool Deletion/Bug Check
+                    if selectedWeapon ~= "" then
+                        if not hasWeapon(selectedWeapon) then
+                            forceCharacterReset("Weapon Missing! Executing reset...")
+                            break
+                        else
+                            -- If tool is in backpack but unequipped, force it back to hand
+                            local char = LocalPlayer.Character
+                            if char and not char:FindFirstChild(selectedWeapon) then
+                                equipWeapon(selectedWeapon)
+                            end
+                        end
+                    end
+
+                    -- Failsafe 2: Anti-Stuck Damage Tracker
+                    if hum.Health < lastHp then
+                        lastHp = hum.Health
+                        timeStuck = 0 -- Reset timer if damage was successfully dealt
+                    else
+                        if hum.Health > lastHp then lastHp = hum.Health end -- Account for mob healing
+                        timeStuck = timeStuck + 0.35
+                    end
+
+                    if timeStuck >= stuckTimeout then
+                        forceCharacterReset("Anti-Stuck: 0 DMG for " .. tostring(stuckTimeout) .. "s. Resetting...")
+                        break
+                    end
                     
                     local targetPart = getTargetPart(currentTarget)
                     
@@ -629,7 +651,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.1.0 (Reset Override)",
+    SubTitle = "V3.2.0 (Anti-Stuck Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -703,12 +725,13 @@ CamToggle:OnChanged(function(Value)
 end)
 
 Tabs.Combat:AddSection("Failsafes")
-Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(Value) 
+Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Drop to Ground", Default = false}):OnChanged(function(Value) 
     recalibrateActive = Value 
     lastRecalibrate = tick() 
 end)
-Tabs.Combat:AddSlider("RecalibrateInterval", {Title = "Recalibrate Interval (mins)", Default = 5, Min = 1, Max = 60, Rounding = 1}):OnChanged(function(Value) recalibrateInterval = Value end)
-Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Recalibrate Drop Time (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(Value) recalibrateDuration = Value end)
+Tabs.Combat:AddSlider("RecalibrateInterval", {Title = "Drop Interval (mins)", Default = 5, Min = 1, Max = 60, Rounding = 1}):OnChanged(function(Value) recalibrateInterval = Value end)
+Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Drop Duration (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(Value) recalibrateDuration = Value end)
+Tabs.Combat:AddSlider("StuckTimeout", {Title = "Anti-Stuck Timeout (s)", Default = 15, Min = 5, Max = 60, Rounding = 1}):OnChanged(function(Value) stuckTimeout = Value end)
 
 MasterAuraToggle:OnChanged(function()
     if MasterAuraToggle.Value then
