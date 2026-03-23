@@ -23,6 +23,7 @@ local killAllActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
 local backupTweenSpeed = 65 
+local vectorMethod = "vector.create" -- Added variable for the new dropdown
 local auraTask = nil
 local evasionTask = nil
 local currentTarget = nil 
@@ -277,18 +278,26 @@ local function startKillAura()
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
-                        -- Fetch the exact path of the remote being fired
-                        local remotePath = remote:GetFullName()
-                        updateStatus("Global Strike: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)) .. "\nRemote: " .. remotePath)
+                        local tPos = targetPart.Position
                         
-                        pcall(function() 
-                            local tPos = targetPart.Position
-                            local args = {
-                                vector.create(tPos)
-                            }
+                        -- The Error Catching Logic
+                        local success, err = pcall(function() 
+                            local args = {}
+                            if vectorMethod == "vector.create" then
+                                args = { vector.create(tPos) }
+                            else
+                                args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
+                            end
                             remote:FireServer(unpack(args)) 
                         end)
                         
+                        -- Display the exact error on the status bar if it fails
+                        if not success then
+                            updateStatus("⚠️ REMOTE ERROR: " .. tostring(err))
+                        else
+                            local remotePath = remote:GetFullName()
+                            updateStatus("Global Strike: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)) .. "\nRemote: " .. remotePath)
+                        end
                     else
                         updateStatus("Target unrendered. Tweening to pivot: " .. currentTarget.Name)
                     end
@@ -296,8 +305,10 @@ local function startKillAura()
                     task.wait(0.35)
                 end
                 
-                updateStatus("Target defeated. Searching again...")
-                currentTarget = nil 
+                if currentTarget == nil or not currentTarget.Parent or (hum and hum.Health <= 0) then
+                    updateStatus("Target defeated. Searching again...")
+                    currentTarget = nil 
+                end
             else
                 task.wait(0.5) 
             end
@@ -376,7 +387,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.5.0 (Remote Tracker)",
+    SubTitle = "V2.6.0 (Error Catcher)",
     TabWidth = 140,
     Size = UDim2.fromOffset(420, 320),
     Acrylic = true, 
@@ -430,6 +441,14 @@ Tabs.Combat:AddSection("Weapon & Extras")
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
 WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
+
+-- New Dropdown to bypass "vector is nil" errors
+Tabs.Combat:AddDropdown("VectorMethodDropdown", {
+    Title = "Attack Vector Method", 
+    Values = {"vector.create", "Vector3.new"}, 
+    Multi = false, 
+    Default = "vector.create"
+}):OnChanged(function(Value) vectorMethod = Value end)
 
 Tabs.Combat:AddSlider("TweenSpeedSlider", {
     Title = "Backup Tween Speed",
