@@ -22,18 +22,34 @@ local killAuraActive = false
 local killAllActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
+local vectorMethod = "vector.create(X, Y, Z)" 
 local backupTweenSpeed = 65 
-local vectorMethod = "vector.create(X, Y, Z)" -- Defaulted to the mathematically correct fix
 local auraTask = nil
 local evasionTask = nil
 local currentTarget = nil 
 local cameraTrackActive = false
 local cameraTask = nil
 
+-- New Movement & Failsafe Variables
+local alwaysTakeCenterActive = false
+local centerUpdateInterval = 5
+local lastCenterUpdate = 0
+local calculatedCenter = nil
+
+local bounceActive = false
+local bounceTimer = 0
+local bounceUp = false
+
+local recalibrateActive = false
+local recalibrateInterval = 5
+local recalibrateDuration = 3
+local lastRecalibrate = tick()
+local isRecalibrating = false
+
+-- Stats & Raids Variables
 local autoStatActive = false
 local statTarget = "Melee"
 local statAmount = 1
-
 local autoDungeonActive = false
 local autoRequestActive = false
 local selectedDungeon = "DoubleDungeon"
@@ -42,7 +58,7 @@ local dungeonLoopTask = nil
 
 local StatusDisplay = nil
 
--- Store new cleanup function globally for the NEXT time you execute
+-- Store new cleanup function globally
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
     if dungeonLoopTask then task.cancel(dungeonLoopTask) end
@@ -67,9 +83,7 @@ end
 
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
-    if StatusDisplay then
-        StatusDisplay:SetDesc(msg)
-    end
+    if StatusDisplay then StatusDisplay:SetDesc(msg) end
 end
 
 local function getBaseName(name)
@@ -129,6 +143,29 @@ local function equipWeapon(weaponName)
     if tool and humanoid then humanoid:EquipTool(tool) end
 end
 
+local function getCenterPosition()
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if not npcFolder then return nil end
+    
+    local sumPos = Vector3.zero
+    local count = 0
+    
+    for _, npc in ipairs(npcFolder:GetChildren()) do
+        local hum = npc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then
+            local baseName = getBaseName(npc.Name)
+            if isMobSelected(npc.Name, baseName) then
+                local tPos = npc:GetPivot().Position
+                sumPos = sumPos + tPos
+                count = count + 1
+            end
+        end
+    end
+    
+    if count > 0 then return sumPos / count end
+    return nil
+end
+
 -- [[ CAMERA TRACKING ]]
 local function startCameraTracking()
     if cameraTask then cameraTask:Disconnect() end
@@ -155,9 +192,7 @@ local function stopCameraTracking()
     if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
     local camera = workspace.CurrentCamera
     local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-    if myHum then 
-        camera.CameraSubject = myHum 
-    end
+    if myHum then camera.CameraSubject = myHum end
 end
 
 -- [[ KILLAURA & MOVEMENT LOGIC ]]
@@ -175,49 +210,69 @@ local function startDynamicMovement()
         hrp.RotVelocity = Vector3.zero
 
         local nextX = hrp.Position.X
-        local nextY = hrp.Position.Y
         local nextZ = hrp.Position.Z
 
-        if currentTarget then
-            local targetPart = getTargetPart(currentTarget)
+        local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
+        local _, groundPos = workspace:FindPartOnRay(ray, char)
+        local baseHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
+        
+        -- Bounce Logic
+        local targetY = baseHeight
+        if bounceActive then
+            bounceTimer = bounceTimer + deltaTime
+            if bounceTimer >= 2 then
+                bounceUp = not bounceUp
+                bounceTimer = 0
+            end
+            targetY = baseHeight + (bounceUp and 10 or 0) -- Oscillate between +20 and +30
+        end
+
+        -- Horizontal Movement Logic
+        if alwaysTakeCenterActive then
+            if tick() - lastCenterUpdate >= centerUpdateInterval then
+                calculatedCenter = getCenterPosition()
+                lastCenterUpdate = tick()
+            end
             
-            if targetPart then
-                local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-                local _, groundPos = workspace:FindPartOnRay(ray, char)
-                local hoverHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
-                
-                nextY = hrp.Position.Y + (hoverHeight - hrp.Position.Y) * 0.15
-            else
-                local tPos = currentTarget:GetPivot().Position
-                local target3D = Vector3.new(tPos.X, tPos.Y + 20, tPos.Z)
-                local direction = target3D - hrp.Position
-                local dist3D = direction.Magnitude
-                
-                if dist3D > 1 then
+            if calculatedCenter then
+                local direction = Vector3.new(calculatedCenter.X - hrp.Position.X, 0, calculatedCenter.Z - hrp.Position.Z)
+                local dist2D = direction.Magnitude
+                if dist2D > 1 then
                     local stepDist = backupTweenSpeed * deltaTime
-                    if stepDist > dist3D then stepDist = dist3D end 
-                    
+                    if stepDist > dist2D then stepDist = dist2D end
                     local moveVector = direction.Unit * stepDist
                     nextX = hrp.Position.X + moveVector.X
-                    nextY = hrp.Position.Y + moveVector.Y
                     nextZ = hrp.Position.Z + moveVector.Z
                 end
             end
         else
-            local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
-            local _, groundPos = workspace:FindPartOnRay(ray, char)
-            local hoverHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
-            
-            nextY = hrp.Position.Y + (hoverHeight - hrp.Position.Y) * 0.15
+            if currentTarget then
+                local targetPart = getTargetPart(currentTarget)
+                if not targetPart then
+                    local tPos = currentTarget:GetPivot().Position
+                    local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
+                    local dist2D = direction.Magnitude
+                    
+                    if dist2D > 1 then
+                        local stepDist = backupTweenSpeed * deltaTime
+                        if stepDist > dist2D then stepDist = dist2D end 
+                        local moveVector = direction.Unit * stepDist
+                        nextX = hrp.Position.X + moveVector.X
+                        nextZ = hrp.Position.Z + moveVector.Z
+                    end
+                end
+            end
         end
 
-        hrp.CFrame = CFrame.new(nextX, nextY, nextZ)
+        local nextYPos = hrp.Position.Y + (targetY - hrp.Position.Y) * 0.15
+        hrp.CFrame = CFrame.new(nextX, nextYPos, nextZ)
     end)
 end
 
 local function startKillAura()
     if not killAuraActive then return end
-    updateStatus("Initializing KillAura & Global Hover...")
+    updateStatus("Initializing KillAura...")
+    lastRecalibrate = tick()
     startDynamicMovement()
 
     if auraTask then task.cancel(auraTask); auraTask = nil end
@@ -226,15 +281,38 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
+            -- Failsafe: Recalibration Logic
+            if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
+                isRecalibrating = true
+                updateStatus("Recalibrating... Dropping to ground.")
+                
+                if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+                
+                local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    hrp.Velocity = Vector3.zero
+                    hrp.RotVelocity = Vector3.zero
+                end
+                
+                task.wait(recalibrateDuration)
+                
+                lastRecalibrate = tick()
+                isRecalibrating = false
+                
+                if killAuraActive then
+                    startDynamicMovement()
+                    updateStatus("Recalibration complete. Resuming...")
+                end
+                continue
+            end
+
             local npcFolder = workspace:FindFirstChild("NPCs")
-            
             if not npcFolder then 
                 updateStatus("Waiting for workspace.NPCs folder to load...")
                 task.wait(0.5)
                 continue 
             end
 
-            updateStatus("Scanning for valid targets...")
             equipWeapon(selectedWeapon)
             currentTarget = nil
             
@@ -274,13 +352,12 @@ local function startKillAura()
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
-                while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+                while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
                         local tPos = targetPart.Position
                         
-                        -- The flexible vector logic based on your dropdown selection
                         local success, err = pcall(function() 
                             local args = {}
                             if vectorMethod == "vector.create(X, Y, Z)" then
@@ -290,13 +367,11 @@ local function startKillAura()
                             elseif vectorMethod == "Raw Vector3" then
                                 args = { tPos }
                             else
-                                args = { vector.create(tPos) } -- The one that throws the error
+                                args = { vector.create(tPos) }
                             end
-                            
                             remote:FireServer(unpack(args)) 
                         end)
                         
-                        -- Display the exact error on the status bar if it fails
                         if not success then
                             updateStatus("⚠️ REMOTE ERROR: " .. tostring(err))
                         else
@@ -310,9 +385,11 @@ local function startKillAura()
                     task.wait(0.35)
                 end
                 
-                if currentTarget == nil or not currentTarget.Parent or (hum and hum.Health <= 0) then
-                    updateStatus("Target defeated. Searching again...")
-                    currentTarget = nil 
+                if not isRecalibrating then
+                    if currentTarget == nil or not currentTarget.Parent or (hum and hum.Health <= 0) then
+                        updateStatus("Target defeated. Searching again...")
+                        currentTarget = nil 
+                    end
                 end
             else
                 task.wait(0.5) 
@@ -324,6 +401,7 @@ end
 local function stopKillAura()
     killAuraActive = false
     currentTarget = nil
+    isRecalibrating = false
     updateStatus("KillAura Stopped. Idle.")
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
@@ -365,23 +443,16 @@ local function startAutoDungeon()
                 
                 if replayFrame and replayFrame.Visible then
                     local args = {"sponsor"}
-                    pcall(function()
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveReplayVote"):FireServer(unpack(args))
-                    end)
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveReplayVote"):FireServer(unpack(args)) end)
                 elseif contentFrame and contentFrame.Visible then
-                    pcall(function()
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty)
-                    end)
-                    
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty) end)
                     if not killAuraActive then
                         killAllActive = true 
                         killAuraActive = true
                         startKillAura()
                     end
                 elseif autoRequestActive then
-                    pcall(function()
-                        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon)
-                    end)
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end)
                 end
             end
             task.wait(2)
@@ -392,9 +463,9 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.7.0 (Vector Override)",
+    SubTitle = "V2.8.0 (Failsafes & Movement)",
     TabWidth = 140,
-    Size = UDim2.fromOffset(420, 320),
+    Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
     Theme = "Dark"
 })
@@ -410,7 +481,7 @@ task.spawn(function()
                 if not obj:FindFirstChild("MobileListFix") then
                     local constraint = Instance.new("UISizeConstraint")
                     constraint.Name = "MobileListFix"
-                    constraint.MaxSize = Vector2.new(math.huge, 140)
+                    constraint.MaxSize = Vector2.new(math.huge, 110) -- Tightened for maximum mobile efficiency
                     constraint.Parent = obj
                 end
             end
@@ -428,10 +499,7 @@ local Tabs = {
 }
 
 -- COMBAT TAB
-StatusDisplay = Tabs.Combat:AddParagraph({
-    Title = "Current Script Status",
-    Content = "Idle. Awaiting execution."
-})
+StatusDisplay = Tabs.Combat:AddParagraph({Title = "Current Script Status", Content = "Idle. Awaiting execution."})
 
 Tabs.Combat:AddSection("Targeting Settings")
 local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
@@ -442,12 +510,11 @@ local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob 
 MobDropdown:OnChanged(function(Value) selectedMobs = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
 
-Tabs.Combat:AddSection("Weapon & Extras")
+Tabs.Combat:AddSection("Weapon & Attacks")
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
 WeaponDropdown:OnChanged(function(Value) selectedWeapon = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
--- New Dropdown to dynamically bypass "vector is nil" or "number expected" errors
 Tabs.Combat:AddDropdown("VectorMethodDropdown", {
     Title = "Attack Vector Method", 
     Values = {"vector.create(X, Y, Z)", "Vector3.new", "Raw Vector3", "vector.create(Vector3) [Broken]"}, 
@@ -455,22 +522,26 @@ Tabs.Combat:AddDropdown("VectorMethodDropdown", {
     Default = "vector.create(X, Y, Z)"
 }):OnChanged(function(Value) vectorMethod = Value end)
 
-Tabs.Combat:AddSlider("TweenSpeedSlider", {
-    Title = "Backup Tween Speed",
-    Description = "Speed when moving to unrendered mobs",
-    Default = 65,
-    Min = 10,
-    Max = 200,
-    Rounding = 1
-}):OnChanged(function(Value)
-    backupTweenSpeed = Value
-end)
+Tabs.Combat:AddSection("Movement & Positioning")
+Tabs.Combat:AddToggle("CenterToggle", {Title = "Always Take Center", Default = false}):OnChanged(function(Value) alwaysTakeCenterActive = Value end)
+Tabs.Combat:AddSlider("CenterInterval", {Title = "Center Update Interval (s)", Default = 5, Min = 1, Max = 30, Rounding = 1}):OnChanged(function(Value) centerUpdateInterval = Value end)
+
+Tabs.Combat:AddToggle("BounceToggle", {Title = "Vertical Bounce (Up/Down)", Default = false}):OnChanged(function(Value) bounceActive = Value end)
+Tabs.Combat:AddSlider("TweenSpeedSlider", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200, Rounding = 1}):OnChanged(function(Value) backupTweenSpeed = Value end)
 
 local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
 CamToggle:OnChanged(function(Value)
     cameraTrackActive = Value
     if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
 end)
+
+Tabs.Combat:AddSection("Failsafes")
+Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(Value) 
+    recalibrateActive = Value 
+    lastRecalibrate = tick() 
+end)
+Tabs.Combat:AddSlider("RecalibrateInterval", {Title = "Recalibrate Interval (mins)", Default = 5, Min = 1, Max = 60, Rounding = 1}):OnChanged(function(Value) recalibrateInterval = Value end)
+Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Recalibrate Duration (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(Value) recalibrateDuration = Value end)
 
 MasterAuraToggle:OnChanged(function()
     if MasterAuraToggle.Value then
