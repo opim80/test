@@ -30,7 +30,7 @@ local currentTarget = nil
 local cameraTrackActive = false
 local cameraTask = nil
 
--- New Movement & Failsafe Variables
+-- Movement & Failsafe Variables
 local alwaysTakeCenterActive = false
 local centerUpdateInterval = 5
 local lastCenterUpdate = 0
@@ -45,6 +45,12 @@ local recalibrateInterval = 5
 local recalibrateDuration = 3
 local lastRecalibrate = tick()
 local isRecalibrating = false
+
+-- Quest Variables
+local autoQuestActive = false
+local isQuesting = false
+local currentQuestNPC = nil
+local questTask = nil
 
 -- Stats & Raids Variables
 local autoStatActive = false
@@ -62,6 +68,7 @@ local StatusDisplay = nil
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
     if dungeonLoopTask then task.cancel(dungeonLoopTask) end
+    if questTask then task.cancel(questTask) end
     if evasionTask then evasionTask:Disconnect() end
     if cameraTask then cameraTask:Disconnect() end
     
@@ -166,6 +173,106 @@ local function getCenterPosition()
     return nil
 end
 
+-- [[ QUEST LOGIC ]]
+local function getBestQuestNPC()
+    local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
+    local dataFolder = LocalPlayer:FindFirstChild("Data")
+    local levelVal = dataFolder and dataFolder:FindFirstChild("Level")
+    
+    if not serviceNPCs or not levelVal then return nil, nil end
+    
+    local pLevel = tonumber(levelVal.Value) or 0
+    local bestNPCId = nil
+    local bestNPC = nil
+    local highestMinLvl = -1
+    
+    for i = 1, 17 do
+        local npcName = "QuestNPC" .. i
+        local npc = serviceNPCs:FindFirstChild(npcName)
+        
+        if npc then
+            local hrp = npc:FindFirstChild("HumanoidRootPart")
+            local prompt = hrp and hrp:FindFirstChild("QuestPrompt")
+            
+            if prompt and prompt.ObjectText then
+                local text = prompt.ObjectText
+                -- Parses "Lvl 10750-99999"
+                local minLvl, maxLvl = string.match(text, "(%d+)%s*%-%s*(%d+)")
+                
+                -- Fallback for "Lvl 10750+"
+                if not minLvl then
+                    minLvl = string.match(text, "(%d+)%+")
+                    maxLvl = 9999999
+                end
+                
+                if minLvl then
+                    minLvl = tonumber(minLvl)
+                    maxLvl = tonumber(maxLvl) or 9999999
+                    
+                    if pLevel >= minLvl and pLevel <= maxLvl then
+                        if minLvl > highestMinLvl then
+                            highestMinLvl = minLvl
+                            bestNPCId = npcName
+                            bestNPC = npc
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestNPCId, bestNPC
+end
+
+local function startAutoQuest()
+    if questTask then task.cancel(questTask); questTask = nil end
+    
+    questTask = task.spawn(function()
+        while autoQuestActive do
+            local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+            local questUI = pGui and pGui:FindFirstChild("QuestUI")
+            local questFrame = questUI and questUI:FindFirstChild("Quest")
+            
+            -- If the Quest UI is missing or NOT visible, we need a new quest
+            if questFrame and not questFrame.Visible then
+                local npcId, npcInst = getBestQuestNPC()
+                
+                if npcId and npcInst then
+                    isQuesting = true
+                    currentQuestNPC = npcInst
+                    
+                    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local dist = (hrp.Position - npcInst:GetPivot().Position).Magnitude
+                        
+                        -- If we are close enough to the NPC, accept the quest
+                        if dist < 15 then
+                            updateStatus("Accepting Quest from: " .. npcId)
+                            pcall(function()
+                                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcId)
+                            end)
+                            task.wait(1.5) -- Wait for the server to process and UI to update
+                        else
+                            updateStatus("Tweening to " .. npcId .. " for new quest...")
+                        end
+                    end
+                else
+                    isQuesting = false
+                    currentQuestNPC = nil
+                    updateStatus("AutoQuest: No suitable quest found for Level " .. tostring(LocalPlayer.Data.Level.Value))
+                end
+            else
+                -- Quest is active, release movement priority back to combat
+                isQuesting = false
+                currentQuestNPC = nil
+            end
+            
+            task.wait(0.5)
+        end
+        isQuesting = false
+        currentQuestNPC = nil
+    end)
+end
+
 -- [[ CAMERA TRACKING ]]
 local function startCameraTracking()
     if cameraTask then cameraTask:Disconnect() end
@@ -195,7 +302,7 @@ local function stopCameraTracking()
     if myHum then camera.CameraSubject = myHum end
 end
 
--- [[ KILLAURA & MOVEMENT LOGIC ]]
+-- [[ CORE MOVEMENT ENGINE ]]
 local function startDynamicMovement()
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
 
@@ -224,41 +331,61 @@ local function startDynamicMovement()
                 bounceUp = not bounceUp
                 bounceTimer = 0
             end
-            targetY = baseHeight + (bounceUp and 10 or 0) -- Oscillate between +20 and +30
+            targetY = baseHeight + (bounceUp and 10 or 0)
         end
 
-        -- Horizontal Movement Logic
-        if alwaysTakeCenterActive then
-            if tick() - lastCenterUpdate >= centerUpdateInterval then
-                calculatedCenter = getCenterPosition()
-                lastCenterUpdate = tick()
-            end
+        -- PRIORITY 1: QUEST MOVEMENT
+        if isQuesting and currentQuestNPC then
+            local tPos = currentQuestNPC:GetPivot().Position
+            local target3D = Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) -- Hover slightly above NPC to avoid clipping
+            local direction = target3D - hrp.Position
+            local dist3D = direction.Magnitude
             
-            if calculatedCenter then
-                local direction = Vector3.new(calculatedCenter.X - hrp.Position.X, 0, calculatedCenter.Z - hrp.Position.Z)
-                local dist2D = direction.Magnitude
-                if dist2D > 1 then
-                    local stepDist = backupTweenSpeed * deltaTime
-                    if stepDist > dist2D then stepDist = dist2D end
-                    local moveVector = direction.Unit * stepDist
-                    nextX = hrp.Position.X + moveVector.X
-                    nextZ = hrp.Position.Z + moveVector.Z
-                end
+            if dist3D > 5 then
+                local stepDist = backupTweenSpeed * deltaTime
+                if stepDist > dist3D then stepDist = dist3D end
+                local moveVector = direction.Unit * stepDist
+                nextX = hrp.Position.X + moveVector.X
+                targetY = hrp.Position.Y + moveVector.Y -- Override Y to fly straight to them
+                nextZ = hrp.Position.Z + moveVector.Z
+            else
+                targetY = hrp.Position.Y -- Stop moving Y when arrived
             end
+
+        -- PRIORITY 2: COMBAT MOVEMENT
         else
-            if currentTarget then
-                local targetPart = getTargetPart(currentTarget)
-                if not targetPart then
-                    local tPos = currentTarget:GetPivot().Position
-                    local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
+            if alwaysTakeCenterActive then
+                if tick() - lastCenterUpdate >= centerUpdateInterval then
+                    calculatedCenter = getCenterPosition()
+                    lastCenterUpdate = tick()
+                end
+                
+                if calculatedCenter then
+                    local direction = Vector3.new(calculatedCenter.X - hrp.Position.X, 0, calculatedCenter.Z - hrp.Position.Z)
                     local dist2D = direction.Magnitude
-                    
                     if dist2D > 1 then
                         local stepDist = backupTweenSpeed * deltaTime
-                        if stepDist > dist2D then stepDist = dist2D end 
+                        if stepDist > dist2D then stepDist = dist2D end
                         local moveVector = direction.Unit * stepDist
                         nextX = hrp.Position.X + moveVector.X
                         nextZ = hrp.Position.Z + moveVector.Z
+                    end
+                end
+            else
+                if currentTarget then
+                    local targetPart = getTargetPart(currentTarget)
+                    if not targetPart then
+                        local tPos = currentTarget:GetPivot().Position
+                        local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
+                        local dist2D = direction.Magnitude
+                        
+                        if dist2D > 1 then
+                            local stepDist = backupTweenSpeed * deltaTime
+                            if stepDist > dist2D then stepDist = dist2D end 
+                            local moveVector = direction.Unit * stepDist
+                            nextX = hrp.Position.X + moveVector.X
+                            nextZ = hrp.Position.Z + moveVector.Z
+                        end
                     end
                 end
             end
@@ -269,9 +396,10 @@ local function startDynamicMovement()
     end)
 end
 
+-- [[ KILLAURA ATTACK LOOP ]]
 local function startKillAura()
     if not killAuraActive then return end
-    updateStatus("Initializing KillAura...")
+    updateStatus("Initializing KillAura & Movement...")
     lastRecalibrate = tick()
     startDynamicMovement()
 
@@ -339,7 +467,7 @@ local function startKillAura()
                 end
             end
 
-            if not validMobFound then
+            if not validMobFound and not isQuesting then
                 if not killAllActive and next(selectedMobs) == nil then
                     updateStatus("No mobs selected in dropdown and KillAll is OFF.")
                 else
@@ -378,7 +506,7 @@ local function startKillAura()
                             local remotePath = remote:GetFullName()
                             updateStatus("Global Strike: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)) .. "\nMethod: " .. vectorMethod)
                         end
-                    else
+                    elseif not isQuesting then
                         updateStatus("Target unrendered. Tweening to pivot: " .. currentTarget.Name)
                     end
                     
@@ -463,7 +591,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V2.8.0 (Failsafes & Movement)",
+    SubTitle = "V2.9.0 (Quests & Movement)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -481,7 +609,7 @@ task.spawn(function()
                 if not obj:FindFirstChild("MobileListFix") then
                     local constraint = Instance.new("UISizeConstraint")
                     constraint.Name = "MobileListFix"
-                    constraint.MaxSize = Vector2.new(math.huge, 110) -- Tightened for maximum mobile efficiency
+                    constraint.MaxSize = Vector2.new(math.huge, 110) 
                     constraint.Parent = obj
                 end
             end
@@ -493,6 +621,7 @@ end)
 
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
+    Quests = Window:AddTab({ Title = "Quests", Icon = "scroll" }),
     Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }),
     Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
@@ -541,7 +670,7 @@ Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default 
     lastRecalibrate = tick() 
 end)
 Tabs.Combat:AddSlider("RecalibrateInterval", {Title = "Recalibrate Interval (mins)", Default = 5, Min = 1, Max = 60, Rounding = 1}):OnChanged(function(Value) recalibrateInterval = Value end)
-Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Recalibrate Duration (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(Value) recalibrateDuration = Value end)
+Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Recalibrate Drop Time (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(Value) recalibrateDuration = Value end)
 
 MasterAuraToggle:OnChanged(function()
     if MasterAuraToggle.Value then
@@ -549,6 +678,19 @@ MasterAuraToggle:OnChanged(function()
         startKillAura()
     else
         stopKillAura()
+    end
+end)
+
+-- QUESTS TAB
+Tabs.Quests:AddSection("Automated Tasks")
+Tabs.Quests:AddToggle("AutoQuestToggle", {Title = "Auto Accept Quest", Default = false}):OnChanged(function(Value)
+    autoQuestActive = Value
+    if autoQuestActive then
+        startAutoQuest()
+    else
+        if questTask then task.cancel(questTask); questTask = nil end
+        isQuesting = false
+        currentQuestNPC = nil
     end
 end)
 
