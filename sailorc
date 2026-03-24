@@ -441,11 +441,9 @@ local function startKillAura()
                 continue
             end
             
-            -- Failsafe 2: Until Title & Boss Spawn Logic
             if untilTitleActive then
                 local pGui = LocalPlayer:FindFirstChild("PlayerGui")
                 if pGui then
-                    -- Check if Title has been obtained
                     local titlesUI = pGui:FindFirstChild("TitlesUI")
                     local lockedFrame = titlesUI and titlesUI:FindFirstChild("MainFrame") and titlesUI.MainFrame:FindFirstChild("Frame") and titlesUI.MainFrame.Frame:FindFirstChild("Content") and titlesUI.MainFrame.Frame.Content:FindFirstChild("Holder") and titlesUI.MainFrame.Frame.Content.Holder:FindFirstChild("Title_TranscendentBeing") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing:FindFirstChild("BuffButtonsHolder") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing.BuffButtonsHolder:FindFirstChild("Locked")
                     
@@ -455,22 +453,17 @@ local function startKillAura()
                         break
                     end
                     
-                    -- Check if Boss is currently spawned
                     local bossUI = pGui:FindFirstChild("BossUI")
                     local bossMain = bossUI and bossUI:FindFirstChild("MainFrame")
                     
                     if bossMain and not bossMain.Visible then
                         updateStatus("Boss dead. Auto-Spawning Boss...")
-                        local args = {
-                            "Normal"
-                        }
-                        game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer(unpack(args))
+                        local args = { "Normal" }
                         pcall(function()
-                            
+                            ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer(unpack(args))
                         end)
-                        -- ==========================================
                         
-                        task.wait(2) -- Wait a moment to prevent remote spam
+                        task.wait(2) 
                         continue
                     end
                 end
@@ -488,10 +481,12 @@ local function startKillAura()
             
             local bestTarget = nil
             local closestDist = math.huge
+            local bossFound = false
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
 
             local validMobFound = false
 
+            -- PRIORITY TARGETING LOGIC
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 
@@ -500,10 +495,24 @@ local function startKillAura()
                     
                     if isMobSelected(npc.Name, baseName) then
                         validMobFound = true
+                        
+                        local isBoss = string.find(string.lower(npc.Name), "boss") ~= nil
                         local dist = (charPos - npc:GetPivot().Position).Magnitude
-                        if dist < closestDist then
-                            closestDist = dist
-                            bestTarget = npc
+                        
+                        if isBoss then
+                            -- If it's a boss, we instantly prefer it. 
+                            -- If we already found a boss, check if this one is closer.
+                            if not bossFound or dist < closestDist then
+                                closestDist = dist
+                                bestTarget = npc
+                                bossFound = true
+                            end
+                        elseif not bossFound then
+                            -- Only lock onto normal mobs if no boss has been found yet
+                            if dist < closestDist then
+                                closestDist = dist
+                                bestTarget = npc
+                            end
                         end
                     end
                 end
@@ -639,7 +648,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.2.0 (Title Farmer & Spawn Boss)",
+    SubTitle = "V3.3.0 (Boss Priority Targeting)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
