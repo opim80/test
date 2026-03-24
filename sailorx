@@ -49,6 +49,7 @@ local isRecalibrating = false
 -- Title Variables
 local untilTitleActive = false
 local MasterAuraToggle = nil
+local UntilTitleToggle = nil -- Added for dynamic toggling
 
 -- Quest Variables
 local autoQuestActive = false
@@ -173,7 +174,6 @@ local function equipWeapon(weaponName)
     end
 end
 
--- UPDATED: Center Logic now respects Boss Priority
 local function getCenterPosition()
     local npcFolder = workspace:FindFirstChild("NPCs")
     if not npcFolder then return nil end
@@ -202,9 +202,7 @@ local function getCenterPosition()
         end
     end
     
-    -- If a boss is found, the center is strictly based on the boss(es)
     if bossCount > 0 then return bossSumPos / bossCount end
-    -- Otherwise, average out the normal mobs
     if normalCount > 0 then return normalSumPos / normalCount end
     
     return nil
@@ -462,6 +460,7 @@ local function startKillAura()
                 continue
             end
             
+            -- FIX: Safely handles missing UIs, and returns to normal mobs instead of turning off the script completely
             if untilTitleActive then
                 local pGui = LocalPlayer:FindFirstChild("PlayerGui")
                 if pGui then
@@ -469,22 +468,21 @@ local function startKillAura()
                     local lockedFrame = titlesUI and titlesUI:FindFirstChild("MainFrame") and titlesUI.MainFrame:FindFirstChild("Frame") and titlesUI.MainFrame.Frame:FindFirstChild("Content") and titlesUI.MainFrame.Frame.Content:FindFirstChild("Holder") and titlesUI.MainFrame.Frame.Content.Holder:FindFirstChild("Title_TranscendentBeing") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing:FindFirstChild("BuffButtonsHolder") and titlesUI.MainFrame.Frame.Content.Holder.Title_TranscendentBeing.BuffButtonsHolder:FindFirstChild("Locked")
                     
                     if lockedFrame and not lockedFrame.Visible then
-                        updateStatus("Title Unlocked! Halting Script.")
-                        if MasterAuraToggle then MasterAuraToggle:SetValue(false) end
-                        break
-                    end
-                    
-                    local bossUI = pGui:FindFirstChild("BossUI")
-                    local bossMain = bossUI and bossUI:FindFirstChild("MainFrame")
-                    
-                    if bossMain and not bossMain.Visible then
-                        updateStatus("Boss dead. Auto-Spawning Boss...")
-                        pcall(function()
-                            ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer("Normal")
-                        end)
+                        updateStatus("Title Unlocked! Returning to normal mobs.")
+                        if UntilTitleToggle then UntilTitleToggle:SetValue(false) else untilTitleActive = false end
+                    else
+                        local bossUI = pGui:FindFirstChild("BossUI")
+                        local bossMain = bossUI and bossUI:FindFirstChild("MainFrame")
                         
-                        task.wait(2) 
-                        continue
+                        if not bossMain or not bossMain.Visible then
+                            updateStatus("Boss dead. Auto-Spawning Boss...")
+                            pcall(function()
+                                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer("Normal")
+                            end)
+                            
+                            task.wait(2) 
+                            continue
+                        end
                     end
                 end
             end
@@ -545,10 +543,11 @@ local function startKillAura()
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+                    -- FIX: Break out instantly if BossUI is missing or invisible so we can respawn it
                     if untilTitleActive then
                         local pGui = LocalPlayer:FindFirstChild("PlayerGui")
                         local bossMain = pGui and pGui:FindFirstChild("BossUI") and pGui.BossUI:FindFirstChild("MainFrame")
-                        if bossMain and not bossMain.Visible then break end 
+                        if not bossMain or not bossMain.Visible then break end 
                     end
                     
                     local targetPart = getTargetPart(currentTarget)
@@ -661,7 +660,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.7.0 (Boss Centering Fix)",
+    SubTitle = "V3.8.0 (Title & Boss Spawn Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -736,7 +735,8 @@ CamToggle:OnChanged(function(Value)
 end)
 
 Tabs.Combat:AddSection("Failsafes")
-Tabs.Combat:AddToggle("UntilTitleToggle", {Title = "Farm Until Transcendent Title", Default = false}):OnChanged(function(Value) untilTitleActive = Value end)
+UntilTitleToggle = Tabs.Combat:AddToggle("UntilTitleToggle", {Title = "Farm Until Transcendent Title", Default = false})
+UntilTitleToggle:OnChanged(function(Value) untilTitleActive = Value end)
 
 Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(Value) 
     recalibrateActive = Value 
@@ -825,6 +825,6 @@ local success, err = pcall(function()
 end)
 
 if not success then
-    warn("Failed to load Autoload Config (Config might be corrupted):", err)
+    warn("Failed to load Autoload Config:", err)
     updateStatus("⚠️ Config Load Error. Delete the UltimateHub folder in your executor's workspace.")
 end
