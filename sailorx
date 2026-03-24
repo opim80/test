@@ -101,7 +101,6 @@ local function getBaseName(name)
     return string.gsub(name, "[_%s%d]+$", "")
 end
 
--- UPDATED: Now does fuzzy searching to ensure bosses are caught
 local function isMobSelected(rawName)
     if killAllActive then return true end
     local baseName = getBaseName(rawName)
@@ -109,7 +108,6 @@ local function isMobSelected(rawName)
     if type(selectedMobs) == "table" then
         if selectedMobs[rawName] or selectedMobs[baseName] then return true end
         
-        -- Fuzzy check: Check if any of our selected strings are PART of the mob's name
         for selectedName, state in pairs(selectedMobs) do
             if state and (string.find(string.lower(rawName), string.lower(selectedName))) then
                 return true
@@ -175,25 +173,40 @@ local function equipWeapon(weaponName)
     end
 end
 
+-- UPDATED: Center Logic now respects Boss Priority
 local function getCenterPosition()
     local npcFolder = workspace:FindFirstChild("NPCs")
     if not npcFolder then return nil end
     
-    local sumPos = Vector3.zero
-    local count = 0
+    local normalSumPos = Vector3.zero
+    local normalCount = 0
+    
+    local bossSumPos = Vector3.zero
+    local bossCount = 0
     
     for _, npc in ipairs(npcFolder:GetChildren()) do
         local hum = npc:FindFirstChild("Humanoid")
         if hum and hum.Health > 0 then
             if isMobSelected(npc.Name) then
                 local tPos = npc:GetPivot().Position
-                sumPos = sumPos + tPos
-                count = count + 1
+                local isBoss = string.find(string.lower(npc.Name), "boss") ~= nil or string.find(string.lower(npc.Name), "aizen") ~= nil
+                
+                if isBoss then
+                    bossSumPos = bossSumPos + tPos
+                    bossCount = bossCount + 1
+                else
+                    normalSumPos = normalSumPos + tPos
+                    normalCount = normalCount + 1
+                end
             end
         end
     end
     
-    if count > 0 then return sumPos / count end
+    -- If a boss is found, the center is strictly based on the boss(es)
+    if bossCount > 0 then return bossSumPos / bossCount end
+    -- Otherwise, average out the normal mobs
+    if normalCount > 0 then return normalSumPos / normalCount end
+    
     return nil
 end
 
@@ -493,7 +506,6 @@ local function startKillAura()
 
             local validMobFound = false
 
-            -- UPDATED PRIORITY TARGETING
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 
@@ -505,13 +517,11 @@ local function startKillAura()
                         local dist = (charPos - npc:GetPivot().Position).Magnitude
                         
                         if isBoss then
-                            -- Boss found, absolute priority
                             if not bossTarget or dist < closestDist then
                                 bossTarget = npc
                                 closestDist = dist
                             end
                         elseif not bossTarget then
-                            -- Only target normal mobs if no boss exists yet
                             if dist < closestDist then
                                 bestTarget = npc
                                 closestDist = dist
@@ -651,7 +661,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.6.0 (Complete Edition)",
+    SubTitle = "V3.7.0 (Boss Centering Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -660,7 +670,6 @@ local Window = Fluent:CreateWindow({
 
 getgenv().CSMDH_Window = Window
 
--- [[ MOBILE DROPDOWN PATCH ]]
 task.spawn(function()
     local CoreGui = game:GetService("CoreGui")
     local function limitDropdownSize(obj)
@@ -811,7 +820,6 @@ Window:SelectTab(1)
 task.wait(1.5)
 if Tabs.Combat then WeaponDropdown:SetValues(getWeapons()) end
 
--- The fix for the Escape Directory Crash
 local success, err = pcall(function()
     SaveManager:LoadAutoloadConfig()
 end)
