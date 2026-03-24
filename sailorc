@@ -48,7 +48,7 @@ local isRecalibrating = false
 
 -- Title Variables
 local untilTitleActive = false
-local MasterAuraToggle = nil -- Declared here so the aura loop can turn it off automatically
+local MasterAuraToggle = nil
 
 -- Quest Variables
 local autoQuestActive = false
@@ -417,7 +417,6 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
-            -- Failsafe 1: Recalibration Logic
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
@@ -461,9 +460,18 @@ local function startKillAura()
                     local bossMain = bossUI and bossUI:FindFirstChild("MainFrame")
                     
                     if bossMain and not bossMain.Visible then
-                        updateStatus("Boss not spawned. Waiting...")
-                        task.wait(1)
-                        continue -- Skips the attack loop until the boss UI reappears
+                        updateStatus("Boss dead. Auto-Spawning Boss...")
+                        local args = {
+                            "Normal"
+                        }
+                        game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer(unpack(args))
+                        pcall(function()
+                            
+                        end)
+                        -- ==========================================
+                        
+                        task.wait(2) -- Wait a moment to prevent remote spam
+                        continue
                     end
                 end
             end
@@ -515,11 +523,10 @@ local function startKillAura()
                 local hum = currentTarget:FindFirstChild("Humanoid")
 
                 while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
-                    -- Double check Boss/Title status in the middle of active combat
                     if untilTitleActive then
                         local pGui = LocalPlayer:FindFirstChild("PlayerGui")
                         local bossMain = pGui and pGui:FindFirstChild("BossUI") and pGui.BossUI:FindFirstChild("MainFrame")
-                        if bossMain and not bossMain.Visible then break end -- Break out of attack loop if boss despawns/dies
+                        if bossMain and not bossMain.Visible then break end 
                     end
                     
                     local targetPart = getTargetPart(currentTarget)
@@ -632,7 +639,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V3.1.0 (Title Farmer & Quests)",
+    SubTitle = "V3.2.0 (Title Farmer & Spawn Boss)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
