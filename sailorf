@@ -145,7 +145,7 @@ local function initializeKaitun()
             local hrp = npc:FindFirstChild("HumanoidRootPart")
             if hrp then
                 local dist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
-                if dist > 300 then
+                if dist > 450 then
                     updateStatus(npcName .. " is >300 studs away. Teleporting to next island.")
                     break -- Use portal logic to find them on another island
                 end
