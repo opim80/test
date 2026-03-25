@@ -94,6 +94,7 @@ local StatusDisplay = nil
 -- Movement & Tween Variables
 local activeTween = nil
 local NoclipConn = nil
+local VelocityBreakerConn = nil
 
 -- Store new cleanup function globally
 getgenv().CSMDH_Cleanup = function()
@@ -102,6 +103,7 @@ getgenv().CSMDH_Cleanup = function()
     if kaitunTask then task.cancel(kaitunTask) end
     if cameraTask then cameraTask:Disconnect() end
     if NoclipConn then NoclipConn:Disconnect() end
+    if VelocityBreakerConn then VelocityBreakerConn:Disconnect() end
     if activeTween then activeTween:Cancel() end
     
     local char = LocalPlayer.Character
@@ -120,12 +122,24 @@ getgenv().CSMDH_Cleanup = function()
     end
 end
 
+-- [[ CONSTANT VELOCITY BREAKER ]]
+-- Ensure there is no velocity ever, making tweens perfectly smooth and flings impossible.
+VelocityBreakerConn = RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
+end)
+
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
     if StatusDisplay then StatusDisplay:SetDesc(msg) end
 end
 
 local function getBaseName(name)
+    -- Removes trailing numbers and underscores (e.g., "Thief1" -> "Thief", "DesertBandit_2" -> "DesertBandit")
     return string.gsub(name, "[_%s%d]+$", "")
 end
 
@@ -220,6 +234,26 @@ local function equipWeapon(weaponName)
     end
 end
 
+local function FireRemoteHit(tPos)
+    local remote = ReplicatedStorage:FindFirstChild("CombatSystem") and ReplicatedStorage.CombatSystem:FindFirstChild("Remotes") and ReplicatedStorage.CombatSystem.Remotes:FindFirstChild("RequestHit")
+    if not remote then return false, "Remote not found" end
+
+    local success, err = pcall(function() 
+        local args = {}
+        if vectorMethod == "vector.create(X, Y, Z)" then
+            args = { vector.create(tPos.X, tPos.Y, tPos.Z) }
+        elseif vectorMethod == "Vector3.new" then
+            args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
+        elseif vectorMethod == "Raw Vector3" then
+            args = { tPos }
+        else
+            args = { vector.create(tPos) }
+        end
+        remote:FireServer(unpack(args)) 
+    end)
+    return success, err
+end
+
 -- [[ MOVEMENT & TWEEN LOGIC ]]
 local function EnableNoclip()
     if NoclipConn then return end
@@ -229,8 +263,6 @@ local function EnableNoclip()
             for _, v in pairs(char:GetDescendants()) do
                 if v:IsA("BasePart") and v.CanCollide then v.CanCollide = false end
             end
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hrp then hrp.Velocity = Vector3.zero end
         end
     end)
 end
@@ -302,7 +334,6 @@ local function SmartTraverse(targetPos)
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         task.wait(4)
 
-        -- Teleport remote uses portal player is on to initiate. After that, teleport to end portal
         local args2 = { endPortal }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args2))
         task.wait(4)
@@ -316,29 +347,32 @@ local function SmartTraverse(targetPos)
     isTraversing = false
 end
 
--- [[ CAMERA TRACKING ]]
-local function startCameraTracking()
-    if cameraTask then cameraTask:Disconnect() end
-    local camera = workspace.CurrentCamera
-    
-    cameraTask = RunService.RenderStepped:Connect(function()
-        if cameraTrackActive then
-            local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-            if myHum and camera.CameraSubject ~= myHum then
-                camera.CameraSubject = myHum
+-- [[ KAITUN (AUTO LEVELING) LOGIC ]]
+local function GetClosestMobAny()
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if not npcFolder then return nil end
+
+    local closestMob = nil
+    local closestDist = math.huge
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    for _, npc in ipairs(npcFolder:GetChildren()) do
+        local hum = npc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then
+            local part = getTargetPart(npc)
+            if part then
+                local dist = (hrp.Position - part.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestMob = npc
+                end
             end
         end
-    end)
+    end
+    return closestMob
 end
 
-local function stopCameraTracking()
-    if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
-    local camera = workspace.CurrentCamera
-    local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-    if myHum then camera.CameraSubject = myHum end
-end
-
--- [[ KAITUN (AUTO LEVELING) LOGIC ]]
 local function CalcOptimalQuest()
     local damage = GetPlayerDamage()
     if not damage or damage <= 0 then return nil end
@@ -361,66 +395,166 @@ local function CalcOptimalQuest()
     return bestQuest
 end
 
+local function GetKaitunTarget(baseName)
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if not npcFolder then return nil, nil end
+
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil, nil end
+
+    local validMobs = {}
+    local centerPos = Vector3.zero
+    
+    for _, npc in ipairs(npcFolder:GetChildren()) do
+        local hum = npc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then
+            -- Match base name (ignores trailing numbers)
+            if getBaseName(npc.Name) == baseName or getBaseName(npc.Name) == baseName .. "Boss" or getBaseName(npc.Name) == baseName .. " Boss" then
+                local part = getTargetPart(npc)
+                if part then
+                    table.insert(validMobs, npc)
+                    centerPos = centerPos + part.Position
+                end
+            end
+        end
+    end
+
+    if #validMobs == 0 then return nil, nil end
+
+    -- Centering logic: calculate the average position of all targeted mobs
+    centerPos = centerPos / #validMobs
+
+    -- Also return the closest mob to the center to actually hit
+    local bestMob = nil
+    local closestDist = math.huge
+    for _, npc in ipairs(validMobs) do
+        local part = getTargetPart(npc)
+        local dist = (part.Position - centerPos).Magnitude
+        if dist < closestDist then
+            closestDist = dist
+            bestMob = npc
+        end
+    end
+
+    return bestMob, centerPos
+end
+
 local function StartKaitun()
     if kaitunTask then task.cancel(kaitunTask) end
     kaitunTask = task.spawn(function()
         while autoKaitunActive do
+            if isTraversing then
+                task.wait(0.5)
+                continue
+            end
+
             local damage = GetPlayerDamage()
 
+            -- Phase 1: Gauge Damage independently
             if not damage or damage <= 0 then
-                updateStatus("Kaitun: Generating Damage Info... Hitting mob.")
-                if not killAuraActive then
-                    getgenv().MasterAuraToggle:SetValue(true)
-                end
-            else
-                local bestQuest = CalcOptimalQuest()
-                if bestQuest then
-                    if currentKaitunQuest ~= bestQuest then
-                        updateStatus("Kaitun: Switching Optimal Quest -> " .. bestQuest.NPC .. " | Efficient XP/s: " .. tostring(math.floor(bestQuest.XP / ((math.ceil((bestQuest.MaxHealth or 30000) / damage) * 0.4 + 2) * bestQuest.Amount))))
-                        isTraversing = true
-
-                        -- Abandon Current
-                        pcall(function()
-                            local args = { "repeatable" }
-                            game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args))
-                        end)
-                        task.wait(0.5)
-
-                        -- Go To New Quest NPC
+                updateStatus("Kaitun: Gauging Damage... Locating nearest mob.")
+                local closestMob = GetClosestMobAny()
+                if closestMob then
+                    local targetPart = getTargetPart(closestMob)
+                    if targetPart then
+                        local tPos = targetPart.Position
                         local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                         if hrp then
-                            local dist = (hrp.Position - bestQuest.Pos).Magnitude
-                            if dist > 2000 then
-                                SmartTraverse(bestQuest.Pos)
+                            local dist = (hrp.Position - tPos).Magnitude
+                            if dist > 15 then
+                                TweenToAsync(tPos)
                             else
-                                TweenToSync(bestQuest.Pos)
+                                if activeTween then activeTween:Cancel(); activeTween = nil end
+                                DisableNoclip()
+                                hrp.CFrame = CFrame.new(hrp.Position, Vector3.new(tPos.X, hrp.Position.Y, tPos.Z))
+                                equipWeapon(selectedWeapon)
+                                FireRemoteHit(tPos)
                             end
                         end
+                    end
+                else
+                    updateStatus("Kaitun: No mobs found to gauge damage. Waiting...")
+                end
+                task.wait(0.5)
+                continue
+            end
 
-                        -- Accept New
-                        pcall(function()
-                            local npcId = "QuestNPC" .. bestQuest.Index
-                            game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcId)
-                        end)
-                        task.wait(1.5)
+            -- Phase 2: Compute Best Quest & Traverse
+            local bestQuest = CalcOptimalQuest()
+            if bestQuest then
+                if currentKaitunQuest ~= bestQuest then
+                    updateStatus("Kaitun: New Optimal Quest -> " .. bestQuest.NPC .. " | XP Efficiency Maxed.")
+                    isTraversing = true
 
-                        currentKaitunQuest = bestQuest
-                        isTraversing = false
-                    else
-                        -- Override Mobs to farm current Kaitun objective
-                        selectedMobs = {[bestQuest.NPC] = true, [bestQuest.NPC .. " Boss"] = true, [bestQuest.NPC .. "Boss"] = true}
-                        if not killAuraActive then
-                            getgenv().MasterAuraToggle:SetValue(true)
+                    -- Abandon Current
+                    pcall(function()
+                        local args = { "repeatable" }
+                        game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args))
+                    end)
+                    task.wait(0.5)
+
+                    -- Traverse to Quest NPC
+                    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        local dist = (hrp.Position - bestQuest.Pos).Magnitude
+                        if dist > 2000 then
+                            SmartTraverse(bestQuest.Pos)
+                        else
+                            TweenToSync(bestQuest.Pos)
                         end
+                    end
+
+                    -- Accept Quest
+                    pcall(function()
+                        local npcId = "QuestNPC" .. bestQuest.Index
+                        game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcId)
+                    end)
+                    task.wait(1.5)
+
+                    currentKaitunQuest = bestQuest
+                    isTraversing = false
+                else
+                    -- Phase 3: Farming Combat Loop (Standalone)
+                    local targetMob, centerPos = GetKaitunTarget(bestQuest.NPC)
+                    
+                    if targetMob and centerPos then
+                        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            local distToCenter = (hrp.Position - centerPos).Magnitude
+                            
+                            if distToCenter > 2500 then
+                                task.spawn(function() SmartTraverse(centerPos) end)
+                                task.wait(1)
+                            elseif distToCenter > 15 then
+                                TweenToAsync(centerPos)
+                            else
+                                if activeTween then activeTween:Cancel(); activeTween = nil end
+                                DisableNoclip()
+                                
+                                local tPos = getTargetPart(targetMob).Position
+                                hrp.CFrame = CFrame.new(hrp.Position, Vector3.new(tPos.X, hrp.Position.Y, tPos.Z))
+                                equipWeapon(selectedWeapon)
+                                
+                                local success, err = FireRemoteHit(tPos)
+                                if not success then
+                                    updateStatus("⚠️ Kaitun Hit Error: " .. tostring(err))
+                                else
+                                    local hum = targetMob:FindFirstChild("Humanoid")
+                                    updateStatus("Kaitun Farming: " .. targetMob.Name .. " | HP: " .. tostring(math.floor(hum and hum.Health or 0)))
+                                end
+                            end
+                        end
+                    else
+                        updateStatus("Kaitun: Waiting for " .. bestQuest.NPC .. " to spawn...")
                     end
                 end
             end
-            task.wait(2)
+            task.wait(0.35)
         end
     end)
 end
 
--- [[ KILLAURA ATTACK LOOP ]]
+-- [[ KILLAURA ATTACK LOOP (COMBAT TAB) ]]
 local function startKillAura()
     if not killAuraActive then return end
     updateStatus("Initializing KillAura & Traversal...")
@@ -428,8 +562,6 @@ local function startKillAura()
     if auraTask then task.cancel(auraTask); auraTask = nil end
 
     auraTask = task.spawn(function()
-        local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
-
         while killAuraActive do
             if isTraversing then
                 task.wait(0.5)
@@ -442,8 +574,6 @@ local function startKillAura()
                 task.wait(0.5)
                 continue 
             end
-
-            equipWeapon(selectedWeapon)
             
             local currentTarget = nil
             local bestTarget = nil
@@ -482,7 +612,7 @@ local function startKillAura()
 
             if not validMobFound then
                 if not killAllActive and not killTimedBossesActive and next(selectedMobs) == nil then
-                    updateStatus("No mobs selected in dropdown or Kaitun.")
+                    updateStatus("No mobs selected in Combat Tab.")
                 else
                     updateStatus("No selected mobs are currently alive.")
                 end
@@ -506,29 +636,17 @@ local function startKillAura()
                             if dist > 2500 then
                                 task.spawn(function() SmartTraverse(tPos) end)
                                 task.wait(1)
-                                break -- Drop out of while loop to re-evaluate after traverse
+                                break
                             elseif dist > 15 then
                                 TweenToAsync(tPos)
                             else
                                 if activeTween then activeTween:Cancel(); activeTween = nil end
                                 DisableNoclip()
-                                -- Face Target
-                                hrp.CFrame = CFrame.new(hrp.Position, Vector3.new(tPos.X, hrp.Position.Y, tPos.Z))
-
-                                local success, err = pcall(function() 
-                                    local args = {}
-                                    if vectorMethod == "vector.create(X, Y, Z)" then
-                                        args = { vector.create(tPos.X, tPos.Y, tPos.Z) }
-                                    elseif vectorMethod == "Vector3.new" then
-                                        args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
-                                    elseif vectorMethod == "Raw Vector3" then
-                                        args = { tPos }
-                                    else
-                                        args = { vector.create(tPos) }
-                                    end
-                                    remote:FireServer(unpack(args)) 
-                                end)
                                 
+                                hrp.CFrame = CFrame.new(hrp.Position, Vector3.new(tPos.X, hrp.Position.Y, tPos.Z))
+                                equipWeapon(selectedWeapon)
+
+                                local success, err = FireRemoteHit(tPos)
                                 if not success then
                                     updateStatus("⚠️ REMOTE ERROR: " .. tostring(err))
                                 else
@@ -551,13 +669,6 @@ local function stopKillAura()
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if activeTween then activeTween:Cancel() end
     DisableNoclip()
-    
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
-    end
 end
 
 -- [[ STATS LOGIC ]]
@@ -605,10 +716,31 @@ local function startAutoDungeon()
     end)
 end
 
+-- [[ CAMERA TRACKING ]]
+local function startCameraTracking()
+    if cameraTask then cameraTask:Disconnect() end
+    local camera = workspace.CurrentCamera
+    cameraTask = RunService.RenderStepped:Connect(function()
+        if cameraTrackActive then
+            local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+            if myHum and camera.CameraSubject ~= myHum then
+                camera.CameraSubject = myHum
+            end
+        end
+    end)
+end
+
+local function stopCameraTracking()
+    if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
+    local camera = workspace.CurrentCamera
+    local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+    if myHum then camera.CameraSubject = myHum end
+end
+
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.0 (Tween Traversal & Kaitun)",
+    SubTitle = "V4.1 (Standalone Kaitun & Velocity Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -696,6 +828,7 @@ KaitunToggle:OnChanged(function(Value)
     else
         if kaitunTask then task.cancel(kaitunTask); kaitunTask = nil end
         currentKaitunQuest = nil
+        updateStatus("Kaitun Disabled.")
     end
 end)
 
@@ -710,50 +843,4 @@ task.spawn(function()
 end)
 
 Tabs.Stats:AddSection("Auto Allocation")
-Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(Value) statTarget = Value end)
-Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(Value) statAmount = tonumber(Value) or 1 end)
-Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(Value)
-    autoStatActive = Value
-    if autoStatActive then startAutoStats() end
-end)
-
--- RAIDS TAB
-Tabs.Raids:AddSection("Dungeon Setup")
-Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
-Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
-
-Tabs.Raids:AddSection("Auto Raid Loop")
-Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) selectedDifficulty = Value end)
-Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false}):OnChanged(function(Value) autoRequestActive = Value end)
-Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon (Vote & Replay)", Default = false}):OnChanged(function(Value)
-    autoDungeonActive = Value
-    if autoDungeonActive then 
-        startAutoDungeon() 
-    elseif dungeonLoopTask then
-        task.cancel(dungeonLoopTask)
-        dungeonLoopTask = nil
-    end
-end)
-
--- [[ CONFIG & SETTINGS LOGIC ]]
-SaveManager:SetLibrary(Fluent)
-InterfaceManager:SetLibrary(Fluent)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({})
-SaveManager:SetFolder("UltimateHub")
-InterfaceManager:BuildInterfaceSection(Tabs.Settings)
-SaveManager:BuildConfigSection(Tabs.Settings)
-
-Window:SelectTab(1)
-
-task.wait(1.5)
-if Tabs.Combat then WeaponDropdown:SetValues(getWeapons()) end
-
-local success, err = pcall(function()
-    SaveManager:LoadAutoloadConfig()
-end)
-
-if not success then
-    warn("Failed to load Autoload Config:", err)
-    updateStatus("⚠️ Config Load Error. Delete the UltimateHub folder in your executor's workspace.")
-end
+Tabs.Stats:AddDropdown("StatDropdown",
