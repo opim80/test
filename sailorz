@@ -686,7 +686,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.3.0 (UI & Syntax Repaired)", 
+    SubTitle = "V4.3.1 (Slider Rounding Fixed)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
@@ -751,18 +751,34 @@ end})
 Tabs.Combat:AddDropdown("VectorMethod", {Title = "Vector Method", Values = {"vector.create(X, Y, Z)", "Vector3.new", "Raw Vector3"}, Default = "vector.create(X, Y, Z)"}):OnChanged(function(v) 
     vectorMethod = v 
 end)
+
 Tabs.Combat:AddToggle("CenterToggle", {Title = "Always Take Center", Default = false}):OnChanged(function(v) 
     alwaysTakeCenterActive = v 
 end)
+-- RESTORED CENTER INTERVAL SLIDER
+Tabs.Combat:AddSlider("CenterInterval", {Title = "Center Update Interval (s)", Default = 5, Min = 1, Max = 30, Rounding = 1}):OnChanged(function(v) 
+    centerUpdateInterval = v 
+end)
+
 Tabs.Combat:AddToggle("BounceToggle", {Title = "Vertical Bounce", Default = false}):OnChanged(function(v) 
     bounceActive = v 
 end)
-Tabs.Combat:AddSlider("TweenSpeed", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200}):OnChanged(function(v) 
+-- FIXED TWEEN SPEED SLIDER
+Tabs.Combat:AddSlider("TweenSpeed", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200, Rounding = 1}):OnChanged(function(v) 
     backupTweenSpeed = v 
 end)
+
 Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(v) 
     recalibrateActive = v 
     lastRecalibrate = tick() 
+end)
+-- RESTORED RECALIBRATE INTERVAL SLIDER
+Tabs.Combat:AddSlider("RecalibrateInterval", {Title = "Recalibrate Interval (mins)", Default = 5, Min = 1, Max = 60, Rounding = 1}):OnChanged(function(v) 
+    recalibrateInterval = v 
+end)
+-- RESTORED RECALIBRATE DURATION SLIDER
+Tabs.Combat:AddSlider("RecalibrateDuration", {Title = "Recalibrate Drop Time (s)", Default = 3, Min = 1, Max = 10, Rounding = 1}):OnChanged(function(v) 
+    recalibrateDuration = v 
 end)
 
 local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
@@ -787,104 +803,4 @@ end)
 -- KAITUN TAB
 KaitunStatusDisplay = Tabs.Kaitun:AddParagraph({
     Title = "Kaitun Process Tracker", 
-    Content = "**Currently:** Idle\n**Next Up:** Awaiting Start"
-})
-
-KaitunStartToggle = Tabs.Kaitun:AddToggle("KaitunStartToggle", {Title = "Start Kaitun Engine", Default = false})
-KaitunStartToggle:OnChanged(function(Value)
-    kaitunActive = Value
-    if kaitunActive then
-        setKaitunStatus("Starting Engine...", "Checking Map Cache")
-        if not killAuraActive and MasterAuraToggle then
-            MasterAuraToggle:SetValue(true)
-        end
-    else
-        setKaitunStatus("Idle", "Awaiting Start")
-        if killAuraActive and MasterAuraToggle then
-            MasterAuraToggle:SetValue(false)
-        end
-    end
-end)
-
-Tabs.Kaitun:AddButton({Title = "Force Re-Cache World", Callback = function() 
-    if kaitunActive then 
-        task.spawn(initializeWorldCache) 
-    else 
-        setKaitunStatus("Cannot Cache", "Start Kaitun First") 
-    end 
-end})
-
--- STATS TAB
-local StatDisplay = Tabs.Stats:AddParagraph({Title = "Available Stat Points", Content = "Calculating..."})
-task.spawn(function()
-    while task.wait(1) do
-        local points = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
-        if points then 
-            StatDisplay:SetDesc("Points: " .. tostring(points.Value)) 
-        end
-    end
-end)
-
-Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(v) 
-    statTarget = v 
-end)
-Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(v) 
-    statAmount = tonumber(v) or 1 
-end)
-Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(v) 
-    autoStatActive = v 
-    if v then 
-        startAutoStats() 
-    end 
-end)
-
--- RAIDS TAB
-Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) 
-    selectedDungeon = Value 
-end)
-Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() 
-    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) 
-end})
-
-Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) 
-    selectedDifficulty = Value 
-end)
-
-local AutoRequestToggle = Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false})
-AutoRequestToggle:OnChanged(function(Value) 
-    autoRequestActive = Value 
-end)
-
-Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon (Vote & Replay)", Default = false}):OnChanged(function(Value)
-    autoDungeonActive = Value
-    if autoDungeonActive then 
-        startAutoDungeon() 
-    elseif dungeonLoopTask then 
-        task.cancel(dungeonLoopTask) 
-        dungeonLoopTask = nil 
-    end
-end)
-
--- CONFIG & SETTINGS LOGIC
-SaveManager:SetLibrary(Fluent)
-InterfaceManager:SetLibrary(Fluent)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetIgnoreIndexes({})
-SaveManager:SetFolder("UltimateHub")
-InterfaceManager:BuildInterfaceSection(Tabs.Settings)
-SaveManager:BuildConfigSection(Tabs.Settings)
-Window:SelectTab(1)
-
-task.wait(1.5)
-if Tabs.Combat then 
-    WeaponDropdown:SetValues(getWeapons()) 
-end
-
-local success, err = pcall(function()
-    SaveManager:LoadAutoloadConfig()
-end)
-
-if not success then
-    warn("Failed to load Autoload Config:", err)
-    updateStatus("⚠️ Config Load Error. Delete the UltimateHub folder in your executor's workspace.")
-end
+    Content = "**Currently:** Idle\n**Next Up:** A
