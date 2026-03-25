@@ -86,8 +86,23 @@ local function TweenTo(targetPos)
     local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
+    -- STABILITY FIX: Force velocity to zero every frame so physics don't fight the tween
+    local velConn = RunService.Heartbeat:Connect(function()
+        if hrp then
+            hrp.Velocity = Vector3.zero
+            hrp.RotVelocity = Vector3.zero
+        end
+    end)
+    
     tween:Play()
     tween.Completed:Wait()
+    
+    -- Cleanup velocity lock
+    velConn:Disconnect()
+    if hrp then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
 end
 
 local function getTargetPart(npc)
@@ -139,6 +154,40 @@ local function FindNearestPortal()
     return closestPortal
 end
 
+-- SMART ROUTING FIX: Calculates whether walking directly or taking the portal network is faster
+local function SmartTravelTo(targetPos, targetIsland)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local directDist = (hrp.Position - targetPos).Magnitude
+    local localPortal = FindNearestPortal()
+    local localPortalPos = localPortal and (localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position)
+    local destinationPortalPos = GlobalCache.Portals[targetIsland]
+
+    local viaPortalDist = math.huge
+    if localPortalPos and destinationPortalPos then
+        -- Add a distance penalty equivalent to the 3.5 second portal stun to accurately compare times
+        local portalWaitPenalty = backupTweenSpeed * 3.5 
+        viaPortalDist = (hrp.Position - localPortalPos).Magnitude + (destinationPortalPos - targetPos).Magnitude + portalWaitPenalty
+    end
+
+    -- If taking the portals is mathematically faster, or if the target is insanely far (different island)
+    if viaPortalDist < directDist or directDist > 5000 then
+        updateStatus("SmartTravel: Portal Hop is faster. Routing...")
+        if localPortalPos then TweenTo(localPortalPos) end
+        
+        local args = { targetIsland }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
+        task.wait(3.5) -- Movement lock wait
+    else
+        updateStatus("SmartTravel: Direct route is faster. Tweening...")
+    end
+
+    -- Finish the journey
+    TweenTo(targetPos)
+end
+
 -- [[ CORE KAITUN & CACHE LOGIC ]]
 local function InitializeWorldCache()
     if GlobalCache.Initialized then return end
@@ -170,7 +219,7 @@ local function InitializeWorldCache()
 
         local args = { island }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-        task.wait(3.5) -- Movement lock wait
+        task.wait(3.5)
 
         -- Cache the portal on this new island
         local newPortal = FindNearestPortal()
@@ -190,7 +239,7 @@ local function InitializeWorldCache()
                 local numStr = string.match(npc.Name, "^QuestNPC(%d+)$")
                 if numStr and not GlobalCache.Quests[npc.Name] then
                     local dist = (charPos - npc:GetPivot().Position).Magnitude
-                    if dist < 10000 then -- Prevents grabbing NPCs from other islands
+                    if dist < 10000 then 
                         table.insert(localQuests, { Instance = npc, Number = tonumber(numStr) })
                     end
                 end
@@ -205,11 +254,11 @@ local function InitializeWorldCache()
                 
                 updateCacheUI("Harvesting Data from: " .. npc.Name)
                 TweenTo(questPos)
-                task.wait(0.5) -- Let server register proximity
+                task.wait(0.5)
                 
                 -- Accept
                 ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
-                task.wait(1) -- Wait for UI to update
+                task.wait(1) 
 
                 -- Extract Data
                 local expText = "0"
@@ -326,18 +375,9 @@ local function startMasterLoop()
                         if not hasQuest then
                             updateStatus("Kaitun: Traveling to " .. bestQuestId)
                             
-                            -- Travel securely using cached info
-                            local localPortal = FindNearestPortal()
-                            if localPortal then 
-                                local pos = localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position
-                                TweenTo(pos) 
-                            end
-
-                            local args = { questData.Island }
-                            game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-                            task.wait(3.5)
-
-                            TweenTo(questData.Position)
+                            -- Use the new Smart Travel logic
+                            SmartTravelTo(questData.Position, questData.Island)
+                            
                             ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestId)
                             task.wait(1.5)
                         end
@@ -374,7 +414,7 @@ local function startMasterLoop()
 
                 if targetPart and hum and hum.Health > 0 then
                     updateStatus("Engaging: " .. currentTarget.Name)
-                    TweenTo(targetPart.Position + Vector3.new(0, 0, 3)) 
+                    SmartTravelTo(targetPart.Position + Vector3.new(0, 0, 3), GlobalCache.Quests[GetMostEfficientQuest()] and GlobalCache.Quests[GetMostEfficientQuest()].Island) 
 
                     while currentTarget and currentTarget.Parent and hum.Health > 0 and (killAuraActive or kaitunActive) do
                         if killAllTimedBosses and not string.find(string.lower(currentTarget.Name), "boss_") then
@@ -421,7 +461,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.3.0 (Numerical Sorting Update)",
+    SubTitle = "V4.4.0 (Smart Pathing & Zero-Vel Tweens)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
