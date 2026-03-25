@@ -2,6 +2,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 if getgenv().CSMDH_Cleanup then
@@ -9,20 +10,21 @@ if getgenv().CSMDH_Cleanup then
 end
 
 getgenv().CSMDH_Cleanup = function()
-    -- Cancel active loops
     if getgenv().auraTask then task.cancel(getgenv().auraTask) end
-    -- Cancel mid-air tweens
     if getgenv().ActiveTween then 
         getgenv().ActiveTween:Cancel() 
         getgenv().ActiveTween = nil 
+    end
+    if getgenv().VelConn then
+        getgenv().VelConn:Disconnect()
+        getgenv().VelConn = nil
     end
     
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
-        hrp.Anchored = false
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
     end
     
     if getgenv().CSMDH_Window then
@@ -88,18 +90,35 @@ local function TweenTo(targetPos)
     local hrp = char.HumanoidRootPart
     
     local dist = (hrp.Position - targetPos).Magnitude
-    local tweenTime = dist / backupTweenSpeed
+    if dist < 3 then return end -- Already there
     
+    local tweenTime = dist / backupTweenSpeed
     local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
     getgenv().ActiveTween = tween
     
-    -- PERFECT VELOCITY FIX: Anchoring bypasses the physics engine entirely during the tween
-    hrp.Anchored = true 
+    -- PHYSICS FIX: Stepped runs directly before the physics calculation step. 
+    -- Forcing velocity to 0 here perfectly neutralizes gravity and flinging without anchoring.
+    getgenv().VelConn = RunService.Stepped:Connect(function()
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
+    
     tween:Play()
     tween.Completed:Wait()
-    hrp.Anchored = false
+    
+    if getgenv().VelConn then
+        getgenv().VelConn:Disconnect()
+        getgenv().VelConn = nil
+    end
+    
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end
     
     getgenv().ActiveTween = nil
 end
@@ -130,13 +149,14 @@ local function ParseShortenedNumber(str)
     return num
 end
 
-local function FindNearestPortal()
+-- Used ONLY during the initial reset to find the spawn portal safely
+local function FindNearestPortalSafe(maxDist)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
     local closestPortal = nil
-    local closestDist = math.huge
+    local closestDist = maxDist or 2000
 
     for _, obj in pairs(workspace:GetDescendants()) do
         if obj:IsA("BasePart") or obj:IsA("Model") then
@@ -153,46 +173,39 @@ local function FindNearestPortal()
     return closestPortal
 end
 
-local function GetClosestIslandToPosition(pos)
-    local closestIsland = nil
-    local closestDist = math.huge
-    for islandName, portalPos in pairs(GlobalCache.Portals) do
-        local dist = (portalPos - pos).Magnitude
-        if dist < closestDist then
-            closestDist = dist
-            closestIsland = islandName
-        end
-    end
-    return closestIsland
-end
-
--- SMART ROUTING FIX: Compares local island vs target island to force portal usage
+-- SMART ROUTING FIX: 100% Logic based, no arbitrary distance math
 local function SmartTravelTo(targetPos, targetIsland)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local currentClosestIsland = GetClosestIslandToPosition(hrp.Position)
-
-    -- If we are not on the island we need to be on, use the portal network
-    if targetIsland and currentClosestIsland ~= targetIsland then
-        updateStatus("SmartTravel: Hopping from " .. tostring(currentClosestIsland) .. " -> " .. tostring(targetIsland))
-        
-        -- Tween to the nearest portal to us right now
-        local localPortal = FindNearestPortal()
-        if localPortal then 
-            local pos = localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position
-            TweenTo(pos) 
+    -- 1. Find the portal we are physically closest to right now
+    local closestPortalToPlayer = nil
+    local closestDist = math.huge
+    for islandName, portalPos in pairs(GlobalCache.Portals) do
+        local dist = (hrp.Position - portalPos).Magnitude
+        if dist < closestDist then
+            closestDist = dist
+            closestPortalToPlayer = islandName
         end
-        
-        local args = { targetIsland }
-        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-        task.wait(3.5) -- Movement lock wait
-    else
-        updateStatus("SmartTravel: Target is on current island. Tweening directly.")
     end
 
-    -- Finish the journey
+    -- 2. If we are closest to Dooky, but the NPC is on Stinky, we tween to Dooky and teleport to Stinky.
+    if targetIsland and closestPortalToPlayer ~= targetIsland then
+        updateStatus("SmartTravel: Taking Portal -> " .. targetIsland)
+        
+        -- Tween to our local closest portal
+        TweenTo(GlobalCache.Portals[closestPortalToPlayer])
+        
+        -- Teleport
+        local args = { targetIsland }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
+        task.wait(3.5)
+    else
+        updateStatus("SmartTravel: Target is on current island. Tweening.")
+    end
+
+    -- 3. Finish the journey
     TweenTo(targetPos)
 end
 
@@ -205,55 +218,48 @@ local function InitializeWorldCache()
     updateCacheUI("Resetting to clear render distance locks...")
     LocalPlayer.Character:BreakJoints()
     LocalPlayer.CharacterAdded:Wait()
-    task.wait(1.5)
+    task.wait(2.5) -- Wait for world to stream in
     
-    -- Tween to the very first portal it can find
-    local firstPortal = FindNearestPortal()
-    if firstPortal then 
-        local pos = firstPortal:IsA("Model") and firstPortal:GetPivot().Position or firstPortal.Position
+    -- Get safely onto the initial spawn portal
+    local initPortal = FindNearestPortalSafe(1500)
+    if initPortal then 
+        local pos = initPortal:IsA("Model") and initPortal:GetPivot().Position or initPortal.Position
         TweenTo(pos) 
     end
 
-    -- The Island & Quest Harvesting Loop
+    -- Strict Portal-To-Portal Harvesting Loop
     for _, island in ipairs(IslandsList) do
         updateCacheUI("Teleporting to Island: " .. island)
-        
-        -- Tween to local portal before TP
-        local localPortal = FindNearestPortal()
-        if localPortal then 
-            local pos = localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position
-            TweenTo(pos) 
-        end
 
+        -- Teleport
         local args = { island }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         task.wait(3.5)
 
-        -- Cache the portal on this new island
-        local newPortal = FindNearestPortal()
-        if newPortal then
-            local pos = newPortal:IsA("Model") and newPortal:GetPivot().Position or newPortal.Position
-            GlobalCache.Portals[island] = pos
-        end
+        -- LOGIC FIX: We just arrived. Our current position IS the exact portal. No need to search workspace!
+        local char = LocalPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        
+        GlobalCache.Portals[island] = hrp.Position
 
         -- Scan for Quests ON THIS ISLAND
         local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
         if serviceNPCs then
             local localQuests = {}
-            local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
 
-            -- Gather all valid quests that look like they are on this island (< 10k studs away)
+            -- Gather all valid quests near this portal (< 8k studs)
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
                 local numStr = string.match(npc.Name, "^QuestNPC(%d+)$")
                 if numStr and not GlobalCache.Quests[npc.Name] then
-                    local dist = (charPos - npc:GetPivot().Position).Magnitude
-                    if dist < 10000 then 
+                    local dist = (hrp.Position - npc:GetPivot().Position).Magnitude
+                    if dist < 8000 then 
                         table.insert(localQuests, { Instance = npc, Number = tonumber(numStr) })
                     end
                 end
             end
 
-            -- Sort them numerically so it paths cleanly (QuestNPC1 -> QuestNPC2, etc.)
+            -- Sort numerically
             table.sort(localQuests, function(a, b) return a.Number < b.Number end)
 
             for _, qData in ipairs(localQuests) do
@@ -268,7 +274,7 @@ local function InitializeWorldCache()
                 ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
                 task.wait(1) 
 
-                -- Extract Data
+                -- Extract Data exactly as requested
                 local expText = "0"
                 local reqText = ""
                 local qPrompt = nil
@@ -276,8 +282,8 @@ local function InitializeWorldCache()
                 pcall(function()
                     expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
                     reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
-                    local hrp = npc:FindFirstChild("HumanoidRootPart")
-                    if hrp then qPrompt = hrp:FindFirstChild("QuestPrompt") end
+                    local targHrp = npc:FindFirstChild("HumanoidRootPart")
+                    if targHrp then qPrompt = targHrp:FindFirstChild("QuestPrompt") end
                 end)
 
                 local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
@@ -298,6 +304,11 @@ local function InitializeWorldCache()
                 task.wait(0.5)
             end
         end
+        
+        -- LOGIC FIX: Tween BACK to this island's portal before looping to the next teleport
+        updateCacheUI("Returning to portal to prepare for next island...")
+        TweenTo(GlobalCache.Portals[island])
+        task.wait(0.5)
     end
 
     -- DPS Test
@@ -383,7 +394,7 @@ local function startMasterLoop()
                         if not hasQuest then
                             updateStatus("Kaitun: Traveling to " .. bestQuestId)
                             
-                            -- Use the new Smart Travel logic
+                            -- Use the logical Smart Travel system
                             SmartTravelTo(questData.Position, questData.Island)
                             
                             ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestId)
@@ -422,7 +433,7 @@ local function startMasterLoop()
 
                 if targetPart and hum and hum.Health > 0 then
                     updateStatus("Engaging: " .. currentTarget.Name)
-                    -- Bosses won't have a cached island, so we pass nil to SmartTravelTo (it will tween directly)
+                    
                     local targetIsland = GlobalCache.Quests[GetMostEfficientQuest()] and GlobalCache.Quests[GetMostEfficientQuest()].Island
                     SmartTravelTo(targetPart.Position + Vector3.new(0, 0, 3), kaitunActive and targetIsland or nil) 
 
@@ -466,12 +477,13 @@ local function stopMasterLoop()
     kaitunActive = false
     updateStatus("Farming Stopped.")
     if getgenv().auraTask then task.cancel(getgenv().auraTask); getgenv().auraTask = nil end
+    if getgenv().ActiveTween then getgenv().ActiveTween:Cancel() end
 end
 
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.5.0 (Flawless Pathing & Cleanup)",
+    SubTitle = "V4.6.0 (Logic Pathing & True Cleanup)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
