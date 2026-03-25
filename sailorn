@@ -9,7 +9,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
-local TweenService = game:GetService("TweenService") -- Added TweenService
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
@@ -17,6 +16,7 @@ repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFir
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+local TweenService = game:GetService("TweenService")
 
 -- [[ STATE VARIABLES ]]
 local killAuraActive = false
@@ -25,7 +25,7 @@ local kaitunActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
 local vectorMethod = "vector.create(X, Y, Z)" 
-local backupTweenSpeed = 1
+local backupTweenSpeed = 65 
 local auraTask = nil
 local evasionTask = nil
 local kaitunTask = nil
@@ -244,6 +244,7 @@ local function SmartTeleport(targetIsland)
         task.wait(3) -- Portal stun cooldown
     end
 end
+
 -- [[ INITIALIZATION & CACHING ]]
 local function RunInitialization()
     if isInitialized then return end
@@ -658,7 +659,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub V4",
-    SubTitle = "v1",
+    SubTitle = "Kaitun & Timed Boss Optimization",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
