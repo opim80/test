@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
+local TweenService = game:GetService("TweenService") -- Added TweenService
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
@@ -181,6 +182,7 @@ local function getAvailableMobs()
 end
 
 -- [[ TRAVERSAL SYSTEM ]]
+-- [[ TRAVERSAL SYSTEM ]]
 local function SmartTeleport(targetIsland)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -218,7 +220,21 @@ local function SmartTeleport(targetIsland)
 
     if nearestPortal then
         updateStatus("Tweening to nearest portal...")
-        hrp.CFrame = nearestPortal.CFrame + Vector3.new(0, 5, 0)
+        
+        -- Fix: Calculate time based on distance and user's tween speed slider
+        local distance = (hrp.Position - nearestPortal.Position).Magnitude
+        local tweenTime = distance / backupTweenSpeed 
+        
+        -- Fix: Remove the +5 Y offset so the player doesn't hover
+        local targetCFrame = CFrame.new(nearestPortal.Position) 
+        
+        -- Create and play the tween
+        local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
+        local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+        
+        tween:Play()
+        tween.Completed:Wait() -- Wait for the player to physically arrive
+        
         task.wait(0.5)
         
         updateStatus("Teleporting to " .. targetIsland)
@@ -228,7 +244,6 @@ local function SmartTeleport(targetIsland)
         task.wait(3) -- Portal stun cooldown
     end
 end
-
 -- [[ INITIALIZATION & CACHING ]]
 local function RunInitialization()
     if isInitialized then return end
