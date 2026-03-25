@@ -1,8 +1,7 @@
--- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
+-- [[ SINGLE INSTANCE & TRUE CLEANUP LOGIC ]]
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 if getgenv().CSMDH_Cleanup then
@@ -15,16 +14,14 @@ getgenv().CSMDH_Cleanup = function()
         getgenv().ActiveTween:Cancel() 
         getgenv().ActiveTween = nil 
     end
-    if getgenv().VelConn then
-        getgenv().VelConn:Disconnect()
-        getgenv().VelConn = nil
-    end
     
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if hrp then
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
+        local bv = hrp:FindFirstChild("TweenVelocityBreaker")
+        if bv then bv:Destroy() end
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
     end
     
     if getgenv().CSMDH_Window then
@@ -84,13 +81,14 @@ local function updateCacheUI(msg)
     end
 end
 
+-- TRUE VELOCITY TWEEN
 local function TweenTo(targetPos)
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return end
     local hrp = char.HumanoidRootPart
     
     local dist = (hrp.Position - targetPos).Magnitude
-    if dist < 3 then return end -- Already there
+    if dist < 5 then return end 
     
     local tweenTime = dist / backupTweenSpeed
     local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
@@ -98,27 +96,19 @@ local function TweenTo(targetPos)
     
     getgenv().ActiveTween = tween
     
-    -- PHYSICS FIX: Stepped runs directly before the physics calculation step. 
-    -- Forcing velocity to 0 here perfectly neutralizes gravity and flinging without anchoring.
-    getgenv().VelConn = RunService.Stepped:Connect(function()
-        if hrp then
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-        end
-    end)
+    -- Bulletproof physics killer
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "TweenVelocityBreaker"
+    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bv.Velocity = Vector3.zero
+    bv.Parent = hrp
     
     tween:Play()
     tween.Completed:Wait()
     
-    if getgenv().VelConn then
-        getgenv().VelConn:Disconnect()
-        getgenv().VelConn = nil
-    end
-    
-    if hrp then
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-    end
+    if bv and bv.Parent then bv:Destroy() end
+    hrp.Velocity = Vector3.zero
+    hrp.RotVelocity = Vector3.zero
     
     getgenv().ActiveTween = nil
 end
@@ -149,14 +139,14 @@ local function ParseShortenedNumber(str)
     return num
 end
 
--- Used ONLY during the initial reset to find the spawn portal safely
-local function FindNearestPortalSafe(maxDist)
+-- Finds the physical portal part in the workspace dynamically
+local function GetNearestPortalWorkspace()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
-    local closestPortal = nil
-    local closestDist = maxDist or 2000
+    local closestPos = nil
+    local closestDist = math.huge
 
     for _, obj in pairs(workspace:GetDescendants()) do
         if obj:IsA("BasePart") or obj:IsA("Model") then
@@ -165,47 +155,47 @@ local function FindNearestPortalSafe(maxDist)
                 local dist = (hrp.Position - pos).Magnitude
                 if dist < closestDist then
                     closestDist = dist
-                    closestPortal = obj
+                    closestPos = pos
                 end
             end
         end
     end
-    return closestPortal
+    return closestPos
 end
 
--- SMART ROUTING FIX: 100% Logic based, no arbitrary distance math
+-- SMART ROUTING: Which island's cached portal are we standing closest to?
 local function SmartTravelTo(targetPos, targetIsland)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- 1. Find the portal we are physically closest to right now
-    local closestPortalToPlayer = nil
-    local closestDist = math.huge
-    for islandName, portalPos in pairs(GlobalCache.Portals) do
-        local dist = (hrp.Position - portalPos).Magnitude
-        if dist < closestDist then
-            closestDist = dist
-            closestPortalToPlayer = islandName
+    local currentIsland = nil
+    local cDist = math.huge
+    for iName, pPos in pairs(GlobalCache.Portals) do
+        local d = (hrp.Position - pPos).Magnitude
+        if d < cDist then
+            cDist = d
+            currentIsland = iName
         end
     end
 
-    -- 2. If we are closest to Dooky, but the NPC is on Stinky, we tween to Dooky and teleport to Stinky.
-    if targetIsland and closestPortalToPlayer ~= targetIsland then
+    -- If we need to be on a different island, take the portal shortcut
+    if targetIsland and currentIsland ~= targetIsland then
         updateStatus("SmartTravel: Taking Portal -> " .. targetIsland)
         
-        -- Tween to our local closest portal
-        TweenTo(GlobalCache.Portals[closestPortalToPlayer])
+        -- Tween to the nearest physical portal around us to ensure the remote fires successfully
+        local localPortalPos = GetNearestPortalWorkspace()
+        if localPortalPos then TweenTo(localPortalPos) end
         
-        -- Teleport
+        -- Fire remote and wait
         local args = { targetIsland }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         task.wait(3.5)
     else
-        updateStatus("SmartTravel: Target is on current island. Tweening.")
+        updateStatus("SmartTravel: Target is on current island. Tweening directly.")
     end
 
-    -- 3. Finish the journey
+    -- Finish the journey to the NPC/Target
     TweenTo(targetPos)
 end
 
@@ -214,33 +204,40 @@ local function InitializeWorldCache()
     if GlobalCache.Initialized then return end
     updateStatus("Starting World Cache Initialization...")
 
-    -- The Initial Failsafe Reset
     updateCacheUI("Resetting to clear render distance locks...")
     LocalPlayer.Character:BreakJoints()
     LocalPlayer.CharacterAdded:Wait()
-    task.wait(2.5) -- Wait for world to stream in
+    task.wait(2.5) 
     
-    -- Get safely onto the initial spawn portal
-    local initPortal = FindNearestPortalSafe(1500)
-    if initPortal then 
-        local pos = initPortal:IsA("Model") and initPortal:GetPivot().Position or initPortal.Position
-        TweenTo(pos) 
-    end
+    -- THE FIX: We MUST find a portal to start the chain. We will yield until one exists.
+    updateCacheUI("Locating initial portal to begin chain...")
+    local firstPortalPos = nil
+    repeat
+        firstPortalPos = GetNearestPortalWorkspace()
+        if not firstPortalPos then task.wait(0.5) end
+    until firstPortalPos
+
+    -- Tween to the very first portal so the first remote fire doesn't fail
+    TweenTo(firstPortalPos)
 
     -- Strict Portal-To-Portal Harvesting Loop
     for _, island in ipairs(IslandsList) do
         updateCacheUI("Teleporting to Island: " .. island)
+
+        -- Double check we are on a portal before firing
+        local currentPortal = GetNearestPortalWorkspace()
+        if currentPortal then TweenTo(currentPortal) end
 
         -- Teleport
         local args = { island }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         task.wait(3.5)
 
-        -- LOGIC FIX: We just arrived. Our current position IS the exact portal. No need to search workspace!
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
         
+        -- The position we are standing in right now IS the portal for this island. Cache it.
         GlobalCache.Portals[island] = hrp.Position
 
         -- Scan for Quests ON THIS ISLAND
@@ -248,7 +245,7 @@ local function InitializeWorldCache()
         if serviceNPCs then
             local localQuests = {}
 
-            -- Gather all valid quests near this portal (< 8k studs)
+            -- Gather valid quests near this portal (< 8k studs)
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
                 local numStr = string.match(npc.Name, "^QuestNPC(%d+)$")
                 if numStr and not GlobalCache.Quests[npc.Name] then
@@ -259,7 +256,7 @@ local function InitializeWorldCache()
                 end
             end
 
-            -- Sort numerically
+            -- Sort numerically (QuestNPC1 -> QuestNPC2)
             table.sort(localQuests, function(a, b) return a.Number < b.Number end)
 
             for _, qData in ipairs(localQuests) do
@@ -305,7 +302,7 @@ local function InitializeWorldCache()
             end
         end
         
-        -- LOGIC FIX: Tween BACK to this island's portal before looping to the next teleport
+        -- THE LOOP FIX: Tween BACK to the portal we cached for this island so we are ready to teleport to the next one!
         updateCacheUI("Returning to portal to prepare for next island...")
         TweenTo(GlobalCache.Portals[island])
         task.wait(0.5)
@@ -483,7 +480,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.6.0 (Logic Pathing & True Cleanup)",
+    SubTitle = "V4.7.0 (Strict Init & BV Velocity Fix)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
