@@ -658,7 +658,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub V4",
-    SubTitle = "Kaitun & Timed Boss Optimization",
+    SubTitle = "Kaitun & Timed Boss Optimizatione",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
