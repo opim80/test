@@ -29,10 +29,10 @@ local Islands = {
     "Judgement", "Ninja", "Lawless", "Tower"
 }
 
+local CachedPortals = {} -- Stores Vector3 of every portal
 local CachedQuests = {}
 local PlayerDPS = 0
 local IsInitialized = false
-local MaxExpectedNPCs = 20 -- Adjust this if the game has more than 20 quest NPCs
 
 getgenv().CSMDH_Cleanup = function()
     kaitunActive = false
@@ -45,9 +45,11 @@ local function updateStatus(msg)
     if StatusDisplay then StatusDisplay:SetDesc(msg) end
 end
 
-local function getNearestPortal()
+-- Only used to find the immediate, locally streamed portal you are standing next to
+local function getLocalPortal()
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
+    
     local closestPortal = nil
     local shortestDistance = math.huge
 
@@ -82,13 +84,15 @@ local function tweenTo(targetPos, customStatus)
 end
 
 local function teleportViaPortal(islandName)
-    local portal = getNearestPortal()
-    if portal then
-        tweenTo(portal.Position, "Heading to Portal for " .. islandName)
+    local localPortal = getLocalPortal()
+    if localPortal then
+        tweenTo(localPortal.Position, "Heading to Portal for " .. islandName)
         task.wait(0.5)
         local args = { islandName }
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-        task.wait(3) -- Wait for portal stun
+        task.wait(3.5) -- Wait for portal stun AND streaming load time
+    else
+        updateStatus("⚠️ Error: No local portal found to teleport to " .. islandName)
     end
 end
 
@@ -118,8 +122,8 @@ local function calibrateDamage()
     updateStatus("Damage Calibrated: " .. tostring(PlayerDPS) .. " per M1")
 end
 
-local function getQuestData(npcName, currentCount)
-    updateStatus("[Caching " .. currentCount .. "/?] Interacting with " .. npcName)
+local function getQuestData(npcName, currentCount, totalCount)
+    updateStatus("[Caching Quests " .. currentCount .. "/" .. totalCount .. "] Interacting with " .. npcName)
     ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcName)
     task.wait(1.5)
 
@@ -142,68 +146,77 @@ end
 
 local function initializeKaitun()
     if IsInitialized then return end
-    updateStatus("Initializing... Resetting Character to reach Starter Portal.")
     
+    -- PHASE 1: THE PORTAL TOUR (Force Streaming Load)
+    updateStatus("[Phase 1/2] Resetting to map portals...")
     local char = LocalPlayer.Character
     if char and char:FindFirstChild("Humanoid") then
         char.Humanoid.Health = 0
         LocalPlayer.CharacterAdded:Wait()
-        task.wait(2)
+        task.wait(3) -- Wait for spawn and stream
     end
 
+    local firstPortal = getLocalPortal()
+    if firstPortal then
+        CachedPortals["Starter"] = firstPortal.Position
+    end
+
+    for i = 2, #Islands do
+        local targetIsland = Islands[i]
+        updateStatus("[Phase 1/2] Mapping Portal: " .. targetIsland .. " (" .. i .. "/" .. #Islands .. ")")
+        
+        teleportViaPortal(targetIsland)
+        
+        local newPortal = getLocalPortal()
+        if newPortal then
+            CachedPortals[targetIsland] = newPortal.Position
+        end
+    end
+
+    -- PHASE 2: SEQUENTIAL QUEST CACHING
+    updateStatus("[Phase 2/2] Portals mapped. Returning to Starter to begin Quests.")
+    teleportViaPortal("Starter")
+    
     local serviceNPCs = workspace:WaitForChild("ServiceNPCs")
+    
+    local totalQuestNPCs = 0
+    for _, obj in ipairs(serviceNPCs:GetChildren()) do
+        if string.match(obj.Name, "^QuestNPC%d+$") then totalQuestNPCs = totalQuestNPCs + 1 end
+    end
+
     local npcCount = 1
     local currentIslandIndex = 1
-    
-    -- Ensure we start at the first island
-    teleportViaPortal(Islands[currentIslandIndex])
 
-    while true do 
+    while npcCount <= totalQuestNPCs do 
         local npcName = "QuestNPC" .. npcCount
         local npc = serviceNPCs:FindFirstChild(npcName)
         
-        -- AGGRESSIVE SEARCH: If not found, hop islands until it renders
-        local islandsChecked = 0
-        while not npc and islandsChecked < #Islands do
-            updateStatus("[Search " .. npcCount .. "/?] " .. npcName .. " not rendered. Hopping to " .. Islands[currentIslandIndex])
-            currentIslandIndex = currentIslandIndex + 1
-            if currentIslandIndex > #Islands then currentIslandIndex = 1 end
-            
-            teleportViaPortal(Islands[currentIslandIndex])
-            npc = serviceNPCs:FindFirstChild(npcName)
-            islandsChecked = islandsChecked + 1
-        end
-
-        -- If we checked all islands and STILL can't find it, we've cached them all.
         if not npc then
-            updateStatus("All Quest NPCs Cached! Total found: " .. (npcCount - 1))
-            task.wait(2)
-            break
-        end
-        
-        local hrp = npc:FindFirstChild("HumanoidRootPart")
-        if not hrp then 
+            -- Fallback loop if pivot isn't loaded yet
             npcCount = npcCount + 1
-            continue 
+            continue
         end
 
-        local currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+        local targetPos = npc:GetPivot().Position
+        local currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - targetPos).Magnitude
+        
         local lastDist = nil
         local lastIslandIndex = currentIslandIndex
 
         -- THE 450 STUD RULE & BACKTRACKING
         while currentDist > 450 do
-            updateStatus("[Routing " .. npcCount .. "/?] " .. npcName .. " Dist: " .. math.floor(currentDist) .. ". Trying next island...")
+            updateStatus("[Routing " .. npcCount .. "/" .. totalQuestNPCs .. "] " .. npcName .. " Dist: " .. math.floor(currentDist) .. ". Trying next island...")
             lastDist = currentDist
             lastIslandIndex = currentIslandIndex
             
             currentIslandIndex = currentIslandIndex + 1
             if currentIslandIndex > #Islands then currentIslandIndex = 1 end 
+            
             teleportViaPortal(Islands[currentIslandIndex])
             
-            currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+            currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - targetPos).Magnitude
             
-            -- THE BACKTRACK RULE
+            -- BACKTRACK RULE: If distance grew, snap back to previous island
             if currentDist > lastDist then
                 updateStatus("Distance grew! Backtracking to Island: " .. Islands[lastIslandIndex])
                 currentIslandIndex = lastIslandIndex
@@ -213,9 +226,9 @@ local function initializeKaitun()
         end
 
         -- Execute Tween & Cache 
-        local statusStr = "[Caching " .. npcCount .. "/?] Target: " .. npcName
-        tweenTo(hrp.Position, statusStr)
-        getQuestData(npcName, npcCount)
+        local statusStr = "[Caching Quests " .. npcCount .. "/" .. totalQuestNPCs .. "] Target: " .. npcName
+        tweenTo(targetPos, statusStr)
+        getQuestData(npcName, npcCount, totalQuestNPCs)
         
         npcCount = npcCount + 1
     end
@@ -268,7 +281,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Kaitun Hub",
-    SubTitle = "V4.2 (Aggressive Caching & Progress UI)",
+    SubTitle = "V4.4 (Full Portal & Streaming Caching)",
     TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark"
 })
 getgenv().CSMDH_Window = Window
