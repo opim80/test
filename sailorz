@@ -205,6 +205,23 @@ local function getCenterPosition()
     return nil
 end
 
+-- [[ NEW: DYNAMIC PORTAL SCANNER ]]
+local function getLocalPortal()
+    -- Quick check first layer
+    for _, obj in ipairs(workspace:GetChildren()) do
+        if string.find(string.lower(obj.Name), "portal_") then
+            return obj
+        end
+    end
+    -- Deep check if hidden in a map folder
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if string.find(string.lower(obj.Name), "portal_") then
+            return obj
+        end
+    end
+    return nil
+end
+
 -- [[ CORE MOVEMENT ENGINE ]]
 local function startDynamicMovement()
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
@@ -307,8 +324,8 @@ local function fastTravelToIsland(islandName)
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
     
-    -- Look for any portal locally first
-    local portal = workspace:FindFirstChild("portal_tower", true)
+    -- Check dynamically for ANY portal
+    local portal = getLocalPortal()
     
     if not portal then
         setKaitunStatus("No portal found locally.", "Resetting to bypass Streaming")
@@ -319,13 +336,13 @@ local function fastTravelToIsland(islandName)
         
         local newChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
         hrp = newChar:WaitForChild("HumanoidRootPart", 10)
-        task.wait(1.5) 
+        task.wait(2) -- Extra buffer for map to stream in
         
-        portal = workspace:FindFirstChild("portal_tower", true)
+        portal = getLocalPortal()
     end
     
     if portal and hrp then
-        if evasionTask then evasionTask:Disconnect(); evasionTask = nil end -- Pause movement engine
+        if evasionTask then evasionTask:Disconnect(); evasionTask = nil end 
         
         local pCFrame = portal:IsA("Model") and portal:GetPivot() or portal.CFrame
         hrp.CFrame = pCFrame
@@ -338,14 +355,14 @@ local function fastTravelToIsland(islandName)
         
         task.wait(3.5) 
         
-        -- Safe to turn flight back on
         if killAuraActive and not isInitializingCache then
             startDynamicMovement()
         end
         return true
+    else
+        updateStatus("⚠️ CRITICAL: Could not locate any portal even after reset!")
+        return false
     end
-    
-    return false
 end
 
 -- [[ KAITUN CACHE INITIALIZER ]]
@@ -364,7 +381,10 @@ local function initializeWorldCache()
     for _, island in ipairs(WorldCache.Islands) do
         if not kaitunActive then break end
         
-        fastTravelToIsland(island)
+        if not fastTravelToIsland(island) then
+            updateStatus("Aborting cache: Portal system failed.")
+            break
+        end
         
         local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 5)
         if not serviceNPCs then continue end
@@ -400,7 +420,6 @@ local function initializeWorldCache()
                     if qFrame and qFrame.Visible then
                         local reqText = qFrame.Quest.Holder.Content.QuestInfo.QuestRequirement.Text 
                         local expText = qFrame.Reward.RewardExp.CurrencyIndicator.Text 
-                        -- Using your original raw path, no shortening
                         local targetMobRaw = qFrame.Quest.Holder.Content.QuestInfo.QuestTitle.QuestTitle.Text 
                         
                         local extractedMob = string.match(targetMobRaw, "Defeat the (.*)'s!") or string.match(targetMobRaw, "Defeat (.*)!") or "Unknown"
@@ -540,7 +559,6 @@ local function startKillAura()
                             pcall(function() ReplicatedStorage.RemoteEvents.QuestAccept:FireServer(optQuestNPC) end)
                             task.wait(1.5)
                         else
-                            -- CRITICAL FREEZE FIX: Need to yield if we are tweening!
                             task.wait(0.5) 
                         end
                         continue
@@ -706,7 +724,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.6.0 (Kaitun Unlocked)", 
+    SubTitle = "V4.6.1 (Dynamic Portal Fix)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
