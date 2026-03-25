@@ -8,6 +8,7 @@ if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -16,7 +17,6 @@ repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFir
 local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
 local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
-local TweenService = game:GetService("TweenService")
 
 -- [[ STATE VARIABLES ]]
 local killAuraActive = false
@@ -26,12 +26,15 @@ local selectedMobs = {}
 local selectedWeapon = ""
 local vectorMethod = "vector.create(X, Y, Z)" 
 local backupTweenSpeed = 65 
+local kaitunTweenSpeed = 150 -- New tween speed for Kaitun traversal
 local auraTask = nil
 local evasionTask = nil
 local kaitunTask = nil
 local currentTarget = nil 
 local cameraTrackActive = false
 local cameraTask = nil
+local activeTween = nil
+local noclipConnection = nil
 
 -- Caching State
 local isInitialized = false
@@ -82,6 +85,8 @@ getgenv().CSMDH_Cleanup = function()
     if kaitunTask then task.cancel(kaitunTask) end
     if evasionTask then evasionTask:Disconnect() end
     if cameraTask then cameraTask:Disconnect() end
+    if activeTween then activeTween:Cancel() end
+    if noclipConnection then noclipConnection:Disconnect() end
     
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -181,7 +186,38 @@ local function getAvailableMobs()
     return mobs
 end
 
--- [[ TRAVERSAL SYSTEM ]]
+-- [[ TWEENING SYSTEM ]]
+local function TweenTo(targetCFrame, speed)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    
+    if activeTween then activeTween:Cancel() end
+    
+    local dist = (hrp.Position - targetCFrame.Position).Magnitude
+    local time = dist / math.max(1, speed)
+    
+    local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear)
+    activeTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
+    
+    if noclipConnection then noclipConnection:Disconnect() end
+    noclipConnection = RunService.Stepped:Connect(function()
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end)
+    
+    activeTween:Play()
+    activeTween.Completed:Wait()
+    
+    if noclipConnection then noclipConnection:Disconnect() end
+    noclipConnection = nil
+    activeTween = nil
+    hrp.Velocity = Vector3.zero
+end
+
 -- [[ TRAVERSAL SYSTEM ]]
 local function SmartTeleport(targetIsland)
     local char = LocalPlayer.Character
@@ -220,21 +256,7 @@ local function SmartTeleport(targetIsland)
 
     if nearestPortal then
         updateStatus("Tweening to nearest portal...")
-        
-        -- Fix: Calculate time based on distance and user's tween speed slider
-        local distance = (hrp.Position - nearestPortal.Position).Magnitude
-        local tweenTime = distance / backupTweenSpeed 
-        
-        -- Fix: Remove the +5 Y offset so the player doesn't hover
-        local targetCFrame = CFrame.new(nearestPortal.Position) 
-        
-        -- Create and play the tween
-        local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
-        local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
-        
-        tween:Play()
-        tween.Completed:Wait() -- Wait for the player to physically arrive
-        
+        TweenTo(nearestPortal.CFrame + Vector3.new(0, 5, 0), kaitunTweenSpeed)
         task.wait(0.5)
         
         updateStatus("Teleporting to " .. targetIsland)
@@ -272,7 +294,7 @@ local function RunInitialization()
                 if string.find(npc.Name, "QuestNPC") then
                     local targetPart = getTargetPart(npc)
                     if targetPart and hrp then
-                        hrp.CFrame = targetPart.CFrame + Vector3.new(0, 0, 5)
+                        TweenTo(targetPart.CFrame + Vector3.new(0, 0, 5), kaitunTweenSpeed)
                         task.wait(0.5)
                         
                         -- Accept Quest
@@ -344,7 +366,7 @@ local function GetM1Damage()
     if target then
         local tPart = getTargetPart(target)
         if tPart then
-            hrp.CFrame = tPart.CFrame + Vector3.new(0, 0, 3)
+            TweenTo(tPart.CFrame + Vector3.new(0, 0, 3), kaitunTweenSpeed)
             task.wait(0.5)
             
             equipWeapon(selectedWeapon)
@@ -421,7 +443,7 @@ local function startKaitun()
                 if not hasQuest then
                     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                     if hrp then
-                        hrp.CFrame = CFrame.new(questData.Position) + Vector3.new(0, 5, 0)
+                        TweenTo(CFrame.new(questData.Position) + Vector3.new(0, 5, 0), kaitunTweenSpeed)
                         task.wait(1)
                         pcall(function()
                             game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestNPC)
@@ -453,6 +475,7 @@ local function startDynamicMovement()
 
     evasionTask = RunService.Heartbeat:Connect(function(deltaTime)
         if not hrp or not hrp.Parent then return end
+        if activeTween then return end -- Let TweenTo handle movement if it's running
         
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
@@ -563,7 +586,7 @@ local function startKillAura()
                     if isMobSelected(npc.Name) then
                         validMobFound = true
                         
-                        -- Replaced Aizen checks with timed boss checking: "boss_"
+                        -- Timed boss checking: "boss_"
                         local isBoss = string.find(string.lower(npc.Name), "boss_") ~= nil
                         local dist = (charPos - npc:GetPivot().Position).Magnitude
                         
@@ -658,8 +681,8 @@ end
 
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
-    Title = "Ultimate Hub V4",
-    SubTitle = "Kaitun & Timed Boss Optimization",
+    Title = "Ultimate Hub V4.1",
+    SubTitle = "Kaitun Tween Integration",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -694,9 +717,15 @@ KaitunToggle:OnChanged(function(Value)
         end
     else
         if kaitunTask then task.cancel(kaitunTask) kaitunTask = nil end
+        if activeTween then activeTween:Cancel() activeTween = nil end
+        if noclipConnection then noclipConnection:Disconnect() noclipConnection = nil end
         killAuraActive = false
         stopKillAura()
     end
+end)
+
+Tabs.Main:AddSlider("KaitunTweenSpeed", {Title = "Kaitun Tween Speed", Default = 150, Min = 50, Max = 400, Rounding = 1}):OnChanged(function(Value) 
+    kaitunTweenSpeed = Value 
 end)
 
 -- COMBAT TAB
