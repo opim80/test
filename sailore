@@ -182,48 +182,63 @@ local function InitializeWorldCache()
         -- Scan for Quests ON THIS ISLAND
         local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
         if serviceNPCs then
+            local localQuests = {}
+            local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
+
+            -- Gather all valid quests that look like they are on this island (< 10k studs away)
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
-                -- Only target NPCs that match "Quest" followed by a number, and haven't been cached yet
-                if string.match(npc.Name, "^QuestNPC%d+$") and not GlobalCache.Quests[npc.Name] then
-                    local questPos = npc:GetPivot().Position
-                    
-                    updateCacheUI("Harvesting Data from: " .. npc.Name)
-                    TweenTo(questPos)
-                    task.wait(0.5) -- Let server register proximity
-                    
-                    -- Accept
-                    ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
-                    task.wait(1) -- Wait for UI to update
-
-                    -- Extract Data
-                    local expText = "0"
-                    local reqText = ""
-                    local qPrompt = nil
-                    
-                    pcall(function()
-                        expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
-                        reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
-                        local hrp = npc:FindFirstChild("HumanoidRootPart")
-                        if hrp then qPrompt = hrp:FindFirstChild("QuestPrompt") end
-                    end)
-
-                    local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
-                    local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
-
-                    GlobalCache.Quests[npc.Name] = {
-                        Island = island,
-                        Target = targetName,
-                        Amount = requiredAmount,
-                        Exp = ParseShortenedNumber(expText),
-                        Position = questPos,
-                        Prompt = qPrompt
-                    }
-
-                    -- Abandon
-                    local abandonArgs = { "repeatable" }
-                    game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
-                    task.wait(0.5)
+                local numStr = string.match(npc.Name, "^QuestNPC(%d+)$")
+                if numStr and not GlobalCache.Quests[npc.Name] then
+                    local dist = (charPos - npc:GetPivot().Position).Magnitude
+                    if dist < 10000 then -- Prevents grabbing NPCs from other islands
+                        table.insert(localQuests, { Instance = npc, Number = tonumber(numStr) })
+                    end
                 end
+            end
+
+            -- Sort them numerically so it paths cleanly (QuestNPC1 -> QuestNPC2, etc.)
+            table.sort(localQuests, function(a, b) return a.Number < b.Number end)
+
+            for _, qData in ipairs(localQuests) do
+                local npc = qData.Instance
+                local questPos = npc:GetPivot().Position
+                
+                updateCacheUI("Harvesting Data from: " .. npc.Name)
+                TweenTo(questPos)
+                task.wait(0.5) -- Let server register proximity
+                
+                -- Accept
+                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
+                task.wait(1) -- Wait for UI to update
+
+                -- Extract Data
+                local expText = "0"
+                local reqText = ""
+                local qPrompt = nil
+                
+                pcall(function()
+                    expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
+                    reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
+                    local hrp = npc:FindFirstChild("HumanoidRootPart")
+                    if hrp then qPrompt = hrp:FindFirstChild("QuestPrompt") end
+                end)
+
+                local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
+                local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
+
+                GlobalCache.Quests[npc.Name] = {
+                    Island = island,
+                    Target = targetName,
+                    Amount = requiredAmount,
+                    Exp = ParseShortenedNumber(expText),
+                    Position = questPos,
+                    Prompt = qPrompt
+                }
+
+                -- Abandon
+                local abandonArgs = { "repeatable" }
+                game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
+                task.wait(0.5)
             end
         end
     end
@@ -406,7 +421,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.2.0 (Direct Island Harvesting)",
+    SubTitle = "V4.3.0 (Numerical Sorting Update)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
