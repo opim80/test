@@ -77,6 +77,7 @@ local isTraversing = false
 -- Kaitun Variables
 local autoKaitunActive = false
 local kaitunTask = nil
+local kaitunStatTask = nil
 local currentKaitunQuest = nil
 
 -- Stats & Raids Variables
@@ -91,17 +92,21 @@ local dungeonLoopTask = nil
 
 local StatusDisplay = nil
 
--- Movement & Tween Variables
+-- Movement, Tween, & Combat Tracking Variables
 local activeTween = nil
 local activeTweenTarget = nil
 local NoclipConn = nil
 local VelBreakerConn = nil
+
+local CurrentHitDamage = 0
+local lastRawDamage = 0
 
 -- Store new cleanup function globally
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
     if dungeonLoopTask then task.cancel(dungeonLoopTask) end
     if kaitunTask then task.cancel(kaitunTask) end
+    if kaitunStatTask then task.cancel(kaitunStatTask) end
     if cameraTask then cameraTask:Disconnect() end
     if NoclipConn then NoclipConn:Disconnect() end
     if VelBreakerConn then VelBreakerConn:Disconnect() end
@@ -122,16 +127,6 @@ getgenv().CSMDH_Cleanup = function()
         pcall(function() getgenv().CSMDH_Window:Destroy() end)
     end
 end
-
--- [[ CONSTANT VELOCITY BREAKER ]]
-VelBreakerConn = RunService.Heartbeat:Connect(function()
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp and (killAuraActive or autoKaitunActive or isTraversing or activeTween) then
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
-    end
-end)
 
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
@@ -160,9 +155,9 @@ local function FormatAbbreviation(num)
     return tostring(math.floor(num))
 end
 
-local function GetPlayerDamage()
+local function GetRawPlayerDamage()
     local gui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not gui then return nil end
+    if not gui then return 0 end
     local ui = gui:FindFirstChild("DamageCounterUI")
     if ui then
         local lbl = ui:FindFirstChild("DamageFrame") and 
@@ -173,8 +168,29 @@ local function GetPlayerDamage()
             return ParseNumber(lbl.Text)
         end
     end
-    return nil
+    return 0
 end
+
+-- [[ CORE LOOP: VELOCITY BREAKER & DAMAGE TRACKER ]]
+VelBreakerConn = RunService.Heartbeat:Connect(function()
+    -- 1. Constant Velocity Crush
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp and (killAuraActive or autoKaitunActive or isTraversing or activeTween) then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
+
+    -- 2. Frame-Perfect Damage Delta Tracker (Isolates Combo Multipliers)
+    local rawCounter = GetRawPlayerDamage()
+    if rawCounter > lastRawDamage then
+        CurrentHitDamage = rawCounter - lastRawDamage
+    elseif rawCounter > 0 and rawCounter < lastRawDamage then
+        -- Combo reset, but registered a new hit immediately
+        CurrentHitDamage = rawCounter
+    end
+    lastRawDamage = rawCounter
+end)
 
 local function isMobSelected(rawName)
     if killAllActive then return true end
@@ -270,7 +286,6 @@ local function GetClosestPortal(pos)
     return bestPortal
 end
 
--- TweenToSync and TweenToAsync now accept the EXACT Vector3 destination
 local function TweenToSync(targetPos)
     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -370,7 +385,7 @@ local function CalcOptimalQuest(damage)
     for i, q in ipairs(HardcodedQuests) do
         local maxHealth = q.MaxHealth or 30000 
         local hitsToKill = math.ceil(maxHealth / damage)
-        local timeToKill = (hitsToKill * 0.4) + 2 
+        local timeToKill = (hitsToKill * 0.2) + 2 
         local totalTime = timeToKill * q.Amount
         local questsPer10m = 600 / totalTime
         local xpPer10m = q.XP * questsPer10m
@@ -411,7 +426,37 @@ end
 
 local function StartKaitun()
     if kaitunTask then task.cancel(kaitunTask) end
+    if kaitunStatTask then task.cancel(kaitunStatTask) end
+
     kaitunTask = task.spawn(function()
+        -- 1. KAITUN EXCLUSIVE STAT INITIALIZATION
+        updateStatus("Kaitun: Performing Base Stat Wipe...")
+        pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("ResetStats"):FireServer() end)
+        task.wait(1.5)
+
+        updateStatus("Kaitun: Statting 40 -> Defense")
+        pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer("Defense", 40) end)
+        task.wait(0.3)
+
+        updateStatus("Kaitun: Statting 25,000 -> Sword")
+        pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer("Sword", 25000) end)
+        task.wait(0.3)
+
+        updateStatus("Kaitun: Statting 25,000 -> Defense")
+        pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer("Defense", 25000) end)
+        task.wait(0.5)
+
+        -- 2. KAITUN 2-MINUTE STAT LOOP
+        kaitunStatTask = task.spawn(function()
+            while autoKaitunActive do
+                task.wait(120)
+                if autoKaitunActive then
+                    pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("AllocateStat"):FireServer("Sword", 25000) end)
+                end
+            end
+        end)
+
+        -- 3. KAITUN MAIN COMBAT LOOP
         local nextCheckTick = tick()
         local bestQuest = nil
         local maxXpPer10m = 0
@@ -419,10 +464,8 @@ local function StartKaitun()
         while autoKaitunActive do
             if isTraversing then task.wait(0.5); continue end
             
-            local currentDamage = GetPlayerDamage()
-            
-            -- PRIMER: One M1 strike to gauge damage
-            if not currentDamage or currentDamage <= 0 then
+            -- PRIMER: One M1 strike to gauge EXACT damage delta
+            if CurrentHitDamage <= 0 then
                 updateStatus("Kaitun: Gauging Damage... Finding closest mob.")
                 local npcFolder = workspace:FindFirstChild("NPCs")
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -460,22 +503,28 @@ local function StartKaitun()
                         elseif vectorMethod == "Raw Vector3" then args = { tPos }
                         else args = { vector.create(tPos) } end
                         
+                        -- Fire Hit
                         pcall(function() ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit"):FireServer(unpack(args)) end)
-                        task.wait(2) -- Wait for UI to update damage
+                        
+                        -- Wait max 2 seconds for heartbeat tracker to catch the delta jump
+                        local timeout = tick() + 2
+                        while CurrentHitDamage <= 0 and tick() < timeout do
+                            task.wait(0.1)
+                        end
                     end
                 end
                 continue
             end
 
-            -- MAIN LOGIC: Re-evaluate optimal quest every 60 seconds
+            -- MAIN LOGIC: Re-evaluate optimal quest every 60 seconds using accurate delta
             if tick() >= nextCheckTick or not bestQuest then
-                bestQuest, maxXpPer10m = CalcOptimalQuest(currentDamage)
+                bestQuest, maxXpPer10m = CalcOptimalQuest(CurrentHitDamage)
                 nextCheckTick = tick() + 60 
             end
 
             if bestQuest then
                 local timeRemaining = math.max(0, math.ceil(nextCheckTick - tick()))
-                updateStatus(string.format("Dmg: %s | Best: %s (%s XP/10m) | Check in: %ds", FormatAbbreviation(currentDamage), bestQuest.NPC, FormatAbbreviation(maxXpPer10m), timeRemaining))
+                updateStatus(string.format("Delta Dmg: %s | Best: %s (%s XP/10m) | Check in: %ds", FormatAbbreviation(CurrentHitDamage), bestQuest.NPC, FormatAbbreviation(maxXpPer10m), timeRemaining))
 
                 if currentKaitunQuest ~= bestQuest then
                     isTraversing = true
@@ -546,7 +595,7 @@ local function StartKaitun()
                     updateStatus(string.format("Waiting for %s | Check in: %ds", bestQuest.NPC, timeRemaining))
                 end
             end
-            task.wait(0.35)
+            task.wait(0.2)
         end
     end)
 end
@@ -649,7 +698,7 @@ local function startKillAura()
                             end
                         end
                     end
-                    task.wait(0.35)
+                    task.wait(0.2)
                 end
             end
             task.wait(0.1)
@@ -713,7 +762,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.2 (Precision Targeting & Analysis)",
+    SubTitle = "V4.4 (Dedicated Kaitun Stats Build)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -800,6 +849,7 @@ KaitunToggle:OnChanged(function(Value)
         StartKaitun()
     else
         if kaitunTask then task.cancel(kaitunTask); kaitunTask = nil end
+        if kaitunStatTask then task.cancel(kaitunStatTask); kaitunStatTask = nil end
         currentKaitunQuest = nil
         updateStatus("Kaitun Stopped. Idle.")
     end
