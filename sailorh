@@ -3,6 +3,7 @@ if getgenv().CSMDH_Cleanup then
     pcall(function() getgenv().CSMDH_Cleanup() end)
 end
 
+-- Wait for Game & Player to load completely
 if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -28,10 +29,9 @@ local auraTask = nil
 
 local GlobalCache = {
     Initialized = false,
-    Portals = {}, 
-    Quests = {},  
-    M1Damage = 1,
-    MobHealths = {} -- Added to cache "how much health the npc has"
+    Portals = {}, -- [IslandName] = Vector3
+    Quests = {},  -- [QuestName] = { Island = string, Target = string, Amount = number, Exp = number, Position = Vector3 }
+    M1Damage = 1
 }
 
 local IslandsList = {
@@ -109,7 +109,6 @@ local function equipWeapon(weaponName)
 end
 
 local function ParseShortenedNumber(str)
-    if not str then return 0 end
     str = string.lower(tostring(str))
     local num = tonumber(string.match(str, "[%d%.]+")) or 0
     if string.find(str, "k") then num = num * 1000
@@ -119,43 +118,11 @@ local function ParseShortenedNumber(str)
 end
 
 -- [[ CORE KAITUN & CACHE LOGIC ]]
-local function GetClosestPortalToPosition(pos)
-    local closestIsland = nil
-    local closestDist = math.huge
-    for islandName, portalPos in pairs(GlobalCache.Portals) do
-        local dist = (portalPos - pos).Magnitude
-        if dist < closestDist then
-            closestDist = dist
-            closestIsland = islandName
-        end
-    end
-    return closestIsland
-end
-
-local function SmartTravelTo(targetPos, targetIsland)
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    local localPortal = workspace:FindFirstChild("portal_", true)
-    if localPortal then 
-        TweenTo(localPortal.Position) 
-    end
-
-    if targetIsland then
-        local args = { targetIsland }
-        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-        task.wait(3.5) 
-    end
-
-    TweenTo(targetPos)
-end
-
 local function InitializeWorldCache()
     if GlobalCache.Initialized then return end
     updateStatus("Starting World Cache Initialization...")
 
-    -- PHASE 1: Map All Portals
+    -- INITIAL RESET
     updateCacheUI("Resetting for initial portal_tower...")
     LocalPlayer.Character:BreakJoints()
     LocalPlayer.CharacterAdded:Wait()
@@ -164,80 +131,77 @@ local function InitializeWorldCache()
     local initialPortal = workspace:FindFirstChild("portal_tower", true)
     if initialPortal then TweenTo(initialPortal.Position) end
 
+    -- COMBINED PHASE: Islands, Portals, and Quests together
     for _, island in ipairs(IslandsList) do
-        updateCacheUI("Mapping Portal for Island: " .. island)
+        updateCacheUI("Teleporting to Island: " .. island)
         
+        -- Use the local portal if it exists to TP to the next island
         local localPortal = workspace:FindFirstChild("portal_", true)
         if localPortal then TweenTo(localPortal.Position) end
 
         local args = { island }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
-        task.wait(3.5)
+        task.wait(3.5) -- Wait for movement lock and workspace load
 
+        -- 1. Cache the Island's Portal
         local newPortal = workspace:FindFirstChild("portal_", true)
         if newPortal then
             GlobalCache.Portals[island] = newPortal.Position
-            updateCacheUI("Cached Portal: " .. island)
+            updateCacheUI("Cached Portal for: " .. island)
         end
-    end
 
-    -- PHASE 2: Map Quests Numerically
-    local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
-    if serviceNPCs then
-        for i = 1, 50 do 
-            local npcName = "Quest" .. i
-            local npc = serviceNPCs:FindFirstChild(npcName)
+        -- 2. Scan and sort all rendered Quest NPCs on this specific island
+        local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
+        if serviceNPCs then
+            local islandQuests = {}
             
-            if npc then
+            for _, npc in ipairs(serviceNPCs:GetChildren()) do
+                -- Check if it matches "Quest1", "Quest2", etc.
+                if string.match(npc.Name, "^Quest%d+$") then
+                    table.insert(islandQuests, npc)
+                end
+            end
+            
+            -- Sort them numerically so the script doesn't backtrack erratically
+            table.sort(islandQuests, function(a, b)
+                local numA = tonumber(string.match(a.Name, "%d+")) or 0
+                local numB = tonumber(string.match(b.Name, "%d+")) or 0
+                return numA < numB
+            end)
+
+            -- 3. Tween to each NPC in numerical order and cache data
+            for _, npc in ipairs(islandQuests) do
+                updateCacheUI("Scraping Data: " .. npc.Name .. " on " .. island)
+                
                 local questPos = npc:GetPivot().Position
-                local targetIsland = GetClosestPortalToPosition(questPos)
-                
-                -- Cache the exact Quest Prompt object
-                local hrp = npc:FindFirstChild("HumanoidRootPart")
-                local questPrompt = hrp and hrp:FindFirstChildOfClass("ProximityPrompt") or nil
-                
-                updateCacheUI("Traveling to " .. npcName .. " via " .. tostring(targetIsland))
-                SmartTravelTo(questPos, targetIsland)
+                TweenTo(questPos)
                 task.wait(0.5)
                 
-                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcName)
-                
-                -- Wait for UI to update to prevent silent fails
-                task.wait(1.5) 
+                -- Accept Quest
+                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
+                task.wait(1.5) -- Wait for UI to fully populate
 
+                -- Extract Exact Data using EXACT provided paths
                 local expText = "0"
                 local reqText = ""
                 
-                local success, err = pcall(function()
-                    -- Exact UI paths requested
-                    local expUI = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator
-                    local reqUI = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement
-                    
-                    expText = expUI.Text
-                    reqText = reqUI.Text
+                pcall(function()
+                    expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
+                    reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
                 end)
 
-                if not success then
-                    warn("Failed to read Quest UI for " .. npcName .. ". Error: " .. tostring(err))
-                else
-                    local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
-                    targetName = string.gsub(targetName, "Defeat ", "")
-                    targetName = string.gsub(targetName, "!", "")
-                    
-                    local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
+                local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
+                local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
 
-                    GlobalCache.Quests[npcName] = {
-                        Island = targetIsland,
-                        Target = targetName,
-                        Amount = requiredAmount,
-                        Exp = ParseShortenedNumber(expText),
-                        Position = questPos,
-                        PromptObj = questPrompt
-                    }
-                    updateCacheUI("Successfully Cached: " .. npcName)
-                end
+                GlobalCache.Quests[npc.Name] = {
+                    Island = island,
+                    Target = targetName,
+                    Amount = requiredAmount,
+                    Exp = ParseShortenedNumber(expText),
+                    Position = questPos
+                }
 
-                -- Abandon
+                -- Abandon Quest
                 local abandonArgs = { "repeatable" }
                 game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
                 task.wait(0.5)
@@ -245,33 +209,18 @@ local function InitializeWorldCache()
         end
     end
 
-    -- PHASE 3: Cache Mob Healths
-    updateCacheUI("Scanning Mobs for Max Health data...")
-    local npcFolder = workspace:FindFirstChild("NPCs")
-    if npcFolder then
-        for _, mob in ipairs(npcFolder:GetChildren()) do
-            local hum = mob:FindFirstChild("Humanoid")
-            if hum then
-                -- Grouping by base name to avoid caching "Quincy1", "Quincy2" separately
-                local baseName = string.gsub(mob.Name, "%d+$", "") 
-                GlobalCache.MobHealths[baseName] = hum.MaxHealth
-            end
-        end
-    end
-
-    -- PHASE 4: DPS Test
+    -- FINAL CACHE PHASE: DPS Test
     updateCacheUI("Calculating M1 Damage Baseline...")
     pcall(function()
-        -- Exact UI path requested
-        local dmgUI = game:GetService("Players")[LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel
-        GlobalCache.M1Damage = tonumber(dmgUI.Text) or 1
+        local dpsText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel.Text
+        GlobalCache.M1Damage = tonumber(dpsText) or 1
     end)
     
     if GlobalCache.M1Damage <= 1 then GlobalCache.M1Damage = 500 end 
 
     GlobalCache.Initialized = true
-    updateCacheUI("Cache Complete! Ready for Kaitun.")
-    updateStatus("Initialization Finished.")
+    updateCacheUI("Cache Complete! All Islands and Quests Mapped.")
+    updateStatus("Initialization Finished. Kaitun is ready.")
 end
 
 local function GetMostEfficientQuest()
@@ -279,10 +228,7 @@ local function GetMostEfficientQuest()
     local highestExpPerSec = 0
 
     for npcName, data in pairs(GlobalCache.Quests) do
-        -- Grab exact cached health if available, fallback to 5000
-        local baseTargetName = string.gsub(data.Target, "%d+$", "")
-        local mobHP = GlobalCache.MobHealths[baseTargetName] or GlobalCache.MobHealths[data.Target] or 5000 
-        
+        local mobHP = 5000 -- Fallback calculation, scales roughly
         local timeToKillOne = (mobHP / GlobalCache.M1Damage) * 0.4
         local totalTTK = timeToKillOne * data.Amount
         
@@ -313,7 +259,7 @@ local function startMasterLoop()
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
             local npcFolder = workspace:FindFirstChild("NPCs")
 
-            -- Priority: Boss Check
+            -- 1. Priority: Boss Check
             if killAllTimedBosses and npcFolder then
                 local closestBoss = nil
                 local closestDist = math.huge
@@ -332,7 +278,7 @@ local function startMasterLoop()
                 currentTarget = closestBoss
             end
 
-            -- Kaitun / Normal Targeting
+            -- 2. Kaitun / Normal Targeting
             if not currentTarget and npcFolder then
                 if kaitunActive then
                     local bestQuestId = GetMostEfficientQuest()
@@ -345,12 +291,23 @@ local function startMasterLoop()
                         end)
 
                         if not hasQuest then
-                            updateStatus("Kaitun: Traveling to " .. bestQuestId)
-                            SmartTravelTo(questData.Position, questData.Island)
+                            updateStatus("Kaitun: Traveling to " .. bestQuestId .. " on " .. questData.Island)
+                            
+                            -- Use cached portal routing
+                            local localPortal = workspace:FindFirstChild("portal_", true)
+                            if localPortal then TweenTo(localPortal.Position) end
+                            
+                            local tpArgs = { questData.Island }
+                            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(tpArgs))
+                            task.wait(3.5)
+                            
+                            -- Tween to cached quest location
+                            TweenTo(questData.Position)
                             ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestId)
                             task.wait(1.5)
                         end
 
+                        -- Target the required mob
                         local closestMobDist = math.huge
                         for _, npc in ipairs(npcFolder:GetChildren()) do
                             local hum = npc:FindFirstChild("Humanoid")
@@ -364,6 +321,7 @@ local function startMasterLoop()
                         end
                     end
                 else
+                    -- Standard KillAura
                     for _, npc in ipairs(npcFolder:GetChildren()) do
                         local hum = npc:FindFirstChild("Humanoid")
                         if hum and hum.Health > 0 then
@@ -374,6 +332,7 @@ local function startMasterLoop()
                 end
             end
 
+            -- Combat Execution
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
                 local targetPart = getTargetPart(currentTarget)
@@ -427,7 +386,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.2.0 (Cache Fixes & Health Sync)",
+    SubTitle = "V4.2.0 (True Sequence Routing)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -472,6 +431,7 @@ Tabs.Main:AddDropdown("VectorMethodDropdown", {
     Default = "vector.create(X, Y, Z)"
 }):OnChanged(function(Value) vectorMethod = Value end)
 
+-- Finish config loading
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
