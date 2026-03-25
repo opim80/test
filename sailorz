@@ -395,7 +395,7 @@ local function initializeWorldCache()
                     if qFrame and qFrame.Visible then
                         local reqText = qFrame.Quest.Holder.Content.QuestInfo.QuestRequirement.Text 
                         local expText = qFrame.Reward.RewardExp.CurrencyIndicator.Text 
-                        local targetMobRaw = qFrame.Quest.Holder.Content.QuestInfo.QuestTitle.Text 
+                        local targetMobRaw = qFrame.Quest.Holder.Content.QuestInfo.QuestTitle.QuestTitle.Text 
                         
                         local extractedMob = string.match(targetMobRaw, "Defeat the (.*)'s!") or string.match(targetMobRaw, "Defeat (.*)!") or "Unknown"
                         local reqKills = tonumber(string.match(reqText, "%d+/(%d+)")) or 1
