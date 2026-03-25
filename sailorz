@@ -67,6 +67,7 @@ local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
+-- UI Element References
 local StatusDisplay = nil
 local KaitunStatusDisplay = nil
 local MasterAuraToggle = nil
@@ -102,7 +103,6 @@ local function getBaseName(name)
 end
 
 local function isMobSelected(rawName)
-    if not rawName then return false end
     if killTimedBossesActive and string.find(string.lower(rawName), "boss_") then return true end
     if killAllActive then return true end
     
@@ -121,7 +121,6 @@ local function isMobSelected(rawName)
     return false
 end
 
--- FIX: Safeguard against nil targets being passed in by the movement engine
 local function getTargetPart(npc)
     if not npc then return nil end
     return npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Torso") or npc.PrimaryPart
@@ -245,7 +244,6 @@ local function startDynamicMovement()
                 targetY = hrp.Position.Y
             end
         else
-            -- FIX: Safely handles Center calculation vs Target tracking
             local moveTarget = currentTarget and currentTarget:GetPivot().Position
             if alwaysTakeCenterActive and not kaitunActive then
                 if tick() - lastCenterUpdate >= centerUpdateInterval then
@@ -255,7 +253,6 @@ local function startDynamicMovement()
                 moveTarget = calculatedCenter or moveTarget
             end
             
-            -- Only fly horizontally if we have a target coordinate, and the mob isn't physically rendered
             if moveTarget and not getTargetPart(currentTarget) then
                 local direction = (Vector3.new(moveTarget.X, moveTarget.Y + 20, moveTarget.Z) - hrp.Position)
                 if direction.Magnitude > 1 then
@@ -267,7 +264,6 @@ local function startDynamicMovement()
                 end
             end
         end
-        
         local smoothY = hrp.Position.Y + (targetY - hrp.Position.Y) * 0.15
         hrp.CFrame = CFrame.new(nextX, smoothY, nextZ)
     end)
@@ -338,11 +334,13 @@ end
 
 -- [[ KAITUN CACHE INITIALIZER ]]
 local function initializeWorldCache()
+    if isInitializingCache then return end
     isInitializingCache = true
     setKaitunStatus("Initializing World Cache", "Scanning Islands (Do NOT move)")
     
     for _, island in ipairs(WorldCache.Islands) do
-        if not kaitunActive then break end
+        -- FIX: Independent loop breaker. Safely aborts if you flip the switch.
+        if not isInitializingCache then break end
         
         setKaitunStatus("Fast Traveling: " .. island, "Scanning for NPCs")
         fastTravelToIsland(island)
@@ -401,9 +399,11 @@ local function initializeWorldCache()
         end
     end
     
+    cacheIsBuilt = true
     if kaitunActive then
-        cacheIsBuilt = true
         setKaitunStatus("World Cache Built Successfully!", "Calculating Optimal Quest")
+    else
+        setKaitunStatus("World Cache Built Successfully!", "Ready to Start Kaitun")
     end
     isInitializingCache = false
 end
@@ -673,7 +673,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.4.1 (Stable Movement Engine)", 
+    SubTitle = "V4.4.2 (Cache Decoupled)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
@@ -798,6 +798,7 @@ KaitunStartToggle:OnChanged(function(Value)
             MasterAuraToggle:SetValue(true)
         end
     else
+        isInitializingCache = false -- Safely abort cache if turned off early
         setKaitunStatus("Idle", "Awaiting Start")
         if killAuraActive and MasterAuraToggle then
             MasterAuraToggle:SetValue(false)
@@ -805,11 +806,12 @@ KaitunStartToggle:OnChanged(function(Value)
     end
 end)
 
+-- FIX: Independent Caching Button
 Tabs.Kaitun:AddButton({Title = "Force Re-Cache World", Callback = function() 
-    if kaitunActive then 
+    if not isInitializingCache then 
         task.spawn(initializeWorldCache) 
     else 
-        setKaitunStatus("Cannot Cache", "Start Kaitun First") 
+        setKaitunStatus("Cannot Cache", "Cache Already In Progress") 
     end 
 end})
 
