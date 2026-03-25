@@ -21,7 +21,6 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 local kaitunActive = false
 local killAllBossesActive = false
 local tweenSpeed = 65
-local currentTarget = nil
 local StatusDisplay = nil
 
 local Islands = {
@@ -33,6 +32,7 @@ local Islands = {
 local CachedQuests = {}
 local PlayerDPS = 0
 local IsInitialized = false
+local MaxExpectedNPCs = 20 -- Adjust this if the game has more than 20 quest NPCs
 
 getgenv().CSMDH_Cleanup = function()
     kaitunActive = false
@@ -63,13 +63,14 @@ local function getNearestPortal()
     return closestPortal
 end
 
-local function tweenTo(targetPos)
+local function tweenTo(targetPos, customStatus)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
 
     local dist = (hrp.Position - targetPos).Magnitude
-    updateStatus("Tweening... Distance: " .. math.floor(dist) .. " studs")
+    local msg = customStatus and (customStatus .. " | Dist: " .. math.floor(dist)) or ("Tweening... Dist: " .. math.floor(dist))
+    updateStatus(msg)
     
     local timeToTravel = dist / tweenSpeed
     local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear)
@@ -83,7 +84,7 @@ end
 local function teleportViaPortal(islandName)
     local portal = getNearestPortal()
     if portal then
-        tweenTo(portal.Position)
+        tweenTo(portal.Position, "Heading to Portal for " .. islandName)
         task.wait(0.5)
         local args = { islandName }
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
@@ -117,8 +118,8 @@ local function calibrateDamage()
     updateStatus("Damage Calibrated: " .. tostring(PlayerDPS) .. " per M1")
 end
 
-local function getQuestData(npcName)
-    updateStatus("Caching Quest from: " .. npcName)
+local function getQuestData(npcName, currentCount)
+    updateStatus("[Caching " .. currentCount .. "/?] Interacting with " .. npcName)
     ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcName)
     task.wait(1.5)
 
@@ -157,12 +158,26 @@ local function initializeKaitun()
     -- Ensure we start at the first island
     teleportViaPortal(Islands[currentIslandIndex])
 
-    while npcCount <= 30 do -- Hard cap to prevent infinite loops, adjust if more than 30 NPCs exist
+    while true do 
         local npcName = "QuestNPC" .. npcCount
         local npc = serviceNPCs:FindFirstChild(npcName)
         
+        -- AGGRESSIVE SEARCH: If not found, hop islands until it renders
+        local islandsChecked = 0
+        while not npc and islandsChecked < #Islands do
+            updateStatus("[Search " .. npcCount .. "/?] " .. npcName .. " not rendered. Hopping to " .. Islands[currentIslandIndex])
+            currentIslandIndex = currentIslandIndex + 1
+            if currentIslandIndex > #Islands then currentIslandIndex = 1 end
+            
+            teleportViaPortal(Islands[currentIslandIndex])
+            npc = serviceNPCs:FindFirstChild(npcName)
+            islandsChecked = islandsChecked + 1
+        end
+
+        -- If we checked all islands and STILL can't find it, we've cached them all.
         if not npc then
-            -- Reached the end of the numerically ordered NPCs
+            updateStatus("All Quest NPCs Cached! Total found: " .. (npcCount - 1))
+            task.wait(2)
             break
         end
         
@@ -173,36 +188,34 @@ local function initializeKaitun()
         end
 
         local currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
-        
-        -- Default state variables for the backtrack logic
         local lastDist = nil
         local lastIslandIndex = currentIslandIndex
 
+        -- THE 450 STUD RULE & BACKTRACKING
         while currentDist > 450 do
-            updateStatus(npcName .. " is " .. math.floor(currentDist) .. " studs away. Trying next island...")
+            updateStatus("[Routing " .. npcCount .. "/?] " .. npcName .. " Dist: " .. math.floor(currentDist) .. ". Trying next island...")
             lastDist = currentDist
             lastIslandIndex = currentIslandIndex
             
-            -- Go to the next island
             currentIslandIndex = currentIslandIndex + 1
-            if currentIslandIndex > #Islands then currentIslandIndex = 1 end -- Loop back to start if we run out of islands
+            if currentIslandIndex > #Islands then currentIslandIndex = 1 end 
             teleportViaPortal(Islands[currentIslandIndex])
             
-            -- Recalculate distance after teleport
             currentDist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
             
-            -- THE BACKTRACK RULE: If distance grew, we went the wrong way.
+            -- THE BACKTRACK RULE
             if currentDist > lastDist then
                 updateStatus("Distance grew! Backtracking to Island: " .. Islands[lastIslandIndex])
                 currentIslandIndex = lastIslandIndex
                 teleportViaPortal(Islands[currentIslandIndex])
-                break -- Break the >450 loop to force the tween from this closest portal
+                break 
             end
         end
 
-        -- Execute Tween & Cache (We are either < 450 studs away, or we backtracked to the closest point)
-        tweenTo(hrp.Position)
-        getQuestData(npcName)
+        -- Execute Tween & Cache 
+        local statusStr = "[Caching " .. npcCount .. "/?] Target: " .. npcName
+        tweenTo(hrp.Position, statusStr)
+        getQuestData(npcName, npcCount)
         
         npcCount = npcCount + 1
     end
@@ -240,7 +253,7 @@ local function startBossFarm()
                             updateStatus("Boss > 300 studs away. Using Portals...")
                             teleportViaPortal("Boss")
                         end
-                        tweenTo(targetHrp.Position)
+                        tweenTo(targetHrp.Position, "Tweening to Boss")
                         updateStatus("Killing Boss: " .. obj.Name)
                         -- Add M1 Remote Fire Here
                     end
@@ -255,7 +268,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Kaitun Hub",
-    SubTitle = "V4.1 (Backtrack Pathfinding)",
+    SubTitle = "V4.2 (Aggressive Caching & Progress UI)",
     TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark"
 })
 getgenv().CSMDH_Window = Window
