@@ -221,7 +221,7 @@ local function getBestQuestNPC()
     local bestNPC = nil
     local highestMinLvl = -1
     
-    for i = 1, 17 do
+    for i = 1, 19 do
         local npcName = "QuestNPC" .. i
         local npc = serviceNPCs:FindFirstChild(npcName)
         
