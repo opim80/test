@@ -234,7 +234,8 @@ local function startDynamicMovement()
 
         if isQuesting and currentQuestNPC then
             local tPos = currentQuestNPC:GetPivot().Position
-            local direction = (Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) - hrp.Position)
+            local target3D = Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) 
+            local direction = (target3D - hrp.Position)
             if direction.Magnitude > 5 then
                 local step = direction.Unit * backupTweenSpeed * deltaTime
                 nextX = hrp.Position.X + step.X
@@ -300,27 +301,35 @@ end
 
 -- [[ FAST TRAVEL SYSTEM ]]
 local function fastTravelToIsland(islandName)
-    setKaitunStatus("Resetting to bypass Streaming...", "Waiting for respawn")
-    
-    -- CRITICAL FIX: Kill movement engine so it doesn't trap the character at the portal
-    if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+    setKaitunStatus("Traveling to " .. islandName, "Locating Portal")
     
     local char = LocalPlayer.Character
-    if char and char:FindFirstChild("Humanoid") then
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    
+    -- Look for any portal locally first
+    local portal = workspace:FindFirstChild("portal_tower", true)
+    
+    if not portal then
+        setKaitunStatus("No portal found locally.", "Resetting to bypass Streaming")
+        if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+        
         char.Humanoid.Health = 0
         LocalPlayer.CharacterAdded:Wait()
         
         local newChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
+        hrp = newChar:WaitForChild("HumanoidRootPart", 10)
         task.wait(1.5) 
         
-        setKaitunStatus("Teleporting to " .. islandName, "Waiting for chunks")
-        local portal = workspace:FindFirstChild("portal_tower", true)
-        if portal and hrp then
-            local pCFrame = portal:IsA("Model") and portal:GetPivot() or portal.CFrame
-            hrp.CFrame = pCFrame
-            task.wait(0.5) 
-        end
+        portal = workspace:FindFirstChild("portal_tower", true)
+    end
+    
+    if portal and hrp then
+        if evasionTask then evasionTask:Disconnect(); evasionTask = nil end -- Pause movement engine
+        
+        local pCFrame = portal:IsA("Model") and portal:GetPivot() or portal.CFrame
+        hrp.CFrame = pCFrame
+        task.wait(0.5) 
         
         pcall(function()
             local args = { islandName }
@@ -329,12 +338,13 @@ local function fastTravelToIsland(islandName)
         
         task.wait(3.5) 
         
-        -- ONLY restart movement if we aren't caching!
-        if not isInitializingCache and killAuraActive then
+        -- Safe to turn flight back on
+        if killAuraActive and not isInitializingCache then
             startDynamicMovement()
         end
         return true
     end
+    
     return false
 end
 
@@ -343,10 +353,8 @@ local function initializeWorldCache()
     isInitializingCache = true
     setKaitunStatus("Initializing World Cache", "Scanning Islands (Do NOT move)")
     
-    -- Disconnect movement engine so we can freely walk up to NPCs
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
     
-    -- Abandon any existing quest to free up the slot
     pcall(function() 
         local args = {"repeatable"}
         ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args)) 
@@ -356,7 +364,6 @@ local function initializeWorldCache()
     for _, island in ipairs(WorldCache.Islands) do
         if not kaitunActive then break end
         
-        setKaitunStatus("Fast Traveling: " .. island, "Scanning for NPCs")
         fastTravelToIsland(island)
         
         local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 5)
@@ -370,9 +377,7 @@ local function initializeWorldCache()
                 if prompt then
                     setKaitunStatus("Approaching " .. npc.Name, "Reading Quest Data")
                     local charHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if charHrp then 
-                        charHrp.CFrame = hrp.CFrame * CFrame.new(0, 0, 3) 
-                    end
+                    if charHrp then charHrp.CFrame = hrp.CFrame * CFrame.new(0, 0, 3) end
                     task.wait(0.5)
                     
                     local text = prompt.ObjectText or ""
@@ -395,6 +400,7 @@ local function initializeWorldCache()
                     if qFrame and qFrame.Visible then
                         local reqText = qFrame.Quest.Holder.Content.QuestInfo.QuestRequirement.Text 
                         local expText = qFrame.Reward.RewardExp.CurrencyIndicator.Text 
+                        -- Using your original raw path, no shortening
                         local targetMobRaw = qFrame.Quest.Holder.Content.QuestInfo.QuestTitle.QuestTitle.Text 
                         
                         local extractedMob = string.match(targetMobRaw, "Defeat the (.*)'s!") or string.match(targetMobRaw, "Defeat (.*)!") or "Unknown"
@@ -411,7 +417,6 @@ local function initializeWorldCache()
                         }
                     end
                     
-                    -- FIX: Force abandon the quest so the next NPC doesn't get blocked
                     pcall(function() 
                         local args = {"repeatable"}
                         ReplicatedStorage.RemoteEvents.QuestAbandon:FireServer(unpack(args)) 
@@ -428,7 +433,6 @@ local function initializeWorldCache()
     end
     isInitializingCache = false
     
-    -- Turn combat movement back on after cache phase is over
     if killAuraActive then
         startDynamicMovement()
     end
@@ -535,6 +539,9 @@ local function startKillAura()
                             setKaitunStatus("Accepting Quest", "Hunting " .. optMob)
                             pcall(function() ReplicatedStorage.RemoteEvents.QuestAccept:FireServer(optQuestNPC) end)
                             task.wait(1.5)
+                        else
+                            -- CRITICAL FREEZE FIX: Need to yield if we are tweening!
+                            task.wait(0.5) 
                         end
                         continue
                     else
@@ -547,7 +554,7 @@ local function startKillAura()
                     currentQuestNPC = nil
                     
                     if currentKaitunTargetMob == "" then
-                        local qTitle = pGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestTitle.Text
+                        local qTitle = pGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestTitle.QuestTitle.Text
                         currentKaitunTargetMob = string.match(qTitle, "Defeat the (.*)'s!") or string.match(qTitle, "Defeat (.*)!") or ""
                     end
                     
@@ -699,7 +706,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.5.1 (Cache Tween Patch)", 
+    SubTitle = "V4.6.0 (Kaitun Unlocked)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
