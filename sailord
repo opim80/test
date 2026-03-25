@@ -41,6 +41,7 @@ local IslandsList = {
 }
 
 local StatusDisplay = nil
+local CacheDisplay = nil
 
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
@@ -59,6 +60,31 @@ end
 local function updateStatus(msg)
     if StatusDisplay then StatusDisplay:SetDesc(msg) end
     print("[Ultimate Hub] " .. msg)
+end
+
+local function updateCacheViewer()
+    if not CacheDisplay then return end
+    local text = "M1 Damage Cached: " .. tostring(GlobalCache.M1Damage) .. "\n\n"
+    
+    -- Sort keys to display nicely
+    local sortedKeys = {}
+    for k in pairs(GlobalCache.Quests) do table.insert(sortedKeys, k) end
+    table.sort(sortedKeys, function(a, b) 
+        local numA = tonumber(string.match(a, "%d+")) or 0
+        local numB = tonumber(string.match(b, "%d+")) or 0
+        return numA < numB
+    end)
+
+    for _, npcName in ipairs(sortedKeys) do
+        local data = GlobalCache.Quests[npcName]
+        text = text .. "[" .. data.Island .. "] " .. npcName .. " -> Kill " .. data.Amount .. " " .. data.Target .. " (" .. data.Exp .. " EXP)\n"
+    end
+    
+    if text == "M1 Damage Cached: " .. tostring(GlobalCache.M1Damage) .. "\n\n" then
+        text = "Nothing cached yet. Run Kaitun to start mapping."
+    end
+    
+    CacheDisplay:SetDesc(text)
 end
 
 local function TweenTo(targetCFrame)
@@ -108,6 +134,7 @@ local function InitializeWorldCache()
     updateStatus("Starting World Cache Initialization...")
 
     local hasResetForPortal = false
+    local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 10)
 
     for _, island in ipairs(IslandsList) do
         updateStatus("Mapping Island: " .. island)
@@ -129,7 +156,7 @@ local function InitializeWorldCache()
 
         -- Teleport
         local args = { island }
-        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
+        pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args)) end)
         task.wait(3.5) -- Wait for portal movement lock
 
         -- Cache Island Portal
@@ -138,40 +165,48 @@ local function InitializeWorldCache()
             GlobalCache.Portals[island] = newPortal.Position
         end
 
-        -- Gather and Sort Quests Strictly by "Quest#"
-        local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
+        -- Gather and Sort Quests on THIS island
         if serviceNPCs then
             local localQuests = {}
+            local myPos = LocalPlayer.Character:GetPivot().Position
+            
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
-                -- Only match exact "Quest" followed by numbers (e.g., Quest1, Quest12)
-                local questNum = string.match(npc.Name, "^Quest(%d+)$")
-                if questNum then
-                    table.insert(localQuests, { Instance = npc, Number = tonumber(questNum) })
+                local numStr = string.match(npc.Name, "^Quest(%d+)$")
+                if numStr then
+                    local npcPos = npc:GetPivot().Position
+                    local dist = (myPos - npcPos).Magnitude
+                    
+                    -- Only grab quests within 3500 studs (ensures they are on the current island)
+                    if dist < 3500 then
+                        table.insert(localQuests, { instance = npc, num = tonumber(numStr), pos = npcPos })
+                    end
                 end
             end
+            
+            -- Sort numerically (Quest1, Quest2, Quest3...)
+            table.sort(localQuests, function(a, b) return a.num < b.num end)
 
-            -- Sort them numerically so it doesn't bounce back and forth
-            table.sort(localQuests, function(a, b) return a.Number < b.Number end)
-
-            for _, questData in ipairs(localQuests) do
-                local npc = questData.Instance
+            -- Tween and Cache in order
+            for _, qData in ipairs(localQuests) do
+                local npc = qData.instance
                 updateStatus("Caching " .. npc.Name .. "...")
-                TweenTo(npc:GetPivot())
+                TweenTo(CFrame.new(qData.pos))
                 task.wait(0.5)
                 
                 -- Accept
-                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
+                pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name) end)
                 task.wait(1)
 
                 -- Extract Exact Data
                 local expText = "0"
                 local reqText = ""
+                
                 pcall(function()
                     expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
                     reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
                 end)
 
-                local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
+                local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or string.match(reqText, "Defeat%s+(.*)") or reqText
                 local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
 
                 GlobalCache.Quests[npc.Name] = {
@@ -179,12 +214,14 @@ local function InitializeWorldCache()
                     Target = targetName,
                     Amount = requiredAmount,
                     Exp = ParseShortenedNumber(expText),
-                    Position = npc:GetPivot().Position
+                    Position = qData.pos
                 }
+                
+                updateCacheViewer()
 
                 -- Abandon
                 local abandonArgs = { "repeatable" }
-                game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
+                pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs)) end)
                 task.wait(0.5)
             end
         end
@@ -195,30 +232,22 @@ local function InitializeWorldCache()
     pcall(function()
         GlobalCache.M1Damage = tonumber(game:GetService("Players")[LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel.Text) or 1
     end)
-    if GlobalCache.M1Damage <= 1 then GlobalCache.M1Damage = 500 end 
-
-    GlobalCache.Initialized = true
-    updateStatus("Cache Complete. Ready for Kaitun.")
-end
-    -- DPS Test
-    updateStatus("Calculating M1 Damage...")
-    pcall(function()
-        GlobalCache.M1Damage = tonumber(game:GetService("Players")[LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel.Text) or 1
-    end)
     
     if GlobalCache.M1Damage <= 1 then GlobalCache.M1Damage = 500 end -- Fallback
+    updateCacheViewer()
 
     GlobalCache.Initialized = true
     updateStatus("Cache Complete. Ready for Kaitun.")
 end
 
 local function GetMostEfficientQuest()
-    local bestQuest = nil
+    local bestQuestName = nil
+    local bestQuestData = nil
     local highestExpPerSec = 0
 
     for npcName, data in pairs(GlobalCache.Quests) do
-        -- Find target mob health to calculate TTK
-        local mobHP = 5000 -- Placeholder, ideally grab from cached NPC data
+        -- Find target mob health to calculate TTK (Defaulting to a baseline if we can't read it yet)
+        local mobHP = 5000 
         local timeToKillOne = (mobHP / GlobalCache.M1Damage) * 0.4
         local totalTTK = timeToKillOne * data.Amount
         
@@ -226,10 +255,11 @@ local function GetMostEfficientQuest()
 
         if expPerSec > highestExpPerSec then
             highestExpPerSec = expPerSec
-            bestQuest = npcName
+            bestQuestName = npcName
+            bestQuestData = data
         end
     end
-    return bestQuest
+    return bestQuestName, bestQuestData
 end
 
 -- [[ KILLAURA / KAITUN LOOP ]]
@@ -238,6 +268,7 @@ local function startMasterLoop()
 
     auraTask = task.spawn(function()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
+        local activeQuestTarget = nil
 
         while killAuraActive or kaitunActive do
             if kaitunActive and not GlobalCache.Initialized then
@@ -249,7 +280,7 @@ local function startMasterLoop()
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
             local npcFolder = workspace:FindFirstChild("NPCs")
 
-            -- 1. Priority: Boss Check (Replaces Aizen)
+            -- 1. Priority: Boss Check
             if killAllTimedBosses and npcFolder then
                 local closestBoss = nil
                 local closestDist = math.huge
@@ -268,24 +299,63 @@ local function startMasterLoop()
                 currentTarget = closestBoss
             end
 
-            -- 2. Kaitun / Normal Targeting
-            if not currentTarget and npcFolder then
-                if kaitunActive then
-                    -- TODO: Add Active Quest finding, pathing, and targeting logic here based on GetMostEfficientQuest()
-                    updateStatus("Kaitun Active - Seeking optimal targets...")
-                else
-                    -- Standard KillAura fallback (Kill everything)
+            -- 2. Kaitun Active Logic (Using Cached Positions)
+            if not currentTarget and kaitunActive and GlobalCache.Initialized then
+                local bestQuestName, bestQuestData = GetMostEfficientQuest()
+                
+                -- Check if we need to get the quest
+                local questFrame = LocalPlayer.PlayerGui:FindFirstChild("QuestUI") and LocalPlayer.PlayerGui.QuestUI:FindFirstChild("Quest")
+                local hasQuest = questFrame and questFrame.Visible
+                
+                if not hasQuest and bestQuestData then
+                    updateStatus("Kaitun: Pathing to " .. bestQuestName .. " on " .. bestQuestData.Island)
+                    
+                    -- Step 1: Tween to nearest portal to TP
+                    local localPortal = workspace:FindFirstChild("portal_", true) or workspace:FindFirstChild("portal_tower", true)
+                    if localPortal then TweenTo(localPortal.CFrame) end
+                    
+                    -- Step 2: Teleport to correct Island
+                    local args = { bestQuestData.Island }
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args)) end)
+                    task.wait(3.5)
+                    
+                    -- Step 3: Tween to cached NPC position
+                    TweenTo(CFrame.new(bestQuestData.Position))
+                    task.wait(0.5)
+                    
+                    -- Step 4: Accept
+                    pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestName) end)
+                    task.wait(1)
+                    
+                    activeQuestTarget = bestQuestData.Target
+                end
+                
+                -- Find specific mob for the quest
+                if hasQuest and activeQuestTarget and npcFolder then
                     for _, npc in ipairs(npcFolder:GetChildren()) do
-                        local hum = npc:FindFirstChild("Humanoid")
-                        if hum and hum.Health > 0 then
-                            currentTarget = npc
-                            break
+                        if string.find(string.lower(npc.Name), string.lower(activeQuestTarget)) then
+                            local hum = npc:FindFirstChild("Humanoid")
+                            if hum and hum.Health > 0 then
+                                currentTarget = npc
+                                break
+                            end
                         end
                     end
                 end
             end
 
-            -- Combat Execution
+            -- 3. Standard KillAura fallback (Kill everything if Kaitun isn't finding stuff)
+            if not currentTarget and not kaitunActive and npcFolder then
+                for _, npc in ipairs(npcFolder:GetChildren()) do
+                    local hum = npc:FindFirstChild("Humanoid")
+                    if hum and hum.Health > 0 then
+                        currentTarget = npc
+                        break
+                    end
+                end
+            end
+
+            -- 4. Combat Execution
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
                 local targetPart = getTargetPart(currentTarget)
@@ -304,7 +374,7 @@ local function startMasterLoop()
                                     break
                                 end
                             end
-                            if newBossFound then break end -- Break loop to target boss
+                            if newBossFound then break end 
                         end
 
                         local tPos = targetPart.Position
@@ -340,7 +410,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.0.0 (Kaitun & Tweens Override)",
+    SubTitle = "V4.1.0 (Kaitun Pathing & Cache UI)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -351,9 +421,11 @@ getgenv().CSMDH_Window = Window
 
 local Tabs = {
     Main = Window:AddTab({ Title = "Main Farm", Icon = "swords" }),
+    Tracker = Window:AddTab({ Title = "Cache Tracker", Icon = "box" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
+-- MAIN TAB
 StatusDisplay = Tabs.Main:AddParagraph({Title = "Status", Content = "Idle. Awaiting execution."})
 
 Tabs.Main:AddSection("Smart Farming (Kaitun)")
@@ -383,6 +455,9 @@ Tabs.Main:AddDropdown("VectorMethodDropdown", {
     Multi = false, 
     Default = "vector.create(X, Y, Z)"
 }):OnChanged(function(Value) vectorMethod = Value end)
+
+-- TRACKER TAB
+CacheDisplay = Tabs.Tracker:AddParagraph({Title = "World Data", Content = "Nothing cached yet. Run Kaitun to start mapping."})
 
 -- Finish config loading
 SaveManager:SetLibrary(Fluent)
