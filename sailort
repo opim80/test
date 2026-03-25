@@ -1,15 +1,36 @@
 -- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
 if getgenv().CSMDH_Cleanup then
     pcall(function() getgenv().CSMDH_Cleanup() end)
 end
 
-if not game:IsLoaded() then game.Loaded:Wait() end
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local LocalPlayer = Players.LocalPlayer
+getgenv().CSMDH_Cleanup = function()
+    -- Cancel active loops
+    if getgenv().auraTask then task.cancel(getgenv().auraTask) end
+    -- Cancel mid-air tweens
+    if getgenv().ActiveTween then 
+        getgenv().ActiveTween:Cancel() 
+        getgenv().ActiveTween = nil 
+    end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Anchored = false
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
+    
+    if getgenv().CSMDH_Window then
+        pcall(function() getgenv().CSMDH_Window:Destroy() end)
+    end
+end
 
+if not game:IsLoaded() then game.Loaded:Wait() end
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
 -- [[ UI & CONFIG LIBRARIES ]]
@@ -24,7 +45,6 @@ local killAllTimedBosses = true
 local selectedWeapon = ""
 local vectorMethod = "vector.create(X, Y, Z)" 
 local backupTweenSpeed = 65 
-local auraTask = nil
 
 local GlobalCache = {
     Initialized = false,
@@ -41,19 +61,6 @@ local IslandsList = {
 
 local StatusDisplay = nil
 local CacheDisplay = nil
-
-getgenv().CSMDH_Cleanup = function()
-    if auraTask then task.cancel(auraTask) end
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
-    end
-    if getgenv().CSMDH_Window then
-        pcall(function() getgenv().CSMDH_Window:Destroy() end)
-    end
-end
 
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
@@ -86,23 +93,15 @@ local function TweenTo(targetPos)
     local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
     local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
     
-    -- STABILITY FIX: Force velocity to zero every frame so physics don't fight the tween
-    local velConn = RunService.Heartbeat:Connect(function()
-        if hrp then
-            hrp.Velocity = Vector3.zero
-            hrp.RotVelocity = Vector3.zero
-        end
-    end)
+    getgenv().ActiveTween = tween
     
+    -- PERFECT VELOCITY FIX: Anchoring bypasses the physics engine entirely during the tween
+    hrp.Anchored = true 
     tween:Play()
     tween.Completed:Wait()
+    hrp.Anchored = false
     
-    -- Cleanup velocity lock
-    velConn:Disconnect()
-    if hrp then
-        hrp.Velocity = Vector3.zero
-        hrp.RotVelocity = Vector3.zero
-    end
+    getgenv().ActiveTween = nil
 end
 
 local function getTargetPart(npc)
@@ -154,34 +153,43 @@ local function FindNearestPortal()
     return closestPortal
 end
 
--- SMART ROUTING FIX: Calculates whether walking directly or taking the portal network is faster
+local function GetClosestIslandToPosition(pos)
+    local closestIsland = nil
+    local closestDist = math.huge
+    for islandName, portalPos in pairs(GlobalCache.Portals) do
+        local dist = (portalPos - pos).Magnitude
+        if dist < closestDist then
+            closestDist = dist
+            closestIsland = islandName
+        end
+    end
+    return closestIsland
+end
+
+-- SMART ROUTING FIX: Compares local island vs target island to force portal usage
 local function SmartTravelTo(targetPos, targetIsland)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local directDist = (hrp.Position - targetPos).Magnitude
-    local localPortal = FindNearestPortal()
-    local localPortalPos = localPortal and (localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position)
-    local destinationPortalPos = GlobalCache.Portals[targetIsland]
+    local currentClosestIsland = GetClosestIslandToPosition(hrp.Position)
 
-    local viaPortalDist = math.huge
-    if localPortalPos and destinationPortalPos then
-        -- Add a distance penalty equivalent to the 3.5 second portal stun to accurately compare times
-        local portalWaitPenalty = backupTweenSpeed * 3.5 
-        viaPortalDist = (hrp.Position - localPortalPos).Magnitude + (destinationPortalPos - targetPos).Magnitude + portalWaitPenalty
-    end
-
-    -- If taking the portals is mathematically faster, or if the target is insanely far (different island)
-    if viaPortalDist < directDist or directDist > 5000 then
-        updateStatus("SmartTravel: Portal Hop is faster. Routing...")
-        if localPortalPos then TweenTo(localPortalPos) end
+    -- If we are not on the island we need to be on, use the portal network
+    if targetIsland and currentClosestIsland ~= targetIsland then
+        updateStatus("SmartTravel: Hopping from " .. tostring(currentClosestIsland) .. " -> " .. tostring(targetIsland))
+        
+        -- Tween to the nearest portal to us right now
+        local localPortal = FindNearestPortal()
+        if localPortal then 
+            local pos = localPortal:IsA("Model") and localPortal:GetPivot().Position or localPortal.Position
+            TweenTo(pos) 
+        end
         
         local args = { targetIsland }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         task.wait(3.5) -- Movement lock wait
     else
-        updateStatus("SmartTravel: Direct route is faster. Tweening...")
+        updateStatus("SmartTravel: Target is on current island. Tweening directly.")
     end
 
     -- Finish the journey
@@ -326,9 +334,9 @@ end
 
 -- [[ KILLAURA / KAITUN LOOP ]]
 local function startMasterLoop()
-    if auraTask then task.cancel(auraTask); auraTask = nil end
+    if getgenv().auraTask then task.cancel(getgenv().auraTask); getgenv().auraTask = nil end
 
-    auraTask = task.spawn(function()
+    getgenv().auraTask = task.spawn(function()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive or kaitunActive do
@@ -414,7 +422,9 @@ local function startMasterLoop()
 
                 if targetPart and hum and hum.Health > 0 then
                     updateStatus("Engaging: " .. currentTarget.Name)
-                    SmartTravelTo(targetPart.Position + Vector3.new(0, 0, 3), GlobalCache.Quests[GetMostEfficientQuest()] and GlobalCache.Quests[GetMostEfficientQuest()].Island) 
+                    -- Bosses won't have a cached island, so we pass nil to SmartTravelTo (it will tween directly)
+                    local targetIsland = GlobalCache.Quests[GetMostEfficientQuest()] and GlobalCache.Quests[GetMostEfficientQuest()].Island
+                    SmartTravelTo(targetPart.Position + Vector3.new(0, 0, 3), kaitunActive and targetIsland or nil) 
 
                     while currentTarget and currentTarget.Parent and hum.Health > 0 and (killAuraActive or kaitunActive) do
                         if killAllTimedBosses and not string.find(string.lower(currentTarget.Name), "boss_") then
@@ -455,13 +465,13 @@ local function stopMasterLoop()
     killAuraActive = false
     kaitunActive = false
     updateStatus("Farming Stopped.")
-    if auraTask then task.cancel(auraTask); auraTask = nil end
+    if getgenv().auraTask then task.cancel(getgenv().auraTask); getgenv().auraTask = nil end
 end
 
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
     Title = "Ultimate Hub",
-    SubTitle = "V4.4.0 (Smart Pathing & Zero-Vel Tweens)",
+    SubTitle = "V4.5.0 (Flawless Pathing & Cleanup)",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
