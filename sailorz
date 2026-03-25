@@ -3,6 +3,7 @@ if getgenv().CSMDH_Cleanup then
     pcall(function() getgenv().CSMDH_Cleanup() end)
 end
 
+-- Wait for Game & Player to load completely
 if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,24 +20,47 @@ local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.
 -- [[ STATE VARIABLES ]]
 local killAuraActive = false
 local killAllActive = false
-local killAllBossesActive = false
 local kaitunActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
 local vectorMethod = "vector.create(X, Y, Z)" 
 local backupTweenSpeed = 65 
-local auraTask, evasionTask, cameraTask, questTask, dungeonLoopTask = nil, nil, nil, nil, nil
+local auraTask = nil
+local evasionTask = nil
+local kaitunTask = nil
 local currentTarget = nil 
 local cameraTrackActive = false
+local cameraTask = nil
+
+-- Caching State
+local isInitialized = false
+local GlobalCache = {
+    Quests = {},
+    NPC_Positions = {},
+    Portal_Locations = {},
+    DamagePerM1 = 1,
+    BestQuest = nil
+}
+local IslandList = {
+    "Starter", "Jungle", "Desert", "Snow", "Sailor", "Shibuya", "Hollow", 
+    "Boss", "Dungeon", "Shinjuku", "Slime", "Academy", "Judgement", "Ninja", "Lawless", "Tower"
+}
 
 -- Movement & Failsafe Variables
 local alwaysTakeCenterActive = false
 local centerUpdateInterval = 5
 local lastCenterUpdate = 0
 local calculatedCenter = nil
+
 local bounceActive = false
 local bounceTimer = 0
 local bounceUp = false
+
+local recalibrateActive = false
+local recalibrateInterval = 5
+local recalibrateDuration = 3
+local lastRecalibrate = tick()
+local isRecalibrating = false
 
 -- Stats & Raids Variables
 local autoStatActive = false
@@ -46,27 +70,15 @@ local autoDungeonActive = false
 local autoRequestActive = false
 local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
+local dungeonLoopTask = nil
 
 local StatusDisplay = nil
 
--- [[ CACHING & KAITUN DATA ]]
-local Cache = {
-    Islands = {"Starter", "Jungle", "Desert", "Snow", "Sailor", "Shibuya", "Hollow", "Boss", "Dungeon", "Shinjuku", "Slime", "Academy", "Judgement", "Ninja", "Lawless", "Tower"},
-    Portals = {},
-    NPCs = {},
-    Quests = {},
-    Initialized = false
-}
-
-local PlayerData = {
-    AverageDamage = 1,
-    M1Speed = 0.4
-}
-
+-- Store new cleanup function globally
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
     if dungeonLoopTask then task.cancel(dungeonLoopTask) end
-    if questTask then task.cancel(questTask) end
+    if kaitunTask then task.cancel(kaitunTask) end
     if evasionTask then evasionTask:Disconnect() end
     if cameraTask then cameraTask:Disconnect() end
     
@@ -91,35 +103,14 @@ local function updateStatus(msg)
     if StatusDisplay then StatusDisplay:SetDesc(msg) end
 end
 
-local function parseExp(str)
-    str = string.lower(tostring(str))
+local function ParseSuffix(str)
+    if not str then return 0 end
+    str = string.lower(str)
     local num = tonumber(string.match(str, "[%d%.]+")) or 0
     if string.find(str, "k") then num = num * 1000
     elseif string.find(str, "m") then num = num * 1000000
     elseif string.find(str, "b") then num = num * 1000000000 end
     return num
-end
-
-local function getUIElements()
-    local pGui = LocalPlayer:WaitForChild("PlayerGui")
-    return {
-        RewardExp = pGui:FindFirstChild("QuestUI") and pGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator,
-        QuestReq = pGui:FindFirstChild("QuestUI") and pGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement,
-        DamageLabel = pGui:FindFirstChild("DamageCounterUI") and pGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel
-    }
-end
-
-local function equipWeapon(weaponName)
-    if not weaponName or weaponName == "" then return end
-    local char = LocalPlayer.Character
-    local backpack = LocalPlayer.Backpack
-    if not char or not backpack then return end
-    local humanoid = char:FindFirstChildOfClass("Humanoid")
-    local tool = backpack:FindFirstChild(weaponName) or char:FindFirstChild(weaponName)
-    
-    if tool and humanoid and tool.Parent ~= char then 
-        humanoid:EquipTool(tool) 
-    end
 end
 
 local function getBaseName(name)
@@ -128,9 +119,8 @@ end
 
 local function isMobSelected(rawName)
     if killAllActive then return true end
-    if killAllBossesActive and string.find(string.lower(rawName), "boss_") then return true end
-    
     local baseName = getBaseName(rawName)
+    
     if type(selectedMobs) == "table" then
         if selectedMobs[rawName] or selectedMobs[baseName] then return true end
         for selectedName, state in pairs(selectedMobs) do
@@ -146,122 +136,295 @@ local function getTargetPart(npc)
     return npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Torso") or npc.PrimaryPart
 end
 
--- [[ TRAVERSAL SYSTEM (STREAMING ENABLED) ]]
-local function getClosestIsland(targetPos)
-    -- Placeholder logic: In a real scenario, you'd map coordinate boundaries to islands.
-    -- Defaulting to Starter if unknown to prevent nil errors.
-    return "Starter" 
+local function equipWeapon(weaponName)
+    if not weaponName or weaponName == "" then return end
+    local char = LocalPlayer.Character
+    local backpack = LocalPlayer.Backpack
+    if not char or not backpack then return end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local tool = backpack:FindFirstChild(weaponName) or char:FindFirstChild(weaponName)
+    
+    if tool and humanoid and tool.Parent ~= char then 
+        humanoid:EquipTool(tool) 
+    end
 end
 
-local function smartTravel(targetPos)
+local function getWeapons()
+    local weapons = {}
+    if LocalPlayer.Backpack then
+        for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then table.insert(weapons, tool.Name) end
+        end
+    end
+    if LocalPlayer.Character then
+        for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
+            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then table.insert(weapons, tool.Name) end
+        end
+    end
+    if selectedWeapon ~= "" and not table.find(weapons, selectedWeapon) then table.insert(weapons, selectedWeapon) end
+    return weapons
+end
+
+local function getAvailableMobs()
+    local mobs = {}
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if npcFolder then
+        for _, npc in ipairs(npcFolder:GetChildren()) do
+            local hum = npc:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then
+                local baseName = getBaseName(npc.Name)
+                if not table.find(mobs, baseName) then table.insert(mobs, baseName) end
+            end
+        end
+    end
+    return mobs
+end
+
+-- [[ TRAVERSAL SYSTEM ]]
+local function SmartTeleport(targetIsland)
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    local dist = (hrp.Position - targetPos).Magnitude
-    
-    if dist > 3000 then 
-        updateStatus("Target out of render bounds. Resetting for fast travel...")
-        char:BreakJoints()
+    local nearestPortal = nil
+    local minDist = math.huge
+
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if string.find(string.lower(obj.Name), "portal_") and obj:IsA("BasePart") then
+            local dist = (hrp.Position - obj.Position).Magnitude
+            if dist < minDist then
+                minDist = dist
+                nearestPortal = obj
+            end
+        end
+    end
+
+    if not nearestPortal or minDist > 1000 then
+        updateStatus("Target out of render, resetting for traversal...")
+        local hum = char:FindFirstChild("Humanoid")
+        if hum then hum.Health = 0 end
         LocalPlayer.CharacterAdded:Wait()
-        task.wait(1)
+        task.wait(1.5)
         char = LocalPlayer.Character
         hrp = char:WaitForChild("HumanoidRootPart")
         
-        local targetIsland = getClosestIsland(targetPos)
-        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(targetIsland)
-        task.wait(3.5) -- Mandatory Portal Cooldown
-    end
-
-    -- In-Render Tweening
-    local moveVector = (targetPos - hrp.Position).Unit
-    hrp.CFrame = CFrame.new(hrp.Position + (moveVector * backupTweenSpeed * task.wait()))
-end
-
--- [[ KAITUN INITIALIZATION & EFFICIENCY MATH ]]
-local function evaluateDamage()
-    local UIElements = getUIElements()
-    if UIElements.DamageLabel then
-        local dmgText = UIElements.DamageLabel.Text
-        local parsed = parseExp(dmgText)
-        if parsed > 0 then
-            PlayerData.AverageDamage = parsed
-        end
-    end
-end
-
-local function calculateQuestEfficiency(questData, mobHealth)
-    local hitsToKill = math.ceil(mobHealth / PlayerData.AverageDamage)
-    local timeToKill = hitsToKill * PlayerData.M1Speed
-    local totalTime = timeToKill * questData.Requirement
-    
-    if totalTime <= 0 then return 0 end
-    return questData.RewardExp / totalTime -- Exp Per Second
-end
-
-local function cacheWorldData()
-    task.spawn(function()
-        updateStatus("Caching World Data... (This may take a moment)")
-        
-        -- Cache Portals
         for _, obj in pairs(workspace:GetDescendants()) do
-            if obj.Name:match("^portal_") and obj:IsA("BasePart") then
-                table.insert(Cache.Portals, obj.Position)
+            if string.find(string.lower(obj.Name), "portal_") and obj:IsA("BasePart") then
+                nearestPortal = obj
+                break
             end
         end
+    end
 
-        -- Visit Quests (Simulated Traversal due to limitations in script execution time)
+    if nearestPortal then
+        updateStatus("Tweening to nearest portal...")
+        hrp.CFrame = nearestPortal.CFrame + Vector3.new(0, 5, 0)
+        task.wait(0.5)
+        
+        updateStatus("Teleporting to " .. targetIsland)
+        local args = { targetIsland }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
+        
+        task.wait(3) -- Portal stun cooldown
+    end
+end
+
+-- [[ INITIALIZATION & CACHING ]]
+local function RunInitialization()
+    if isInitialized then return end
+    updateStatus("Starting Global Cache Initialization...")
+    
+    for _, island in ipairs(IslandList) do
+        updateStatus("Caching Island: " .. island)
+        SmartTeleport(island)
+        
+        -- Cache Portal
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            for _, obj in pairs(workspace:GetDescendants()) do
+                if string.find(string.lower(obj.Name), "portal_") and obj:IsA("BasePart") then
+                    GlobalCache.Portal_Locations[island] = obj.Position
+                    break
+                end
+            end
+        end
+        
+        -- Cache NPCs & Quests
         local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
         if serviceNPCs then
-            for i = 1, 19 do
-                local npc = serviceNPCs:FindFirstChild("QuestNPC" .. i)
-                if npc then
-                    local prompt = npc:FindFirstChild("QuestPrompt", true)
-                    if prompt then
-                        -- Cache Basic Data
-                        Cache.Quests[npc.Name] = {
-                            NPC = npc,
-                            MinLevel = 1, -- Parsed from prompt.ObjectText in full version
-                            RewardExp = 0,
-                            Requirement = 1,
-                            TargetMob = ""
+            for _, npc in ipairs(serviceNPCs:GetChildren()) do
+                if string.find(npc.Name, "QuestNPC") then
+                    local targetPart = getTargetPart(npc)
+                    if targetPart and hrp then
+                        hrp.CFrame = targetPart.CFrame + Vector3.new(0, 0, 5)
+                        task.wait(0.5)
+                        
+                        -- Accept Quest
+                        pcall(function()
+                            game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
+                        end)
+                        task.wait(1.5) -- Wait for UI
+                        
+                        -- Read exact paths requested
+                        local expStr = "0"
+                        local reqStr = "0/1"
+                        local titleStr = "Unknown"
+                        
+                        pcall(function()
+                            expStr = game:GetService("Players")[game:GetService("Players").LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
+                            reqStr = game:GetService("Players")[game:GetService("Players").LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
+                            titleStr = game:GetService("Players")[game:GetService("Players").LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestTitle.Text
+                        end)
+                        
+                        -- Determine target mob from Title
+                        local targetMob = nil
+                        local npcFolder = workspace:FindFirstChild("NPCs")
+                        if npcFolder then
+                            for _, mob in ipairs(npcFolder:GetChildren()) do
+                                if string.find(string.lower(titleStr), string.lower(getBaseName(mob.Name))) then
+                                    targetMob = getBaseName(mob.Name)
+                                    break
+                                end
+                            end
+                        end
+                        
+                        GlobalCache.Quests[npc.Name] = {
+                            Island = island,
+                            Exp = ParseSuffix(expStr),
+                            Req = tonumber(string.match(reqStr, "%d+/(%d+)")) or 1,
+                            TargetMob = targetMob or "Unknown",
+                            Position = targetPart.Position
                         }
+                        
+                        -- Abandon Quest
+                        local abandonArgs = { "repeatable" }
+                        pcall(function()
+                            game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
+                        end)
+                        task.wait(0.5)
                     end
                 end
             end
         end
-        Cache.Initialized = true
-        updateStatus("Cache Complete. Ready for Kaitun.")
-    end)
+    end
+    
+    isInitialized = true
+    updateStatus("Initialization Complete. All Quests and Portals Cached.")
 end
 
--- [[ CAMERA TRACKING ]]
-local function startCameraTracking()
-    if cameraTask then cameraTask:Disconnect() end
-    local camera = workspace.CurrentCamera
+-- [[ KAITUN LOGIC (Auto Leveling) ]]
+local function GetM1Damage()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if not hrp or not npcFolder then return end
     
-    cameraTask = RunService.RenderStepped:Connect(function()
-        if cameraTrackActive then
-            if currentTarget then
-                local hum = currentTarget:FindFirstChild("Humanoid")
-                if hum and camera.CameraSubject ~= hum then
-                    camera.CameraSubject = hum
-                end
-            else
-                local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-                if myHum and camera.CameraSubject ~= myHum then
-                    camera.CameraSubject = myHum
+    local target = nil
+    for _, npc in ipairs(npcFolder:GetChildren()) do
+        local hum = npc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then target = npc break end
+    end
+    
+    if target then
+        local tPart = getTargetPart(target)
+        if tPart then
+            hrp.CFrame = tPart.CFrame + Vector3.new(0, 0, 3)
+            task.wait(0.5)
+            
+            equipWeapon(selectedWeapon)
+            local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
+            
+            local args = { vector.create(tPart.Position.X, tPart.Position.Y, tPart.Position.Z) }
+            remote:FireServer(unpack(args))
+            
+            task.wait(0.5)
+            pcall(function()
+                local dmgStr = game:GetService("Players")[game:GetService("Players").LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel.Text
+                GlobalCache.DamagePerM1 = tonumber(dmgStr) or 1
+            end)
+        end
+    end
+end
+
+local function CalculateBestQuest()
+    local bestNPC = nil
+    local bestEfficiency = -1
+    
+    for npcName, data in pairs(GlobalCache.Quests) do
+        if data.TargetMob ~= "Unknown" then
+            -- Find mob health
+            local mobHealth = 1000 -- Fallback
+            local npcFolder = workspace:FindFirstChild("NPCs")
+            if npcFolder then
+                for _, mob in ipairs(npcFolder:GetChildren()) do
+                    if string.find(string.lower(mob.Name), string.lower(data.TargetMob)) then
+                        local hum = mob:FindFirstChild("Humanoid")
+                        if hum then mobHealth = hum.MaxHealth break end
+                    end
                 end
             end
+            
+            -- Formula: M1s happen every 0.4s
+            local timeToKill = (mobHealth / math.max(1, GlobalCache.DamagePerM1)) * 0.4
+            local totalTime = timeToKill * data.Req
+            local efficiency = data.Exp / math.max(1, totalTime)
+            
+            if efficiency > bestEfficiency then
+                bestEfficiency = efficiency
+                bestNPC = npcName
+            end
         end
-    end)
+    end
+    GlobalCache.BestQuest = bestNPC
+    return bestNPC
 end
 
-local function stopCameraTracking()
-    if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
-    local camera = workspace.CurrentCamera
-    local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-    if myHum then camera.CameraSubject = myHum end
+local function startKaitun()
+    if kaitunTask then task.cancel(kaitunTask); kaitunTask = nil end
+    
+    kaitunTask = task.spawn(function()
+        if not isInitialized then RunInitialization() end
+        GetM1Damage()
+        
+        while kaitunActive do
+            local bestQuestNPC = CalculateBestQuest()
+            if bestQuestNPC and GlobalCache.Quests[bestQuestNPC] then
+                local questData = GlobalCache.Quests[bestQuestNPC]
+                updateStatus("Kaitun: Farming most efficient quest -> " .. bestQuestNPC)
+                
+                -- Ensure we are on the right island
+                SmartTeleport(questData.Island)
+                
+                -- Check if we have the quest active
+                local hasQuest = false
+                pcall(function()
+                    local reqText = game:GetService("Players")[game:GetService("Players").LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
+                    if reqText and reqText ~= "" then hasQuest = true end
+                end)
+                
+                if not hasQuest then
+                    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        hrp.CFrame = CFrame.new(questData.Position) + Vector3.new(0, 5, 0)
+                        task.wait(1)
+                        pcall(function()
+                            game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(bestQuestNPC)
+                        end)
+                        task.wait(1)
+                    end
+                else
+                    -- Farm the specific mob
+                    killAllActive = false
+                    selectedMobs = { [questData.TargetMob] = true }
+                    if not killAuraActive then
+                        killAuraActive = true
+                        -- Local killAura loop logic starts here internally for Kaitun
+                    end
+                end
+            end
+            task.wait(2)
+        end
+    end)
 end
 
 -- [[ CORE MOVEMENT ENGINE ]]
@@ -274,10 +437,13 @@ local function startDynamicMovement()
 
     evasionTask = RunService.Heartbeat:Connect(function(deltaTime)
         if not hrp or not hrp.Parent then return end
+        
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
 
-        local nextX, nextZ = hrp.Position.X, hrp.Position.Z
+        local nextX = hrp.Position.X
+        local nextZ = hrp.Position.Z
+
         local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
         local _, groundPos = workspace:FindPartOnRay(ray, char)
         local baseHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
@@ -285,25 +451,40 @@ local function startDynamicMovement()
         local targetY = baseHeight
         if bounceActive then
             bounceTimer = bounceTimer + deltaTime
-            if bounceTimer >= 2 then bounceUp = not bounceUp; bounceTimer = 0 end
+            if bounceTimer >= 2 then
+                bounceUp = not bounceUp
+                bounceTimer = 0
+            end
             targetY = baseHeight + (bounceUp and 10 or 0)
         end
 
         if currentTarget then
-            local tPos = currentTarget:GetPivot().Position
-            local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
-            local dist2D = direction.Magnitude
-            
-            if dist2D > 1 then
-                local stepDist = backupTweenSpeed * deltaTime
-                if stepDist > dist2D then stepDist = dist2D end 
-                local moveVector = direction.Unit * stepDist
-                nextX = hrp.Position.X + moveVector.X
-                nextZ = hrp.Position.Z + moveVector.Z
+            local targetPart = getTargetPart(currentTarget)
+            if not targetPart then
+                local tPos = currentTarget:GetPivot().Position
+                local direction = Vector3.new(tPos.X - hrp.Position.X, 0, tPos.Z - hrp.Position.Z)
+                local dist2D = direction.Magnitude
+                
+                if dist2D > 500 then
+                    -- Trigger smart teleport locally if massive distance
+                    local targetIsland = "Starter" -- fallback logic
+                    for name, pos in pairs(GlobalCache.Portal_Locations) do
+                        if (pos - tPos).Magnitude < 1000 then targetIsland = name break end
+                    end
+                    task.spawn(function() SmartTeleport(targetIsland) end)
+                    return
+                elseif dist2D > 1 then
+                    local stepDist = backupTweenSpeed * deltaTime
+                    if stepDist > dist2D then stepDist = dist2D end 
+                    local moveVector = direction.Unit * stepDist
+                    nextX = hrp.Position.X + moveVector.X
+                    nextZ = hrp.Position.Z + moveVector.Z
+                end
             end
         end
 
-        hrp.CFrame = CFrame.new(nextX, hrp.Position.Y + (targetY - hrp.Position.Y) * 0.15, nextZ)
+        local nextYPos = hrp.Position.Y + (targetY - hrp.Position.Y) * 0.15
+        hrp.CFrame = CFrame.new(nextX, nextYPos, nextZ)
     end)
 end
 
@@ -311,6 +492,7 @@ end
 local function startKillAura()
     if not killAuraActive then return end
     updateStatus("Initializing KillAura & Movement...")
+    lastRecalibrate = tick()
     startDynamicMovement()
 
     if auraTask then task.cancel(auraTask); auraTask = nil end
@@ -319,11 +501,31 @@ local function startKillAura()
         local remote = ReplicatedStorage:WaitForChild("CombatSystem"):WaitForChild("Remotes"):WaitForChild("RequestHit")
 
         while killAuraActive do
-            evaluateDamage() -- Update damage stat for Kaitun periodically
+            if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
+                isRecalibrating = true
+                updateStatus("Recalibrating... Dropping to ground.")
+                if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+                
+                local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    hrp.Velocity = Vector3.zero
+                    hrp.RotVelocity = Vector3.zero
+                end
+                
+                task.wait(recalibrateDuration)
+                lastRecalibrate = tick()
+                isRecalibrating = false
+                
+                if killAuraActive then
+                    startDynamicMovement()
+                    updateStatus("Recalibration complete. Resuming...")
+                end
+                continue
+            end
             
             local npcFolder = workspace:FindFirstChild("NPCs")
             if not npcFolder then 
-                updateStatus("Waiting for workspace.NPCs...")
+                updateStatus("Waiting for workspace.NPCs folder to load...")
                 task.wait(0.5)
                 continue 
             end
@@ -332,42 +534,88 @@ local function startKillAura()
             currentTarget = nil
             
             local bestTarget = nil
+            local bossTarget = nil
             local closestDist = math.huge
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
 
+            local validMobFound = false
+
             for _, npc in ipairs(npcFolder:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
-                if hum and hum.Health > 0 and isMobSelected(npc.Name) then
-                    local dist = (charPos - npc:GetPivot().Position).Magnitude
-                    if dist < closestDist then
-                        bestTarget = npc
-                        closestDist = dist
+                
+                if hum and hum.Health > 0 then
+                    if isMobSelected(npc.Name) then
+                        validMobFound = true
+                        
+                        -- Replaced Aizen checks with timed boss checking: "boss_"
+                        local isBoss = string.find(string.lower(npc.Name), "boss_") ~= nil
+                        local dist = (charPos - npc:GetPivot().Position).Magnitude
+                        
+                        if isBoss then
+                            if not bossTarget or dist < closestDist then
+                                bossTarget = npc
+                                closestDist = dist
+                            end
+                        elseif not bossTarget then
+                            if dist < closestDist then
+                                bestTarget = npc
+                                closestDist = dist
+                            end
+                        end
                     end
                 end
             end
 
-            currentTarget = bestTarget
+            currentTarget = bossTarget or bestTarget
+
+            if not validMobFound and not kaitunActive then
+                if not killAllActive and next(selectedMobs) == nil then
+                    updateStatus("No mobs selected in dropdown and KillAll is OFF.")
+                else
+                    updateStatus("No selected mobs are currently alive.")
+                end
+            end
 
             if currentTarget then
                 local hum = currentTarget:FindFirstChild("Humanoid")
-                while killAuraActive and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
+
+                while killAuraActive and not isRecalibrating and currentTarget and currentTarget.Parent and hum and hum.Health > 0 do
                     local targetPart = getTargetPart(currentTarget)
                     
                     if targetPart then
                         local tPos = targetPart.Position
-                        pcall(function() 
+                        
+                        local success, err = pcall(function() 
                             local args = {}
-                            if vectorMethod == "vector.create(X, Y, Z)" then args = { vector.create(tPos.X, tPos.Y, tPos.Z) }
-                            elseif vectorMethod == "Vector3.new" then args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
-                            else args = { tPos } end
+                            if vectorMethod == "vector.create(X, Y, Z)" then
+                                args = { vector.create(tPos.X, tPos.Y, tPos.Z) }
+                            elseif vectorMethod == "Vector3.new" then
+                                args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
+                            elseif vectorMethod == "Raw Vector3" then
+                                args = { tPos }
+                            else
+                                args = { vector.create(tPos) }
+                            end
                             remote:FireServer(unpack(args)) 
                         end)
-                        updateStatus("Attacking: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)))
+                        
+                        if not success then
+                            updateStatus("⚠️ REMOTE ERROR: " .. tostring(err))
+                        else
+                            updateStatus("Striking: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)))
+                        end
                     else
-                        -- If unrendered, utilize Smart Travel
-                        smartTravel(currentTarget:GetPivot().Position)
+                        updateStatus("Target unrendered. Tweening to pivot: " .. currentTarget.Name)
                     end
+                    
                     task.wait(0.35)
+                end
+                
+                if not isRecalibrating then
+                    if currentTarget == nil or not currentTarget.Parent or (hum and hum.Health <= 0) then
+                        updateStatus("Target defeated. Searching again...")
+                        currentTarget = nil 
+                    end
                 end
             else
                 task.wait(0.5) 
@@ -379,15 +627,23 @@ end
 local function stopKillAura()
     killAuraActive = false
     currentTarget = nil
+    isRecalibrating = false
     updateStatus("KillAura Stopped. Idle.")
     if auraTask then task.cancel(auraTask); auraTask = nil end
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end
 end
 
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({
-    Title = "Ultimate Hub",
-    SubTitle = "V4.0.0 (Kaitun & Boss Hunter)",
+    Title = "Ultimate Hub V4",
+    SubTitle = "Kaitun & Timed Boss Optimization",
     TabWidth = 140,
     Size = UDim2.fromOffset(580, 460),
     Acrylic = true, 
@@ -397,32 +653,52 @@ local Window = Fluent:CreateWindow({
 getgenv().CSMDH_Window = Window
 
 local Tabs = {
+    Main = Window:AddTab({ Title = "Main/Kaitun", Icon = "home" }),
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
-    Kaitun = Window:AddTab({ Title = "Kaitun (Auto)", Icon = "scroll" }),
     Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }),
     Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
-StatusDisplay = Tabs.Combat:AddParagraph({Title = "Current Script Status", Content = "Idle. Awaiting execution."})
+-- MAIN / KAITUN TAB
+StatusDisplay = Tabs.Main:AddParagraph({Title = "Current Script Status", Content = "Idle. Awaiting execution."})
+
+Tabs.Main:AddSection("Initialization")
+Tabs.Main:AddButton({Title = "Force Initialize Cache", Callback = function() task.spawn(RunInitialization) end})
+
+Tabs.Main:AddSection("Auto Leveling (Kaitun)")
+local KaitunToggle = Tabs.Main:AddToggle("KaitunToggle", {Title = "Start Kaitun (Max Efficiency)", Default = false})
+KaitunToggle:OnChanged(function(Value)
+    kaitunActive = Value
+    if kaitunActive then
+        startKaitun()
+        if not killAuraActive then
+            killAuraActive = true
+            startKillAura()
+        end
+    else
+        if kaitunTask then task.cancel(kaitunTask) kaitunTask = nil end
+        killAuraActive = false
+        stopKillAura()
+    end
+end)
 
 -- COMBAT TAB
 Tabs.Combat:AddSection("Targeting Settings")
-local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
-Tabs.Combat:AddToggle("KillAllBossesToggle", {Title = "Hunt All Timed Bosses (boss_)", Default = false}):OnChanged(function(Value) killAllBossesActive = Value end)
-Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false}):OnChanged(function(Value) killAllActive = Value end)
+local MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start Custom KillAura", Default = false})
+local KillAllToggle = Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false})
+KillAllToggle:OnChanged(function() killAllActive = KillAllToggle.Value end)
 
-Tabs.Combat:AddDropdown("VectorMethodDropdown", {
-    Title = "Attack Vector Method", 
-    Values = {"vector.create(X, Y, Z)", "Vector3.new", "Raw Vector3"}, 
-    Multi = false, Default = "vector.create(X, Y, Z)"
-}):OnChanged(function(Value) vectorMethod = Value end)
+local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob Groups", Values = getAvailableMobs(), Multi = true, Default = {}})
+MobDropdown:OnChanged(function(Value) selectedMobs = Value end)
+Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
 
-local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
-CamToggle:OnChanged(function(Value)
-    cameraTrackActive = Value
-    if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
+Tabs.Combat:AddSection("Weapon & Attacks")
+local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false, Default = ""})
+WeaponDropdown:OnChanged(function(Value) 
+    if Value and Value ~= "" then selectedWeapon = Value end 
 end)
+Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
 MasterAuraToggle:OnChanged(function()
     if MasterAuraToggle.Value then
@@ -433,19 +709,7 @@ MasterAuraToggle:OnChanged(function()
     end
 end)
 
--- KAITUN TAB
-Tabs.Kaitun:AddSection("Map Caching")
-Tabs.Kaitun:AddButton({Title = "Initialize Data Cache", Callback = function() cacheWorldData() end})
-
-Tabs.Kaitun:AddSection("Auto Leveling")
-Tabs.Kaitun:AddToggle("KaitunToggle", {Title = "Enable Smart Kaitun", Default = false}):OnChanged(function(Value)
-    kaitunActive = Value
-    if kaitunActive and not Cache.Initialized then
-        updateStatus("Warning: Cache not initialized. Kaitun may run sub-optimally.")
-    end
-end)
-
--- SETTINGS
+-- CONFIG & SETTINGS LOGIC
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings()
@@ -455,6 +719,3 @@ InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-
-local success, err = pcall(function() SaveManager:LoadAutoloadConfig() end)
-if not success then warn("Failed to load Autoload Config:", err) end
