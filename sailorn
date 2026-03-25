@@ -184,7 +184,7 @@ local function InitializeWorldCache()
         if serviceNPCs then
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
                 -- Only target NPCs that match "Quest" followed by a number, and haven't been cached yet
-                if string.match(npc.Name, "^Quest%d+$") and not GlobalCache.Quests[npc.Name] then
+                if string.match(npc.Name, "^QuestNPC%d+$") and not GlobalCache.Quests[npc.Name] then
                     local questPos = npc:GetPivot().Position
                     
                     updateCacheUI("Harvesting Data from: " .. npc.Name)
