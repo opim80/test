@@ -67,7 +67,6 @@ local selectedDungeon = "DoubleDungeon"
 local selectedDifficulty = "Easy"
 local dungeonLoopTask = nil
 
--- UI Element References
 local StatusDisplay = nil
 local KaitunStatusDisplay = nil
 local MasterAuraToggle = nil
@@ -103,6 +102,7 @@ local function getBaseName(name)
 end
 
 local function isMobSelected(rawName)
+    if not rawName then return false end
     if killTimedBossesActive and string.find(string.lower(rawName), "boss_") then return true end
     if killAllActive then return true end
     
@@ -121,7 +121,9 @@ local function isMobSelected(rawName)
     return false
 end
 
+-- FIX: Safeguard against nil targets being passed in by the movement engine
 local function getTargetPart(npc)
+    if not npc then return nil end
     return npc:FindFirstChild("HumanoidRootPart") or npc:FindFirstChild("Torso") or npc.PrimaryPart
 end
 
@@ -215,6 +217,7 @@ local function startDynamicMovement()
         if not hrp or not hrp.Parent then return end
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
+        
         local nextX, nextY, nextZ = hrp.Position.X, hrp.Position.Y, hrp.Position.Z
         local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
         local _, groundPos = workspace:FindPartOnRay(ray, char)
@@ -223,7 +226,10 @@ local function startDynamicMovement()
         
         if bounceActive then
             bounceTimer = bounceTimer + deltaTime
-            if bounceTimer >= 2 then bounceUp = not bounceUp bounceTimer = 0 end
+            if bounceTimer >= 2 then 
+                bounceUp = not bounceUp 
+                bounceTimer = 0 
+            end
             targetY = baseHeight + (bounceUp and 10 or 0)
         end
 
@@ -239,6 +245,7 @@ local function startDynamicMovement()
                 targetY = hrp.Position.Y
             end
         else
+            -- FIX: Safely handles Center calculation vs Target tracking
             local moveTarget = currentTarget and currentTarget:GetPivot().Position
             if alwaysTakeCenterActive and not kaitunActive then
                 if tick() - lastCenterUpdate >= centerUpdateInterval then
@@ -248,7 +255,8 @@ local function startDynamicMovement()
                 moveTarget = calculatedCenter or moveTarget
             end
             
-            if not getTargetPart(currentTarget) and moveTarget then
+            -- Only fly horizontally if we have a target coordinate, and the mob isn't physically rendered
+            if moveTarget and not getTargetPart(currentTarget) then
                 local direction = (Vector3.new(moveTarget.X, moveTarget.Y + 20, moveTarget.Z) - hrp.Position)
                 if direction.Magnitude > 1 then
                     local stepDist = backupTweenSpeed * deltaTime
@@ -259,6 +267,7 @@ local function startDynamicMovement()
                 end
             end
         end
+        
         local smoothY = hrp.Position.Y + (targetY - hrp.Position.Y) * 0.15
         hrp.CFrame = CFrame.new(nextX, smoothY, nextZ)
     end)
@@ -664,7 +673,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.4.0 (Fully Restored & Patched)", 
+    SubTitle = "V4.4.1 (Stable Movement Engine)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
@@ -688,7 +697,6 @@ task.spawn(function()
     CoreGui.DescendantAdded:Connect(limitDropdownSize)
 end)
 
--- Restored Tabs
 local Tabs = { 
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }), 
     Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "map" }), 
