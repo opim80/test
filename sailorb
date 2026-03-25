@@ -138,47 +138,68 @@ local function InitializeWorldCache()
             GlobalCache.Portals[island] = newPortal.Position
         end
 
-        -- Cache Quests
+        -- Gather and Sort Quests Strictly by "Quest#"
         local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
         if serviceNPCs then
+            local localQuests = {}
             for _, npc in ipairs(serviceNPCs:GetChildren()) do
-                if string.find(npc.Name, "QuestNPC") then
-                    TweenTo(npc:GetPivot())
-                    task.wait(0.5)
-                    
-                    -- Accept
-                    ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
-                    task.wait(1)
-
-                    -- Extract Exact Data using provided paths
-                    local expText = "0"
-                    local reqText = ""
-                    
-                    pcall(function()
-                        expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
-                        reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
-                    end)
-
-                    local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
-                    local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
-
-                    GlobalCache.Quests[npc.Name] = {
-                        Island = island,
-                        Target = targetName,
-                        Amount = requiredAmount,
-                        Exp = ParseShortenedNumber(expText),
-                        Position = npc:GetPivot().Position
-                    }
-
-                    -- Abandon
-                    local abandonArgs = { "repeatable" }
-                    game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
-                    task.wait(0.5)
+                -- Only match exact "Quest" followed by numbers (e.g., Quest1, Quest12)
+                local questNum = string.match(npc.Name, "^Quest(%d+)$")
+                if questNum then
+                    table.insert(localQuests, { Instance = npc, Number = tonumber(questNum) })
                 end
+            end
+
+            -- Sort them numerically so it doesn't bounce back and forth
+            table.sort(localQuests, function(a, b) return a.Number < b.Number end)
+
+            for _, questData in ipairs(localQuests) do
+                local npc = questData.Instance
+                updateStatus("Caching " .. npc.Name .. "...")
+                TweenTo(npc:GetPivot())
+                task.wait(0.5)
+                
+                -- Accept
+                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npc.Name)
+                task.wait(1)
+
+                -- Extract Exact Data
+                local expText = "0"
+                local reqText = ""
+                pcall(function()
+                    expText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Reward.RewardExp.CurrencyIndicator.Text
+                    reqText = game:GetService("Players")[LocalPlayer.Name].PlayerGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestRequirement.Text
+                end)
+
+                local targetName = string.match(reqText, "Defeat%s+(.*)s?%!") or reqText
+                local requiredAmount = tonumber(string.match(reqText, "(%d+)")) or 1
+
+                GlobalCache.Quests[npc.Name] = {
+                    Island = island,
+                    Target = targetName,
+                    Amount = requiredAmount,
+                    Exp = ParseShortenedNumber(expText),
+                    Position = npc:GetPivot().Position
+                }
+
+                -- Abandon
+                local abandonArgs = { "repeatable" }
+                game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(abandonArgs))
+                task.wait(0.5)
             end
         end
     end
 
+    -- DPS Test
+    updateStatus("Calculating M1 Damage...")
+    pcall(function()
+        GlobalCache.M1Damage = tonumber(game:GetService("Players")[LocalPlayer.Name].PlayerGui.DamageCounterUI.DamageFrame.Holder.StatFrame.DamageLabel.Text) or 1
+    end)
+    if GlobalCache.M1Damage <= 1 then GlobalCache.M1Damage = 500 end 
+
+    GlobalCache.Initialized = true
+    updateStatus("Cache Complete. Ready for Kaitun.")
+end
     -- DPS Test
     updateStatus("Calculating M1 Damage...")
     pcall(function()
