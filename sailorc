@@ -57,6 +57,7 @@ local cachedDamage = 1
 local currentKaitunTargetMob = ""
 local currentKaitunIsland = ""
 
+-- Stats & Raids Variables
 local autoStatActive = false
 local statTarget = "Melee"
 local statAmount = 1
@@ -69,6 +70,7 @@ local dungeonLoopTask = nil
 local StatusDisplay = nil
 local KaitunStatusDisplay = nil
 local MasterAuraToggle = nil
+local KaitunStartToggle = nil
 
 getgenv().CSMDH_Cleanup = function()
     if auraTask then task.cancel(auraTask) end
@@ -173,6 +175,34 @@ local function parseNumberSuffix(str)
     return (tonumber(str) or 0) * mult
 end
 
+local function getCenterPosition()
+    local npcFolder = workspace:FindFirstChild("NPCs")
+    if not npcFolder then return nil end
+    
+    local normalSumPos = Vector3.zero
+    local normalCount = 0
+    local bossSumPos = Vector3.zero
+    local bossCount = 0
+    
+    for _, npc in ipairs(npcFolder:GetChildren()) do
+        local hum = npc:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 and isMobSelected(npc.Name) then
+            local tPos = npc:GetPivot().Position
+            if string.find(string.lower(npc.Name), "boss_") then
+                bossSumPos = bossSumPos + tPos
+                bossCount = bossCount + 1
+            else
+                normalSumPos = normalSumPos + tPos
+                normalCount = normalCount + 1
+            end
+        end
+    end
+    
+    if bossCount > 0 then return bossSumPos / bossCount end
+    if normalCount > 0 then return normalSumPos / normalCount end
+    return nil
+end
+
 -- [[ CORE MOVEMENT ENGINE ]]
 local function startDynamicMovement()
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
@@ -189,6 +219,7 @@ local function startDynamicMovement()
         local _, groundPos = workspace:FindPartOnRay(ray, char)
         local baseHeight = groundPos and (groundPos.Y + 20) or hrp.Position.Y
         local targetY = baseHeight
+        
         if bounceActive then
             bounceTimer = bounceTimer + deltaTime
             if bounceTimer >= 2 then bounceUp = not bounceUp bounceTimer = 0 end
@@ -204,6 +235,14 @@ local function startDynamicMovement()
             end
         else
             local moveTarget = currentTarget and currentTarget:GetPivot().Position
+            if alwaysTakeCenterActive and not kaitunActive then
+                if tick() - lastCenterUpdate >= centerUpdateInterval then
+                    calculatedCenter = getCenterPosition()
+                    lastCenterUpdate = tick()
+                end
+                moveTarget = calculatedCenter or moveTarget
+            end
+            
             if not getTargetPart(currentTarget) and moveTarget then
                 local direction = (Vector3.new(moveTarget.X, moveTarget.Y + 20, moveTarget.Z) - hrp.Position)
                 if direction.Magnitude > 1 then
@@ -219,11 +258,39 @@ local function startDynamicMovement()
     end)
 end
 
+-- [[ CAMERA TRACKING ]]
+local function startCameraTracking()
+    if cameraTask then cameraTask:Disconnect() end
+    local camera = workspace.CurrentCamera
+    
+    cameraTask = RunService.RenderStepped:Connect(function()
+        if cameraTrackActive then
+            if currentTarget then
+                local hum = currentTarget:FindFirstChild("Humanoid")
+                if hum and camera.CameraSubject ~= hum then
+                    camera.CameraSubject = hum
+                end
+            else
+                local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+                if myHum and camera.CameraSubject ~= myHum then
+                    camera.CameraSubject = myHum
+                end
+            end
+        end
+    end)
+end
+
+local function stopCameraTracking()
+    if cameraTask then cameraTask:Disconnect(); cameraTask = nil end
+    local camera = workspace.CurrentCamera
+    local myHum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+    if myHum then camera.CameraSubject = myHum end
+end
+
 -- [[ FAST TRAVEL SYSTEM ]]
 local function fastTravelToIsland(islandName)
     setKaitunStatus("Resetting character to bypass StreamingEnabled...", "Waiting for respawn")
     
-    -- Disconnect movement temporarily so it doesn't error on dead character
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
     
     local char = LocalPlayer.Character
@@ -231,12 +298,10 @@ local function fastTravelToIsland(islandName)
         char.Humanoid.Health = 0
         LocalPlayer.CharacterAdded:Wait()
         
-        -- Wait for the new body to fully generate
         local newChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
         local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
         task.wait(1.5) 
         
-        -- Hook the movement engine to the new body
         startDynamicMovement()
         
         setKaitunStatus("Teleporting to " .. islandName .. " portal...", "Waiting for chunks to load")
@@ -436,7 +501,6 @@ local function startKillAura()
                     isQuesting = false
                     currentQuestNPC = nil
                     
-                    -- Extract mob name if we spawned in with a quest already active
                     if currentKaitunTargetMob == "" then
                         local qTitle = pGui.QuestUI.Quest.Quest.Holder.Content.QuestInfo.QuestTitle.Text
                         currentKaitunTargetMob = string.match(qTitle, "Defeat the (.*)'s!") or string.match(qTitle, "Defeat (.*)!") or ""
@@ -445,9 +509,7 @@ local function startKillAura()
                     setKaitunStatus("Hunting " .. currentKaitunTargetMob, "Killing Target")
                 end
             end
-            -- [[ END KAITUN LOGIC ]]
 
-            -- Normal Recalibration Logic
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
@@ -491,7 +553,6 @@ local function startKillAura()
 
             currentTarget = timedBossTarget or bestTarget
 
-            -- Kaitun Fast Travel Handling (If targeted mob is not spawned/found)
             if not validMobFound and kaitunActive and not isQuesting then
                 setKaitunStatus("Target mob missing locally.", "Fast traveling to: " .. currentKaitunIsland)
                 fastTravelToIsland(currentKaitunIsland)
@@ -550,8 +611,39 @@ local function startAutoStats()
     end)
 end
 
+-- [[ RAIDS LOGIC ]]
+local function startAutoDungeon()
+    if dungeonLoopTask then task.cancel(dungeonLoopTask); dungeonLoopTask = nil end
+
+    dungeonLoopTask = task.spawn(function()
+        while autoDungeonActive do
+            local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+            local dungeonUI = playerGui and playerGui:FindFirstChild("DungeonUI")
+            
+            if dungeonUI then
+                local replayFrame = dungeonUI:FindFirstChild("ReplayDungeonFrameVisibleOnlyWhenClearingDungeon")
+                local contentFrame = dungeonUI:FindFirstChild("ContentFrame")
+                
+                if replayFrame and replayFrame.Visible then
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveReplayVote"):FireServer("sponsor") end)
+                elseif contentFrame and contentFrame.Visible then
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("DungeonWaveVote"):FireServer(selectedDifficulty) end)
+                    if not killAuraActive then
+                        killAllActive = true 
+                        killAuraActive = true
+                        startKillAura()
+                    end
+                elseif autoRequestActive then
+                    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end)
+                end
+            end
+            task.wait(2)
+        end
+    end)
+end
+
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V4.1.0 (True Kaitun Engine)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V4.2.0 (Complete Kaitun Restoration)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -570,7 +662,13 @@ task.spawn(function()
     CoreGui.DescendantAdded:Connect(limitDropdownSize)
 end)
 
-local Tabs = { Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }), Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "brain" }), Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }), Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }) }
+local Tabs = { 
+    Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }), 
+    Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "brain" }), 
+    Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }), 
+    Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }) 
+}
 
 -- COMBAT TAB
 StatusDisplay = Tabs.Combat:AddParagraph({Title = "Status", Content = "Idle."})
@@ -593,22 +691,34 @@ Tabs.Combat:AddToggle("BounceToggle", {Title = "Vertical Bounce", Default = fals
 Tabs.Combat:AddSlider("TweenSpeed", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200}):OnChanged(function(v) backupTweenSpeed = v end)
 Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(v) recalibrateActive = v lastRecalibrate = tick() end)
 
+local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
+CamToggle:OnChanged(function(Value)
+    cameraTrackActive = Value
+    if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
+end)
+
+MasterAuraToggle:OnChanged(function()
+    killAuraActive = MasterAuraToggle.Value
+    if killAuraActive then startKillAura() else stopKillAura() end
+end)
+
 -- KAITUN TAB
 KaitunStatusDisplay = Tabs.Kaitun:AddParagraph({
     Title = "Kaitun Process Tracker", 
     Content = "**Currently:** Idle\n**Next Up:** Awaiting Start"
 })
 
-Tabs.Kaitun:AddToggle("KaitunStartToggle", {Title = "Start Kaitun Engine", Default = false}):OnChanged(function(Value)
+KaitunStartToggle = Tabs.Kaitun:AddToggle("KaitunStartToggle", {Title = "Start Kaitun Engine", Default = false})
+KaitunStartToggle:OnChanged(function(Value)
     kaitunActive = Value
     if kaitunActive then
         setKaitunStatus("Starting Engine...", "Checking Map Cache")
-        if not killAuraActive then
+        if not killAuraActive and MasterAuraToggle then
             MasterAuraToggle:SetValue(true)
         end
     else
         setKaitunStatus("Idle", "Awaiting Start")
-        if killAuraActive then
+        if killAuraActive and MasterAuraToggle then
             MasterAuraToggle:SetValue(false)
         end
     end
@@ -618,16 +728,36 @@ Tabs.Kaitun:AddButton({Title = "Force Re-Cache World", Callback = function()
     if kaitunActive then task.spawn(initializeWorldCache) else setKaitunStatus("Cannot Cache", "Start Kaitun First") end 
 end})
 
-MasterAuraToggle:OnChanged(function()
-    killAuraActive = MasterAuraToggle.Value
-    if killAuraActive then startKillAura() else stopKillAura() end
+-- STATS TAB
+local StatDisplay = Tabs.Stats:AddParagraph({Title = "Available Stat Points", Content = "Calculating..."})
+task.spawn(function()
+    while task.wait(1) do
+        local points = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
+        if points then StatDisplay:SetDesc("Points: " .. tostring(points.Value)) end
+    end
 end)
 
--- STATS TAB
 Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(v) statTarget = v end)
 Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(v) statAmount = tonumber(v) or 1 end)
 Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(v) autoStatActive = v if v then startAutoStats() end end)
 
+-- RAIDS TAB
+Tabs.Raids:AddSection("Dungeon Setup")
+Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
+Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
+
+Tabs.Raids:AddSection("Auto Raid Loop")
+Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) selectedDifficulty = Value end)
+
+local AutoRequestToggle = Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false})
+AutoRequestToggle:OnChanged(function(Value) autoRequestActive = Value end)
+
+Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon (Vote & Replay)", Default = false}):OnChanged(function(Value)
+    autoDungeonActive = Value
+    if autoDungeonActive then startAutoDungeon() elseif dungeonLoopTask then task.cancel(dungeonLoopTask) dungeonLoopTask = nil end
+end)
+
+-- CONFIG & SETTINGS LOGIC
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
 SaveManager:SetFolder("UltimateHub")
