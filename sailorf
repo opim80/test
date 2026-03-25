@@ -1,0 +1,261 @@
+-- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
+if getgenv().CSMDH_Cleanup then
+    pcall(function() getgenv().CSMDH_Cleanup() end)
+end
+
+if not game:IsLoaded() then game.Loaded:Wait() end
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+
+repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+
+-- [[ UI & CONFIG LIBRARIES ]]
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- [[ STATE & CACHE VARIABLES ]]
+local kaitunActive = false
+local killAllBossesActive = false
+local tweenSpeed = 65
+local currentTarget = nil
+local StatusDisplay = nil
+
+local Islands = {
+    "Starter", "Jungle", "Desert", "Snow", "Sailor", "Shibuya", 
+    "Hollow", "Boss", "Dungeon", "Shinjuku", "Slime", "Academy", 
+    "Judgement", "Ninja", "Lawless", "Tower"
+}
+
+local CachedQuests = {}
+local PlayerDPS = 0
+local IsInitialized = false
+
+getgenv().CSMDH_Cleanup = function()
+    kaitunActive = false
+    killAllBossesActive = false
+    if getgenv().CSMDH_Window then pcall(function() getgenv().CSMDH_Window:Destroy() end) end
+end
+
+-- [[ HELPER FUNCTIONS ]]
+local function updateStatus(msg)
+    if StatusDisplay then StatusDisplay:SetDesc(msg) end
+end
+
+local function getNearestPortal()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    local closestPortal = nil
+    local shortestDistance = math.huge
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and string.match(string.lower(obj.Name), "^portal_") then
+            local dist = (hrp.Position - obj.Position).Magnitude
+            if dist < shortestDistance then
+                shortestDistance = dist
+                closestPortal = obj
+            end
+        end
+    end
+    return closestPortal
+end
+
+local function tweenTo(targetPos)
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+
+    local dist = (hrp.Position - targetPos).Magnitude
+    updateStatus("Tweening... Distance: " .. math.floor(dist) .. " studs")
+    
+    local timeToTravel = dist / tweenSpeed
+    local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPos)})
+    
+    tween:Play()
+    tween.Completed:Wait()
+    return true
+end
+
+local function teleportViaPortal(islandName)
+    local portal = getNearestPortal()
+    if portal then
+        tweenTo(portal.Position)
+        task.wait(0.5)
+        local args = { islandName }
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
+        task.wait(3) -- Wait for portal stun
+    end
+end
+
+-- [[ KAITUN LOGIC ]]
+local function abandonQuest()
+    local args = { "repeatable" }
+    ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args))
+end
+
+local function calibrateDamage()
+    updateStatus("Calibrating Damage... Striking Mob.")
+    -- Pseudo-logic for hitting a mob to trigger the UI update
+    task.wait(1)
+    local pGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if pGui then
+        local dmgLabel = pGui:FindFirstChild("DamageCounterUI") 
+            and pGui.DamageCounterUI:FindFirstChild("DamageFrame")
+            and pGui.DamageCounterUI.DamageFrame:FindFirstChild("Holder")
+            and pGui.DamageCounterUI.DamageFrame.Holder:FindFirstChild("StatFrame")
+            and pGui.DamageCounterUI.DamageFrame.Holder.StatFrame:FindFirstChild("DamageLabel")
+        
+        if dmgLabel and dmgLabel.Text ~= "" then
+            PlayerDPS = tonumber(string.match(dmgLabel.Text, "%d+")) or 100
+        else
+            PlayerDPS = 100 -- Fallback
+        end
+    end
+    updateStatus("Damage Calibrated: " .. tostring(PlayerDPS) .. " per M1")
+end
+
+local function initializeKaitun()
+    if IsInitialized then return end
+    updateStatus("Initializing... Resetting Character to reach Starter Portal.")
+    
+    local char = LocalPlayer.Character
+    if char and char:FindFirstChild("Humanoid") then
+        char.Humanoid.Health = 0
+        LocalPlayer.CharacterAdded:Wait()
+        task.wait(2)
+    end
+
+    for _, island in ipairs(Islands) do
+        updateStatus("Hopping to Island: " .. island .. " for Caching...")
+        teleportViaPortal(island)
+        
+        local serviceNPCs = workspace:FindFirstChild("ServiceNPCs")
+        if not serviceNPCs then continue end
+
+        local npcCount = 1
+        while true do
+            local npcName = "QuestNPC" .. npcCount
+            local npc = serviceNPCs:FindFirstChild(npcName)
+            if not npc then break end -- Move to next island if numerical order breaks
+            
+            local hrp = npc:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local dist = (LocalPlayer.Character.HumanoidRootPart.Position - hrp.Position).Magnitude
+                if dist > 300 then
+                    updateStatus(npcName .. " is >300 studs away. Teleporting to next island.")
+                    break -- Use portal logic to find them on another island
+                end
+
+                tweenTo(hrp.Position)
+                updateStatus("Caching Quest from: " .. npcName)
+                
+                ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAccept"):FireServer(npcName)
+                task.wait(1.5)
+
+                local pName = LocalPlayer.Name
+                local questUI = game:GetService("Players")[pName].PlayerGui:FindFirstChild("QuestUI")
+                if questUI then
+                    local expInd = questUI.Quest.Reward.RewardExp:FindFirstChild("CurrencyIndicator")
+                    local reqLabel = questUI.Quest.Quest.Holder.Content.QuestInfo:FindFirstChild("QuestRequirement")
+                    
+                    if expInd and reqLabel then
+                        CachedQuests[npcName] = {
+                            Exp = expInd.Text,
+                            Requirement = reqLabel.Text
+                        }
+                    end
+                end
+                abandonQuest()
+                task.wait(0.5)
+            end
+            npcCount = npcCount + 1
+        end
+    end
+
+    calibrateDamage()
+    IsInitialized = true
+    updateStatus("Initialization Complete. Ready to Farm.")
+end
+
+local function startKaitunLoop()
+    task.spawn(function()
+        initializeKaitun()
+        while kaitunActive do
+            updateStatus("Calculating most efficient quest based on cached data...")
+            task.wait(2)
+            -- Add efficiency algorithm here based on CachedQuests and PlayerDPS
+            -- Tween to most efficient NPC, match name to workspace mob, start M1 loop
+        end
+    end)
+end
+
+-- [[ BOSS FARM LOGIC ]]
+local function startBossFarm()
+    task.spawn(function()
+        while killAllBossesActive do
+            local foundBoss = false
+            for _, obj in ipairs(workspace:FindFirstChild("NPCs"):GetChildren()) do
+                if string.match(string.lower(obj.Name), "boss_") then
+                    foundBoss = true
+                    local targetHrp = obj:FindFirstChild("HumanoidRootPart")
+                    local hum = obj:FindFirstChild("Humanoid")
+                    
+                    if targetHrp and hum and hum.Health > 0 then
+                        local dist = (LocalPlayer.Character.HumanoidRootPart.Position - targetHrp.Position).Magnitude
+                        if dist > 300 then
+                            updateStatus("Boss > 300 studs away. Using Portals...")
+                            teleportViaPortal("Boss")
+                        end
+                        tweenTo(targetHrp.Position)
+                        updateStatus("Killing Boss: " .. obj.Name)
+                        -- Add M1 Remote Fire Here
+                    end
+                end
+            end
+            if not foundBoss then updateStatus("Waiting for timed bosses to spawn...") end
+            task.wait(1)
+        end
+    end)
+end
+
+-- [[ UI INITIALIZATION ]]
+local Window = Fluent:CreateWindow({
+    Title = "Ultimate Kaitun Hub",
+    SubTitle = "V4.0 (Dynamic Caching & Tween Movement)",
+    TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark"
+})
+getgenv().CSMDH_Window = Window
+
+local Tabs = {
+    Main = Window:AddTab({ Title = "Auto Kaitun", Icon = "scroll" }),
+    Bosses = Window:AddTab({ Title = "Timed Bosses", Icon = "skull" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
+}
+
+StatusDisplay = Tabs.Main:AddParagraph({Title = "System Status", Content = "Idle. Awaiting execution."})
+
+Tabs.Main:AddSlider("TweenSpeed", {Title = "Tween Speed", Default = 65, Min = 10, Max = 300, Rounding = 1}):OnChanged(function(Value) tweenSpeed = Value end)
+
+local KaitunToggle = Tabs.Main:AddToggle("KaitunToggle", {Title = "Start Auto Kaitun", Default = false})
+KaitunToggle:OnChanged(function(Value)
+    kaitunActive = Value
+    if kaitunActive then startKaitunLoop() else updateStatus("Kaitun Stopped.") end
+end)
+
+local BossToggle = Tabs.Bosses:AddToggle("BossToggle", {Title = "Kill All Timed Bosses", Default = false})
+BossToggle:OnChanged(function(Value)
+    killAllBossesActive = Value
+    if killAllBossesActive then startBossFarm() else updateStatus("Boss Farm Stopped.") end
+end)
+
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:SetFolder("UltimateKaitun")
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+Window:SelectTab(1)
