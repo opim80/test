@@ -87,7 +87,9 @@ end
 
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
-    if StatusDisplay then StatusDisplay:SetDesc(msg) end
+    if StatusDisplay then 
+        StatusDisplay:SetDesc(msg) 
+    end
 end
 
 local function setKaitunStatus(currently, nextUp)
@@ -114,7 +116,9 @@ local function isMobSelected(rawName)
     if type(selectedMobs) == "table" then
         if selectedMobs[rawName] or selectedMobs[baseName] then return true end
         for selectedName, state in pairs(selectedMobs) do
-            if state and (string.find(string.lower(rawName), string.lower(selectedName))) then return true end
+            if state and (string.find(string.lower(rawName), string.lower(selectedName))) then 
+                return true 
+            end
         end
     end
     return false
@@ -128,15 +132,21 @@ local function getWeapons()
     local weapons = {}
     if LocalPlayer.Backpack then
         for _, tool in ipairs(LocalPlayer.Backpack:GetChildren()) do
-            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then table.insert(weapons, tool.Name) end
+            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then 
+                table.insert(weapons, tool.Name) 
+            end
         end
     end
     if LocalPlayer.Character then
         for _, tool in ipairs(LocalPlayer.Character:GetChildren()) do
-            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then table.insert(weapons, tool.Name) end
+            if tool:IsA("Tool") and not table.find(weapons, tool.Name) then 
+                table.insert(weapons, tool.Name) 
+            end
         end
     end
-    if selectedWeapon ~= "" and not table.find(weapons, selectedWeapon) then table.insert(weapons, selectedWeapon) end
+    if selectedWeapon ~= "" and not table.find(weapons, selectedWeapon) then 
+        table.insert(weapons, selectedWeapon) 
+    end
     return weapons
 end
 
@@ -148,7 +158,9 @@ local function getAvailableMobs()
             local hum = npc:FindFirstChild("Humanoid")
             if hum and hum.Health > 0 then
                 local baseName = getBaseName(npc.Name)
-                if not table.find(mobs, baseName) then table.insert(mobs, baseName) end
+                if not table.find(mobs, baseName) then 
+                    table.insert(mobs, baseName) 
+                end
             end
         end
     end
@@ -162,16 +174,25 @@ local function equipWeapon(weaponName)
     if not char or not backpack then return end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
     local tool = backpack:FindFirstChild(weaponName) or char:FindFirstChild(weaponName)
-    if tool and humanoid and tool.Parent ~= char then humanoid:EquipTool(tool) end
+    if tool and humanoid and tool.Parent ~= char then 
+        humanoid:EquipTool(tool) 
+    end
 end
 
 local function parseNumberSuffix(str)
     if not str then return 0 end
     str = string.lower(string.gsub(tostring(str), "[, ]", ""))
     local mult = 1
-    if string.find(str, "k") then mult = 1e3 str = string.gsub(str, "k", "")
-    elseif string.find(str, "m") then mult = 1e6 str = string.gsub(str, "m", "")
-    elseif string.find(str, "b") then mult = 1e9 str = string.gsub(str, "b", "") end
+    if string.find(str, "k") then 
+        mult = 1e3 
+        str = string.gsub(str, "k", "")
+    elseif string.find(str, "m") then 
+        mult = 1e6 
+        str = string.gsub(str, "m", "")
+    elseif string.find(str, "b") then 
+        mult = 1e9 
+        str = string.gsub(str, "b", "") 
+    end
     return (tonumber(str) or 0) * mult
 end
 
@@ -214,6 +235,7 @@ local function startDynamicMovement()
         if not hrp or not hrp.Parent then return end
         hrp.Velocity = Vector3.zero
         hrp.RotVelocity = Vector3.zero
+        
         local nextX, nextY, nextZ = hrp.Position.X, hrp.Position.Y, hrp.Position.Z
         local ray = Ray.new(hrp.Position, Vector3.new(0, -500, 0))
         local _, groundPos = workspace:FindPartOnRay(ray, char)
@@ -222,7 +244,10 @@ local function startDynamicMovement()
         
         if bounceActive then
             bounceTimer = bounceTimer + deltaTime
-            if bounceTimer >= 2 then bounceUp = not bounceUp bounceTimer = 0 end
+            if bounceTimer >= 2 then 
+                bounceUp = not bounceUp 
+                bounceTimer = 0 
+            end
             targetY = baseHeight + (bounceUp and 10 or 0)
         end
 
@@ -231,7 +256,9 @@ local function startDynamicMovement()
             local direction = (Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) - hrp.Position)
             if direction.Magnitude > 5 then
                 local step = direction.Unit * backupTweenSpeed * deltaTime
-                nextX, nextY, nextZ = hrp.Position.X + step.X, hrp.Position.Y + step.Y, hrp.Position.Z + step.Z
+                nextX = hrp.Position.X + step.X
+                nextY = hrp.Position.Y + step.Y
+                nextZ = hrp.Position.Z + step.Z
             end
         else
             local moveTarget = currentTarget and currentTarget:GetPivot().Position
@@ -249,7 +276,8 @@ local function startDynamicMovement()
                     local stepDist = backupTweenSpeed * deltaTime
                     if stepDist > direction.Magnitude then stepDist = direction.Magnitude end
                     local step = direction.Unit * stepDist
-                    nextX, nextZ = hrp.Position.X + step.X, hrp.Position.Z + step.Z
+                    nextX = hrp.Position.X + step.X
+                    nextZ = hrp.Position.Z + step.Z
                 end
             end
         end
@@ -289,7 +317,7 @@ end
 
 -- [[ FAST TRAVEL SYSTEM ]]
 local function fastTravelToIsland(islandName)
-    setKaitunStatus("Resetting character to bypass StreamingEnabled...", "Waiting for respawn")
+    setKaitunStatus("Resetting to bypass Streaming...", "Waiting for respawn")
     
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
     
@@ -304,7 +332,7 @@ local function fastTravelToIsland(islandName)
         
         startDynamicMovement()
         
-        setKaitunStatus("Teleporting to " .. islandName .. " portal...", "Waiting for chunks to load")
+        setKaitunStatus("Teleporting to " .. islandName, "Waiting for chunks")
         local portal = workspace:FindFirstChild("portal_tower", true)
         if portal and hrp then
             hrp.CFrame = portal.CFrame
@@ -324,11 +352,12 @@ end
 -- [[ KAITUN CACHE INITIALIZER ]]
 local function initializeWorldCache()
     isInitializingCache = true
-    setKaitunStatus("Initializing World Cache. Do NOT move.", "Scanning Islands")
+    setKaitunStatus("Initializing World Cache", "Scanning Islands (Do NOT move)")
     
     for _, island in ipairs(WorldCache.Islands) do
         if not kaitunActive then break end
-        setKaitunStatus("Fast Traveling to " .. island, "Scanning for NPCs")
+        
+        setKaitunStatus("Fast Traveling: " .. island, "Scanning for NPCs")
         fastTravelToIsland(island)
         
         local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 3)
@@ -340,14 +369,17 @@ local function initializeWorldCache()
                 local prompt = hrp and hrp:FindFirstChild("QuestPrompt")
                 
                 if prompt then
-                    setKaitunStatus("Approaching " .. npc.Name, "Reading Quest UI Data")
+                    setKaitunStatus("Approaching " .. npc.Name, "Reading Quest Data")
                     local charHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                     if charHrp then charHrp.CFrame = hrp.CFrame * CFrame.new(0, 0, 3) end
                     task.wait(0.5)
                     
                     local text = prompt.ObjectText or ""
                     local minLvl, maxLvl = string.match(text, "(%d+)%s*%-%s*(%d+)")
-                    if not minLvl then minLvl = string.match(text, "(%d+)%+") maxLvl = 9999999 end
+                    if not minLvl then 
+                        minLvl = string.match(text, "(%d+)%+") 
+                        maxLvl = 9999999 
+                    end
                     
                     minLvl = tonumber(minLvl) or 0
                     maxLvl = tonumber(maxLvl) or 9999999
@@ -476,7 +508,7 @@ local function startKillAura()
                         local npcInst = serviceNPCs and serviceNPCs:FindFirstChild(optQuestNPC)
                         
                         if not npcInst then
-                            setKaitunStatus("Quest NPC not loaded locally.", "Fast Traveling to " .. optIsland)
+                            setKaitunStatus("NPC not found locally.", "Fast Traveling to " .. optIsland)
                             fastTravelToIsland(optIsland)
                             continue
                         end
@@ -510,12 +542,16 @@ local function startKillAura()
                 end
             end
 
+            -- Normal Recalibration Logic
             if recalibrateActive and tick() - lastRecalibrate >= (recalibrateInterval * 60) then
                 isRecalibrating = true
                 updateStatus("Recalibrating... Dropping to ground.")
                 if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                if hrp then hrp.Velocity = Vector3.zero hrp.RotVelocity = Vector3.zero end
+                if hrp then 
+                    hrp.Velocity = Vector3.zero 
+                    hrp.RotVelocity = Vector3.zero 
+                end
                 task.wait(recalibrateDuration)
                 lastRecalibrate = tick()
                 isRecalibrating = false
@@ -567,10 +603,15 @@ local function startKillAura()
                     if tPart then
                         pcall(function()
                             local args = {}
-                            if vectorMethod == "Vector3.new" then args = {Vector3.new(tPart.Position.X, tPart.Position.Y, tPart.Position.Z)}
-                            elseif vectorMethod == "Raw Vector3" then args = {tPart.Position}
-                            elseif vectorMethod == "vector.create(Vector3) [Broken]" then args = {vector.create(tPart.Position)}
-                            else args = {vector.create(tPart.Position.X, tPart.Position.Y, tPart.Position.Z)} end
+                            if vectorMethod == "Vector3.new" then 
+                                args = {Vector3.new(tPart.Position.X, tPart.Position.Y, tPart.Position.Z)}
+                            elseif vectorMethod == "Raw Vector3" then 
+                                args = {tPart.Position}
+                            elseif vectorMethod == "vector.create(Vector3) [Broken]" then 
+                                args = {vector.create(tPart.Position)}
+                            else 
+                                args = {vector.create(tPart.Position.X, tPart.Position.Y, tPart.Position.Z)} 
+                            end
                             remote:FireServer(unpack(args))
                         end)
                     end
@@ -643,7 +684,14 @@ local function startAutoDungeon()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V4.2.0 (Complete Kaitun Restoration)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Theme = "Dark" })
+local Window = Fluent:CreateWindow({ 
+    Title = "Ultimate Hub", 
+    SubTitle = "V4.3.0 (UI & Syntax Repaired)", 
+    TabWidth = 140, 
+    Size = UDim2.fromOffset(580, 460), 
+    Theme = "Dark" 
+})
+
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -662,9 +710,10 @@ task.spawn(function()
     CoreGui.DescendantAdded:Connect(limitDropdownSize)
 end)
 
+-- Safe Lucide Icons used to ensure Fluent UI does not crash
 local Tabs = { 
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }), 
-    Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "brain" }), 
+    Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "map" }), 
     Stats = Window:AddTab({ Title = "Stats", Icon = "bar-chart" }), 
     Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" }) 
@@ -674,32 +723,65 @@ local Tabs = {
 StatusDisplay = Tabs.Combat:AddParagraph({Title = "Status", Content = "Idle."})
 
 MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
-Tabs.Combat:AddToggle("KillTimedBosses", {Title = "Kill Timed Bosses (Priority)", Default = false}):OnChanged(function(v) killTimedBossesActive = v end)
-Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs", Default = false}):OnChanged(function(v) killAllActive = v end)
+Tabs.Combat:AddToggle("KillTimedBosses", {Title = "Kill Timed Bosses (Priority)", Default = false}):OnChanged(function(v) 
+    killTimedBossesActive = v 
+end)
+Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs", Default = false}):OnChanged(function(v) 
+    killAllActive = v 
+end)
 
 local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob Groups", Values = getAvailableMobs(), Multi = true, Default = {}})
-MobDropdown:OnChanged(function(v) selectedMobs = v end)
-Tabs.Combat:AddButton({Title = "Refresh Mobs", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
+MobDropdown:OnChanged(function(v) 
+    selectedMobs = v 
+end)
+Tabs.Combat:AddButton({Title = "Refresh Mobs", Callback = function() 
+    MobDropdown:SetValues(getAvailableMobs()) 
+end})
 
 local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Weapon", Values = getWeapons(), Multi = false})
-WeaponDropdown:OnChanged(function(v) if v and v ~= "" then selectedWeapon = v end end)
-Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
+WeaponDropdown:OnChanged(function(v) 
+    if v and v ~= "" then 
+        selectedWeapon = v 
+    end 
+end)
+Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() 
+    WeaponDropdown:SetValues(getWeapons()) 
+end})
 
-Tabs.Combat:AddDropdown("VectorMethod", {Title = "Vector Method", Values = {"vector.create(X, Y, Z)", "Vector3.new", "Raw Vector3"}, Default = "vector.create(X, Y, Z)"}):OnChanged(function(v) vectorMethod = v end)
-Tabs.Combat:AddToggle("CenterToggle", {Title = "Always Take Center", Default = false}):OnChanged(function(v) alwaysTakeCenterActive = v end)
-Tabs.Combat:AddToggle("BounceToggle", {Title = "Vertical Bounce", Default = false}):OnChanged(function(v) bounceActive = v end)
-Tabs.Combat:AddSlider("TweenSpeed", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200}):OnChanged(function(v) backupTweenSpeed = v end)
-Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(v) recalibrateActive = v lastRecalibrate = tick() end)
+Tabs.Combat:AddDropdown("VectorMethod", {Title = "Vector Method", Values = {"vector.create(X, Y, Z)", "Vector3.new", "Raw Vector3"}, Default = "vector.create(X, Y, Z)"}):OnChanged(function(v) 
+    vectorMethod = v 
+end)
+Tabs.Combat:AddToggle("CenterToggle", {Title = "Always Take Center", Default = false}):OnChanged(function(v) 
+    alwaysTakeCenterActive = v 
+end)
+Tabs.Combat:AddToggle("BounceToggle", {Title = "Vertical Bounce", Default = false}):OnChanged(function(v) 
+    bounceActive = v 
+end)
+Tabs.Combat:AddSlider("TweenSpeed", {Title = "Backup Tween Speed", Default = 65, Min = 10, Max = 200}):OnChanged(function(v) 
+    backupTweenSpeed = v 
+end)
+Tabs.Combat:AddToggle("RecalibrateToggle", {Title = "Auto Recalibrate", Default = false}):OnChanged(function(v) 
+    recalibrateActive = v 
+    lastRecalibrate = tick() 
+end)
 
 local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
 CamToggle:OnChanged(function(Value)
     cameraTrackActive = Value
-    if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end
+    if not cameraTrackActive then 
+        stopCameraTracking() 
+    else 
+        startCameraTracking() 
+    end
 end)
 
-MasterAuraToggle:OnChanged(function()
-    killAuraActive = MasterAuraToggle.Value
-    if killAuraActive then startKillAura() else stopKillAura() end
+MasterAuraToggle:OnChanged(function(v)
+    killAuraActive = v
+    if killAuraActive then 
+        startKillAura() 
+    else 
+        stopKillAura() 
+    end
 end)
 
 -- KAITUN TAB
@@ -725,7 +807,11 @@ KaitunStartToggle:OnChanged(function(Value)
 end)
 
 Tabs.Kaitun:AddButton({Title = "Force Re-Cache World", Callback = function() 
-    if kaitunActive then task.spawn(initializeWorldCache) else setKaitunStatus("Cannot Cache", "Start Kaitun First") end 
+    if kaitunActive then 
+        task.spawn(initializeWorldCache) 
+    else 
+        setKaitunStatus("Cannot Cache", "Start Kaitun First") 
+    end 
 end})
 
 -- STATS TAB
@@ -733,38 +819,72 @@ local StatDisplay = Tabs.Stats:AddParagraph({Title = "Available Stat Points", Co
 task.spawn(function()
     while task.wait(1) do
         local points = LocalPlayer:FindFirstChild("Data") and LocalPlayer.Data:FindFirstChild("StatPoints")
-        if points then StatDisplay:SetDesc("Points: " .. tostring(points.Value)) end
+        if points then 
+            StatDisplay:SetDesc("Points: " .. tostring(points.Value)) 
+        end
     end
 end)
 
-Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(v) statTarget = v end)
-Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(v) statAmount = tonumber(v) or 1 end)
-Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(v) autoStatActive = v if v then startAutoStats() end end)
+Tabs.Stats:AddDropdown("StatDropdown", {Title = "Target Stat", Values = {"Melee", "Defense", "Sword", "Power"}, Multi = false, Default = "Melee"}):OnChanged(function(v) 
+    statTarget = v 
+end)
+Tabs.Stats:AddInput("StatAmount", {Title = "Allocate Amount", Default = "1", Numeric = true}):OnChanged(function(v) 
+    statAmount = tonumber(v) or 1 
+end)
+Tabs.Stats:AddToggle("AutoStatToggle", {Title = "Auto Allocate", Default = false}):OnChanged(function(v) 
+    autoStatActive = v 
+    if v then 
+        startAutoStats() 
+    end 
+end)
 
 -- RAIDS TAB
-Tabs.Raids:AddSection("Dungeon Setup")
-Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
-Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
+Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) 
+    selectedDungeon = Value 
+end)
+Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() 
+    pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) 
+end})
 
-Tabs.Raids:AddSection("Auto Raid Loop")
-Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) selectedDifficulty = Value end)
+Tabs.Raids:AddDropdown("DifficultyType", {Title = "Difficulty", Values = {"Easy", "Medium", "Hard", "Extreme"}, Multi = false, Default = "Easy"}):OnChanged(function(Value) 
+    selectedDifficulty = Value 
+end)
 
 local AutoRequestToggle = Tabs.Raids:AddToggle("AutoRequestToggle", {Title = "Auto-Request Portal (If outside)", Default = false})
-AutoRequestToggle:OnChanged(function(Value) autoRequestActive = Value end)
+AutoRequestToggle:OnChanged(function(Value) 
+    autoRequestActive = Value 
+end)
 
 Tabs.Raids:AddToggle("AutoDungeonToggle", {Title = "Auto Dungeon (Vote & Replay)", Default = false}):OnChanged(function(Value)
     autoDungeonActive = Value
-    if autoDungeonActive then startAutoDungeon() elseif dungeonLoopTask then task.cancel(dungeonLoopTask) dungeonLoopTask = nil end
+    if autoDungeonActive then 
+        startAutoDungeon() 
+    elseif dungeonLoopTask then 
+        task.cancel(dungeonLoopTask) 
+        dungeonLoopTask = nil 
+    end
 end)
 
 -- CONFIG & SETTINGS LOGIC
 SaveManager:SetLibrary(Fluent)
 InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
 SaveManager:SetFolder("UltimateHub")
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 Window:SelectTab(1)
 
 task.wait(1.5)
-if Tabs.Combat then WeaponDropdown:SetValues(getWeapons()) end
-pcall(function() SaveManager:LoadAutoloadConfig() end)
+if Tabs.Combat then 
+    WeaponDropdown:SetValues(getWeapons()) 
+end
+
+local success, err = pcall(function()
+    SaveManager:LoadAutoloadConfig()
+end)
+
+if not success then
+    warn("Failed to load Autoload Config:", err)
+    updateStatus("⚠️ Config Load Error. Delete the UltimateHub folder in your executor's workspace.")
+end
