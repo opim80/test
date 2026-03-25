@@ -234,9 +234,8 @@ local function startDynamicMovement()
 
         if isQuesting and currentQuestNPC then
             local tPos = currentQuestNPC:GetPivot().Position
-            local target3D = Vector3.new(tPos.X, tPos.Y + 3, tPos.Z) -- Get close enough to prompt
-            local direction = (target3D - hrp.Position)
-            if direction.Magnitude > 3 then
+            local direction = (Vector3.new(tPos.X, tPos.Y + 5, tPos.Z) - hrp.Position)
+            if direction.Magnitude > 5 then
                 local step = direction.Unit * backupTweenSpeed * deltaTime
                 nextX = hrp.Position.X + step.X
                 nextY = hrp.Position.Y + step.Y
@@ -303,7 +302,7 @@ end
 local function fastTravelToIsland(islandName)
     setKaitunStatus("Resetting to bypass Streaming...", "Waiting for respawn")
     
-    -- MUST DISCONNECT MOVEMENT SO IT DOESN'T FIGHT THE TELEPORT
+    -- CRITICAL FIX: Kill movement engine so it doesn't trap the character at the portal
     if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
     
     local char = LocalPlayer.Character
@@ -320,15 +319,20 @@ local function fastTravelToIsland(islandName)
         if portal and hrp then
             local pCFrame = portal:IsA("Model") and portal:GetPivot() or portal.CFrame
             hrp.CFrame = pCFrame
-            task.wait(0.5) -- Let server register position
+            task.wait(0.5) 
         end
         
         pcall(function()
-            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(islandName)
+            local args = { islandName }
+            ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TeleportToPortal"):FireServer(unpack(args))
         end)
         
-        task.wait(3.5) -- Wait for target island chunks to load
-        startDynamicMovement() -- Safe to start moving again
+        task.wait(3.5) 
+        
+        -- ONLY restart movement if we aren't caching!
+        if not isInitializingCache and killAuraActive then
+            startDynamicMovement()
+        end
         return true
     end
     return false
@@ -339,8 +343,14 @@ local function initializeWorldCache()
     isInitializingCache = true
     setKaitunStatus("Initializing World Cache", "Scanning Islands (Do NOT move)")
     
-    -- Abandon any currently held quests before starting the scan
-    pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer("repeatable") end)
+    -- Disconnect movement engine so we can freely walk up to NPCs
+    if evasionTask then evasionTask:Disconnect(); evasionTask = nil end
+    
+    -- Abandon any existing quest to free up the slot
+    pcall(function() 
+        local args = {"repeatable"}
+        ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args)) 
+    end)
     task.wait(0.5)
     
     for _, island in ipairs(WorldCache.Islands) do
@@ -349,7 +359,7 @@ local function initializeWorldCache()
         setKaitunStatus("Fast Traveling: " .. island, "Scanning for NPCs")
         fastTravelToIsland(island)
         
-        local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 3)
+        local serviceNPCs = workspace:WaitForChild("ServiceNPCs", 5)
         if not serviceNPCs then continue end
         
         for _, npc in ipairs(serviceNPCs:GetChildren()) do
@@ -360,7 +370,9 @@ local function initializeWorldCache()
                 if prompt then
                     setKaitunStatus("Approaching " .. npc.Name, "Reading Quest Data")
                     local charHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                    if charHrp then charHrp.CFrame = hrp.CFrame * CFrame.new(0, 0, 3) end
+                    if charHrp then 
+                        charHrp.CFrame = hrp.CFrame * CFrame.new(0, 0, 3) 
+                    end
                     task.wait(0.5)
                     
                     local text = prompt.ObjectText or ""
@@ -399,8 +411,11 @@ local function initializeWorldCache()
                         }
                     end
                     
-                    -- FIX: Abandon the quest so the script doesn't get blocked from reading the next NPC
-                    pcall(function() ReplicatedStorage.RemoteEvents.QuestAbandon:FireServer("repeatable") end)
+                    -- FIX: Force abandon the quest so the next NPC doesn't get blocked
+                    pcall(function() 
+                        local args = {"repeatable"}
+                        ReplicatedStorage.RemoteEvents.QuestAbandon:FireServer(unpack(args)) 
+                    end)
                     task.wait(0.5)
                 end
             end
@@ -412,6 +427,11 @@ local function initializeWorldCache()
         setKaitunStatus("World Cache Built Successfully!", "Calculating Optimal Quest")
     end
     isInitializingCache = false
+    
+    -- Turn combat movement back on after cache phase is over
+    if killAuraActive then
+        startDynamicMovement()
+    end
 end
 
 -- [[ SMART KAITUN ENGINE ]]
@@ -679,7 +699,7 @@ end
 -- [[ UI INITIALIZATION ]]
 local Window = Fluent:CreateWindow({ 
     Title = "Ultimate Hub", 
-    SubTitle = "V4.5.0 (Fast Travel Patch)", 
+    SubTitle = "V4.5.1 (Cache Tween Patch)", 
     TabWidth = 140, 
     Size = UDim2.fromOffset(580, 460), 
     Theme = "Dark" 
@@ -820,7 +840,10 @@ Tabs.Kaitun:AddButton({Title = "Force Re-Cache World", Callback = function()
 end})
 
 Tabs.Kaitun:AddButton({Title = "Force Abandon Current Quest", Callback = function() 
-    pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer("repeatable") end)
+    pcall(function() 
+        local args = {"repeatable"}
+        ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("QuestAbandon"):FireServer(unpack(args)) 
+    end)
     updateStatus("Current Quest Abandoned.")
 end})
 
