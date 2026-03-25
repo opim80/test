@@ -387,7 +387,7 @@ local function CalcOptimalQuest(damage)
         local hitsToKill = math.ceil(maxHealth / damage)
         local timeToKill = (hitsToKill * 0.2) + 2 
         local totalTime = timeToKill * q.Amount
-        local questsPer10m = 600 / totalTime
+        local questsPer10m = 240 / totalTime
         local xpPer10m = q.XP * questsPer10m
 
         if xpPer10m > maxXpPer10m then
