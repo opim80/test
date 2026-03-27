@@ -395,11 +395,24 @@ end
 local function SmartTraverse(targetPos)
     isTraversing = true
     updateStatus("Quick Traversal: Resetting character...")
-    LocalPlayer.Character:BreakJoints()
-
-    LocalPlayer.CharacterAdded:Wait()
+    
     local char = LocalPlayer.Character
-    local hrp = char:WaitForChild("HumanoidRootPart", 10)
+    local hum = char and char:FindFirstChild("Humanoid")
+    if hum then hum.Health = 0 end
+
+    -- Wait for respawn with a 5-second timeout to prevent infinite yielding
+    local respawned = false
+    local connection
+    connection = LocalPlayer.CharacterAdded:Connect(function()
+        respawned = true
+    end)
+    
+    local timeout = tick() + 5
+    while not respawned and tick() < timeout do task.wait(0.1) end
+    connection:Disconnect()
+
+    char = LocalPlayer.Character
+    local hrp = char and char:WaitForChild("HumanoidRootPart", 5)
     task.wait(1.5)
 
     if hrp then
@@ -585,7 +598,10 @@ local function StartPityFarming(targetBoss, builderBoss)
                             end
                         end
                     else
-                        break -- Dead, loop restarts to check pity
+                        updateStatus("Pity Farm: Waiting for " .. builderBoss .. " to spawn...")
+                        task.wait(1)
+                        -- Periodically retry summoning in case it failed
+                        pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestSummonBoss"):FireServer(builderBoss) end)
                     end
                     task.wait(0.25)
                 end
