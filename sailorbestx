@@ -73,6 +73,7 @@ local auraTask = nil
 local cameraTrackActive = false
 local cameraTask = nil
 local isTraversing = false
+local lastHitTime = 0
 
 -- Feature Variables
 local autoKaitunActive = false
@@ -90,6 +91,8 @@ local cycleDelay = 1
 local pityFarmingActive = false
 local pityFarmingTask = nil
 local pityTweenToBuilderActive = true
+local disableMovesOnBuilder = false
+local isFarmingBuilder = false
 local selectedBuilder = "SaberBoss"
 local selectedPityTarget = "Atomic"
 
@@ -307,9 +310,14 @@ end)
 local function startAutoAbility(moveNum, toggleRef, delayRef)
     task.spawn(function()
         while task.wait(0.1) do
-            if toggleRef.Value and (killAuraActive or autoKaitunActive or specificQuestActive or pityFarmingActive) then
-                pcall(function() ReplicatedStorage:WaitForChild("AbilitySystem"):WaitForChild("Remotes"):WaitForChild("RequestAbility"):FireServer(moveNum) end)
-                task.wait(delayRef.Value)
+            -- Only fire if toggle is on AND we have hit something in the last 1.5 seconds
+            if toggleRef.Value and (tick() - lastHitTime < 1.5) then
+                if isFarmingBuilder and disableMovesOnBuilder then
+                    -- Do not fire abilities
+                else
+                    pcall(function() ReplicatedStorage:WaitForChild("AbilitySystem"):WaitForChild("Remotes"):WaitForChild("RequestAbility"):FireServer(moveNum) end)
+                    task.wait(delayRef.Value)
+                end
             end
         end
     end)
@@ -435,6 +443,7 @@ end
 
 -- [[ FIRE HIT REMOTE WRAPPER ]]
 local function FireHitRemote(tPos)
+    lastHitTime = tick() -- Update hit timestamp for auto-moves
     local args = {}
     if vectorMethod == "vector.create(X, Y, Z)" then args = { vector.create(tPos.X, tPos.Y, tPos.Z) }
     elseif vectorMethod == "Vector3.new" then args = { Vector3.new(tPos.X, tPos.Y, tPos.Z) }
@@ -534,11 +543,17 @@ local function StartPityFarming(targetBoss, builderBoss)
             local currentPity = GetPityAmount()
 
             if currentPity < 24 then
+                isFarmingBuilder = true
                 updateStatus("Pity Farm: Building Pity (" .. currentPity .. "/24) -> " .. builderBoss)
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then
                     local spawnerPos = Vector3.new(652, -4, -1019)
-                    if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end
+                    local dist = (hrp.Position - spawnerPos).Magnitude
+                    if dist > 2500 then 
+                        SmartTraverse(spawnerPos) 
+                    elseif dist > 15 then 
+                        TweenToSync(spawnerPos + Vector3.new(0,5,0)) 
+                    end
                 end
 
                 pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestSummonBoss"):FireServer(builderBoss) end)
@@ -583,16 +598,23 @@ local function StartPityFarming(targetBoss, builderBoss)
                 end
 
             elseif currentPity >= 24 then
+                isFarmingBuilder = false
                 updateStatus("Pity Farm: PITY FULL! Spawning Target -> " .. targetBoss)
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 
                 if targetBoss == "Atomic" or targetBoss == "AtomicBoss" then
                     local spawnerPos = Vector3.new(127, 3, 1878)
-                    if hrp then if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end end
+                    if hrp then 
+                        local dist = (hrp.Position - spawnerPos).Magnitude
+                        if dist > 2500 then SmartTraverse(spawnerPos) elseif dist > 15 then TweenToSync(spawnerPos + Vector3.new(0,5,0)) end 
+                    end
                     pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnAtomic"):FireServer("Normal") end)
                 elseif targetBoss == "TrueAizen" then
                     local spawnerPos = Vector3.new(-1284, 1604, 1753)
-                    if hrp then if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end end
+                    if hrp then 
+                        local dist = (hrp.Position - spawnerPos).Magnitude
+                        if dist > 2500 then SmartTraverse(spawnerPos) elseif dist > 15 then TweenToSync(spawnerPos + Vector3.new(0,5,0)) end 
+                    end
                     pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer("Normal") end)
                 end
                 task.wait(2)
@@ -631,6 +653,7 @@ local function StartPityFarming(targetBoss, builderBoss)
             end
             task.wait(0.5)
         end
+        isFarmingBuilder = false
     end)
 end
 
@@ -904,7 +927,7 @@ local function startAutoDungeon()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.2 (Builder Boss Tween Bypass)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.3 (Combat Check & Tween Optimization)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -1013,6 +1036,7 @@ Tabs.Bosses:AddDropdown("PityBuilderDrop", {Title = "Pity Builder Boss (Farms to
 Tabs.Bosses:AddDropdown("PityTargetDrop", {Title = "Target Boss (Spawns on 25)", Values = {"Atomic", "TrueAizen"}, Multi = false, Default = "Atomic"}):OnChanged(function(Value) selectedPityTarget = Value end)
 
 Tabs.Bosses:AddToggle("PityTweenToggle", {Title = "Tween to Builder Boss", Default = true}):OnChanged(function(Value) pityTweenToBuilderActive = Value end)
+Tabs.Bosses:AddToggle("DisableMovesBuilderToggle", {Title = "Disable Auto Moves on Builder", Default = false}):OnChanged(function(Value) disableMovesOnBuilder = Value end)
 
 Tabs.Bosses:AddToggle("PityFarmToggle", {Title = "Enable Pity Farming Loop", Default = false}):OnChanged(function(Value)
     pityFarmingActive = Value
