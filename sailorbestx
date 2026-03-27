@@ -89,6 +89,7 @@ local cycleDelay = 1
 -- Bosses & Pity Variables
 local pityFarmingActive = false
 local pityFarmingTask = nil
+local pityTweenToBuilderActive = true
 local selectedBuilder = "SaberBoss"
 local selectedPityTarget = "Atomic"
 
@@ -558,12 +559,18 @@ local function StartPityFarming(targetBoss, builderBoss)
                             local combatPos = targetPart.Position + getTargetOffset()
                             local hrp2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                             if hrp2 then
-                                if (hrp2.Position - combatPos).Magnitude > 2500 then SmartTraverse(combatPos); break
-                                elseif (hrp2.Position - combatPos).Magnitude > 15 then TweenToAsync(combatPos)
+                                if pityTweenToBuilderActive then
+                                    if (hrp2.Position - combatPos).Magnitude > 2500 then SmartTraverse(combatPos); break
+                                    elseif (hrp2.Position - combatPos).Magnitude > 15 then TweenToAsync(combatPos)
+                                    else
+                                        if activeTween then activeTween:Cancel(); activeTween = nil end
+                                        DisableNoclip()
+                                        hrp2.CFrame = CFrame.new(combatPos)
+                                        if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                        FireHitRemote(targetPart.Position)
+                                    end
                                 else
-                                    if activeTween then activeTween:Cancel(); activeTween = nil end
-                                    DisableNoclip()
-                                    hrp2.CFrame = CFrame.new(combatPos)
+                                    -- Bypass tween logic if toggle is OFF, stand at spawner and attack
                                     if not autoCycleActive then equipWeapon(selectedWeapon) end
                                     FireHitRemote(targetPart.Position)
                                 end
@@ -897,7 +904,7 @@ local function startAutoDungeon()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.1 (Tabs Restored & Pity Fixed)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.2 (Builder Boss Tween Bypass)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -1004,6 +1011,8 @@ local builderBosses = {"SaberBoss", "QinShiBoss", "IchigoBoss", "SaberAlterBoss"
 
 Tabs.Bosses:AddDropdown("PityBuilderDrop", {Title = "Pity Builder Boss (Farms to 24)", Values = builderBosses, Multi = false, Default = "SaberBoss"}):OnChanged(function(Value) selectedBuilder = Value end)
 Tabs.Bosses:AddDropdown("PityTargetDrop", {Title = "Target Boss (Spawns on 25)", Values = {"Atomic", "TrueAizen"}, Multi = false, Default = "Atomic"}):OnChanged(function(Value) selectedPityTarget = Value end)
+
+Tabs.Bosses:AddToggle("PityTweenToggle", {Title = "Tween to Builder Boss", Default = true}):OnChanged(function(Value) pityTweenToBuilderActive = Value end)
 
 Tabs.Bosses:AddToggle("PityFarmToggle", {Title = "Enable Pity Farming Loop", Default = false}):OnChanged(function(Value)
     pityFarmingActive = Value
