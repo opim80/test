@@ -256,7 +256,7 @@ task.spawn(function()
             local weapons = getWeapons()
             local validWeapons = {}
             for _, w in ipairs(weapons) do
-                if not blacklistedWeapons[w] then table.insert(validWeapons, w) end
+                if type(blacklistedWeapons) == "table" and not blacklistedWeapons[w] then table.insert(validWeapons, w) end
             end
             if #validWeapons > 0 then
                 cycleIndex = (cycleIndex % #validWeapons) + 1
@@ -274,7 +274,7 @@ end)
 local function startAutoAbility(moveNum, toggleRef, delayRef)
     task.spawn(function()
         while task.wait(0.1) do
-            if toggleRef.Value and (killAuraActive or autoKaitunActive or specificQuestActive or pityFarmingActive) then
+            if toggleRef and toggleRef.Value and delayRef and delayRef.Value and (killAuraActive or autoKaitunActive or specificQuestActive or pityFarmingActive) then
                 pcall(function() ReplicatedStorage:WaitForChild("AbilitySystem"):WaitForChild("Remotes"):WaitForChild("RequestAbility"):FireServer(moveNum) end)
                 task.wait(delayRef.Value)
             end
@@ -477,11 +477,7 @@ local function StartSpecificQuest(questName)
                                 hrp2.CFrame = CFrame.new(combatPos)
                                 if not autoCycleActive then equipWeapon(selectedWeapon) end
                                 FireHitRemote(targetPart.Position)
-                                
-                                local mobHum = targetMob:FindFirstChild("Humanoid")
-                                if mobHum then
-                                    updateStatus("Specific Quest: Farming " .. targetQ.NPC .. " | HP: " .. math.floor(mobHum.Health))
-                                end
+                                updateStatus("Specific Quest: Farming " .. targetQ.NPC .. " | HP: " .. math.floor(targetMob.Humanoid.Health))
                             end
                         end
                     end
@@ -518,13 +514,10 @@ local function StartPityFarming(targetBoss, builderBoss)
                 -- Farm the builder boss until dead
                 while pityFarmingActive and not isTraversing and GetPityAmount() == currentPity do
                     local targetMob = nil
-                    local npcFolder = workspace:FindFirstChild("NPCs")
-                    if npcFolder then
-                        for _, npc in ipairs(npcFolder:GetChildren()) do
-                            local hum = npc:FindFirstChild("Humanoid")
-                            if hum and hum.Health > 0 and string.find(string.lower(npc.Name), string.lower(builderBoss)) then
-                                targetMob = npc; break
-                            end
+                    for _, npc in ipairs(workspace:FindFirstChild("NPCs"):GetChildren()) do
+                        local hum = npc:FindFirstChild("Humanoid")
+                        if hum and hum.Health > 0 and string.find(string.lower(npc.Name), string.lower(builderBoss)) then
+                            targetMob = npc; break
                         end
                     end
 
@@ -551,7 +544,7 @@ local function StartPityFarming(targetBoss, builderBoss)
                     task.wait(0.25)
                 end
 
-            elseif currentPity >= 24 then
+            elseif currentPity == 24 then
                 updateStatus("Pity Farm: PITY FULL! Spawning Target -> " .. targetBoss)
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 
@@ -566,15 +559,12 @@ local function StartPityFarming(targetBoss, builderBoss)
                 end
                 task.wait(2)
 
-                while pityFarmingActive and not isTraversing and GetPityAmount() >= 24 do
+                while pityFarmingActive and not isTraversing and GetPityAmount() == 24 do
                     local targetMob = nil
-                    local npcFolder = workspace:FindFirstChild("NPCs")
-                    if npcFolder then
-                        for _, npc in ipairs(npcFolder:GetChildren()) do
-                            local hum = npc:FindFirstChild("Humanoid")
-                            if hum and hum.Health > 0 and string.find(string.lower(npc.Name), string.lower(targetBoss)) then
-                                targetMob = npc; break
-                            end
+                    for _, npc in ipairs(workspace:FindFirstChild("NPCs"):GetChildren()) do
+                        local hum = npc:FindFirstChild("Humanoid")
+                        if hum and hum.Health > 0 and string.find(string.lower(npc.Name), string.lower(targetBoss)) then
+                            targetMob = npc; break
                         end
                     end
 
@@ -613,7 +603,7 @@ local function CalcOptimalQuest(damage)
     for i, q in ipairs(HardcodedQuests) do
         local maxHealth = q.MaxHealth or 30000 
         local hitsToKill = math.ceil(maxHealth / damage)
-        local timeToKill = (hitsToKill * 0.4) + 2 
+        local timeToKill = (hitsToKill * 0.4) + 2 -- Kept calc at 0.4s as requested
         local totalTime = timeToKill * q.Amount
         local questsPer10m = 600 / totalTime
         local xpPer10m = q.XP * questsPer10m
@@ -769,15 +759,14 @@ local function startKillAura()
     auraTask = task.spawn(function()
         while killAuraActive do
             if isTraversing then task.wait(0.5); continue end
-            local npcFolder = workspace:FindFirstChild("NPCs")
-            if not npcFolder then task.wait(0.5); continue end
+            if not workspace:FindFirstChild("NPCs") then task.wait(0.5); continue end
 
             local currentTarget, bestTarget, bossTarget = nil, nil, nil
             local closestDist = math.huge
             local charPos = LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.zero
             local validMobFound = false
 
-            for _, npc in ipairs(npcFolder:GetChildren()) do
+            for _, npc in ipairs(workspace.NPCs:GetChildren()) do
                 local hum = npc:FindFirstChild("Humanoid")
                 if hum and hum.Health > 0 then
                     if isMobSelected(npc.Name) then
@@ -797,7 +786,7 @@ local function startKillAura()
             currentTarget = bossTarget or bestTarget
 
             if not validMobFound then
-                if not killAllActive and not killTimedBossesActive and next(selectedMobs) == nil then updateStatus("No mobs selected.") else updateStatus("No selected mobs alive.") end
+                if not killAllActive and not killTimedBossesActive and type(selectedMobs) == "table" and next(selectedMobs) == nil then updateStatus("No mobs selected.") else updateStatus("No selected mobs alive.") end
                 task.wait(0.5); continue
             end
 
@@ -819,11 +808,7 @@ local function startKillAura()
                                 hrp.CFrame = CFrame.new(combatPos)
                                 if not autoCycleActive then equipWeapon(selectedWeapon) end
                                 FireHitRemote(targetPart.Position)
-                                
-                                local updatedHum = currentTarget:FindFirstChild("Humanoid")
-                                if updatedHum then
-                                    updateStatus("Target: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(updatedHum.Health)))
-                                end
+                                updateStatus("Target: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)))
                             end
                         end
                     end
@@ -836,7 +821,7 @@ local function startKillAura()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.1 (Safety Patches & Pity Farm)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.1 (UI Tabs Patch)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -857,8 +842,9 @@ end)
 
 local Tabs = {
     Combat = Window:AddTab({ Title = "Combat", Icon = "swords" }),
-    Quests = Window:AddTab({ Title = "Kaitun & Quests", Icon = "scroll" }),
-    Raids = Window:AddTab({ Title = "Bosses & Raids", Icon = "skull" }),
+    Kaitun = Window:AddTab({ Title = "Kaitun", Icon = "star" }),
+    Quests = Window:AddTab({ Title = "Quests", Icon = "scroll" }),
+    Raids = Window:AddTab({ Title = "Raids", Icon = "skull" }),
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
@@ -883,7 +869,7 @@ Tabs.Combat:AddInput("FollowY", {Title = "Y Offset", Default = "50", Numeric = t
 Tabs.Combat:AddInput("FollowZ", {Title = "Z Offset", Default = "0", Numeric = true}):OnChanged(function(Value) followOffsetZ = tonumber(Value) or 0 end)
 
 Tabs.Combat:AddSection("Weapons & Abilities")
-local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Fixed Weapon", Values = getWeapons(), Multi = false})
+local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Fixed Weapon", Values = getWeapons(), Multi = false, Default = ""})
 WeaponDropdown:OnChanged(function(Value) if Value and Value ~= "" then selectedWeapon = Value end end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
@@ -897,9 +883,14 @@ for i = 1, 4 do
     startAutoAbility(i, tgl, cdSlider)
 end
 
--- TAB: KAITUN & QUESTS
-Tabs.Quests:AddSection("Dynamic Auto-Leveling")
-Tabs.Quests:AddToggle("KaitunToggle", {Title = "Enable Kaitun (Best Quest)", Default = false}):OnChanged(function(Value)
+Tabs.Combat:AddSection("Movement Tweening")
+Tabs.Combat:AddSlider("TweenSpeedSlider", {Title = "Movement Tween Speed", Default = 65, Min = 10, Max = 200, Rounding = 1}):OnChanged(function(Value) backupTweenSpeed = Value end)
+local CamToggle = Tabs.Combat:AddToggle("CamToggle", {Title = "Spectate Target", Default = false})
+CamToggle:OnChanged(function(Value) cameraTrackActive = Value; if not cameraTrackActive then stopCameraTracking() else startCameraTracking() end end)
+
+-- TAB: KAITUN
+Tabs.Kaitun:AddSection("Dynamic Auto-Leveling")
+Tabs.Kaitun:AddToggle("KaitunToggle", {Title = "Enable Kaitun (Best Quest)", Default = false}):OnChanged(function(Value)
     autoKaitunActive = Value
     if autoKaitunActive then StartKaitun() else
         if kaitunTask then task.cancel(kaitunTask) end; if kaitunStatTask then task.cancel(kaitunStatTask) end
@@ -907,12 +898,13 @@ Tabs.Quests:AddToggle("KaitunToggle", {Title = "Enable Kaitun (Best Quest)", Def
     end
 end)
 
+-- TAB: QUESTS
 Tabs.Quests:AddSection("Static Auto Quest")
 local questList = {}
 for _, q in ipairs(HardcodedQuests) do table.insert(questList, q.NPC) end
 
 local targetSpecificQuest = ""
-Tabs.Quests:AddDropdown("SpecificQuestDrop", {Title = "Select Specific Quest", Values = questList, Multi = false}):OnChanged(function(Value) targetSpecificQuest = Value end)
+Tabs.Quests:AddDropdown("SpecificQuestDrop", {Title = "Select Specific Quest", Values = questList, Multi = false, Default = ""}):OnChanged(function(Value) targetSpecificQuest = Value end)
 Tabs.Quests:AddToggle("SpecificQuestToggle", {Title = "Farm Specific Quest Infinite", Default = false}):OnChanged(function(Value)
     specificQuestActive = Value
     if specificQuestActive and targetSpecificQuest ~= "" then StartSpecificQuest(targetSpecificQuest) else
@@ -920,7 +912,7 @@ Tabs.Quests:AddToggle("SpecificQuestToggle", {Title = "Farm Specific Quest Infin
     end
 end)
 
--- TAB: RAIDS & PITY
+-- TAB: RAIDS
 Tabs.Raids:AddSection("Advanced Boss Pity Farming")
 local builderBosses = {"SaberBoss", "QinShiBoss", "IchigoBoss", "SaberAlterBoss", "BlessedMaidenBoss"}
 local selectedBuilder = "SaberBoss"
@@ -937,9 +929,15 @@ Tabs.Raids:AddToggle("PityFarmToggle", {Title = "Enable Pity Farming Loop", Defa
     end
 end)
 
--- CONFIG LOGIC
-SaveManager:SetLibrary(Fluent); InterfaceManager:SetLibrary(Fluent); SaveManager:IgnoreThemeSettings(); SaveManager:SetIgnoreIndexes({})
-SaveManager:SetFolder("UltimateHub"); InterfaceManager:BuildInterfaceSection(Tabs.Settings); SaveManager:BuildConfigSection(Tabs.Settings)
+-- TAB: SETTINGS & CONFIG
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+SaveManager:SetFolder("UltimateHub")
+InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
-task.wait(1.5); pcall(function() SaveManager:LoadAutoloadConfig() end)
+task.wait(1.5)
+pcall(function() SaveManager:LoadAutoloadConfig() end)
