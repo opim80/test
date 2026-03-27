@@ -128,7 +128,7 @@ end
 
 -- [[ HELPER FUNCTIONS ]]
 local function updateStatus(msg)
-    if StatusDisplay then StatusDisplay:SetDesc(msg) end
+    if StatusDisplay then pcall(function() StatusDisplay:SetDesc(msg) end) end
 end
 
 local function getBaseName(name)
@@ -821,23 +821,25 @@ local function startKillAura()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.1 (UI Tabs Patch)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.2 (Stability & Tab Fixes)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
-    local CoreGui = game:GetService("CoreGui")
-    local function limitDropdownSize(obj)
-        if obj:IsA("ScrollingFrame") and (obj.Name:lower():find("option") or (obj.Parent and obj.Parent.Name:lower():find("dropdown"))) then
-            if not obj:FindFirstChild("MobileListFix") then
-                local constraint = Instance.new("UISizeConstraint")
-                constraint.Name = "MobileListFix"
-                constraint.MaxSize = Vector2.new(math.huge, 110) 
-                constraint.Parent = obj
+    local success, err = pcall(function()
+        local CoreGui = game:GetService("CoreGui")
+        local function limitDropdownSize(obj)
+            if obj:IsA("ScrollingFrame") and (obj.Name:lower():find("option") or (obj.Parent and obj.Parent.Name:lower():find("dropdown"))) then
+                if not obj:FindFirstChild("MobileListFix") then
+                    local constraint = Instance.new("UISizeConstraint")
+                    constraint.Name = "MobileListFix"
+                    constraint.MaxSize = Vector2.new(math.huge, 110) 
+                    constraint.Parent = obj
+                end
             end
         end
-    end
-    for _, desc in ipairs(CoreGui:GetDescendants()) do limitDropdownSize(desc) end
-    CoreGui.DescendantAdded:Connect(limitDropdownSize)
+        for _, desc in ipairs(CoreGui:GetDescendants()) do limitDropdownSize(desc) end
+        CoreGui.DescendantAdded:Connect(limitDropdownSize)
+    end)
 end)
 
 local Tabs = {
@@ -858,7 +860,7 @@ MasterAuraToggle:OnChanged(function(Value) killAuraActive = Value; if killAuraAc
 Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false}):OnChanged(function(Value) killAllActive = Value end)
 Tabs.Combat:AddToggle("KillTimedBossesToggle", {Title = "Kill All Timed Bosses (boss_)", Default = false}):OnChanged(function(Value) killTimedBossesActive = Value end)
 
-local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob Groups", Values = getAvailableMobs(), Multi = true, Default = {}})
+local MobDropdown = Tabs.Combat:AddDropdown("MobDropdown", {Title = "Select Mob Groups", Values = getAvailableMobs(), Multi = true})
 MobDropdown:OnChanged(function(Value) selectedMobs = Value end)
 Tabs.Combat:AddButton({Title = "Refresh Mob List", Callback = function() MobDropdown:SetValues(getAvailableMobs()) end})
 
@@ -869,13 +871,13 @@ Tabs.Combat:AddInput("FollowY", {Title = "Y Offset", Default = "50", Numeric = t
 Tabs.Combat:AddInput("FollowZ", {Title = "Z Offset", Default = "0", Numeric = true}):OnChanged(function(Value) followOffsetZ = tonumber(Value) or 0 end)
 
 Tabs.Combat:AddSection("Weapons & Abilities")
-local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Fixed Weapon", Values = getWeapons(), Multi = false, Default = ""})
+local WeaponDropdown = Tabs.Combat:AddDropdown("WeaponDropdown", {Title = "Select Fixed Weapon", Values = getWeapons(), Multi = false})
 WeaponDropdown:OnChanged(function(Value) if Value and Value ~= "" then selectedWeapon = Value end end)
 Tabs.Combat:AddButton({Title = "Refresh Weapons", Callback = function() WeaponDropdown:SetValues(getWeapons()) end})
 
 Tabs.Combat:AddToggle("AutoCycleToggle", {Title = "Auto Cycle Hotbar Weapons", Default = false}):OnChanged(function(Value) autoCycleActive = Value end)
 Tabs.Combat:AddSlider("AutoCycleDelay", {Title = "Cycle Delay (s)", Default = 1, Min = 0.01, Max = 5, Rounding = 2}):OnChanged(function(Value) cycleDelay = Value end)
-Tabs.Combat:AddDropdown("BlacklistWepDropdown", {Title = "Blacklist Cycle Weapons", Values = getWeapons(), Multi = true, Default = {}}):OnChanged(function(Value) blacklistedWeapons = Value end)
+Tabs.Combat:AddDropdown("BlacklistWepDropdown", {Title = "Blacklist Cycle Weapons", Values = getWeapons(), Multi = true}):OnChanged(function(Value) blacklistedWeapons = Value end)
 
 for i = 1, 4 do
     local cdSlider = Tabs.Combat:AddSlider("MoveCD" .. i, {Title = "Move " .. i .. " Cooldown (s)", Default = 5, Min = 0.5, Max = 30, Rounding = 1})
@@ -904,7 +906,7 @@ local questList = {}
 for _, q in ipairs(HardcodedQuests) do table.insert(questList, q.NPC) end
 
 local targetSpecificQuest = ""
-Tabs.Quests:AddDropdown("SpecificQuestDrop", {Title = "Select Specific Quest", Values = questList, Multi = false, Default = ""}):OnChanged(function(Value) targetSpecificQuest = Value end)
+Tabs.Quests:AddDropdown("SpecificQuestDrop", {Title = "Select Specific Quest", Values = questList, Multi = false}):OnChanged(function(Value) targetSpecificQuest = Value end)
 Tabs.Quests:AddToggle("SpecificQuestToggle", {Title = "Farm Specific Quest Infinite", Default = false}):OnChanged(function(Value)
     specificQuestActive = Value
     if specificQuestActive and targetSpecificQuest ~= "" then StartSpecificQuest(targetSpecificQuest) else
@@ -918,8 +920,8 @@ local builderBosses = {"SaberBoss", "QinShiBoss", "IchigoBoss", "SaberAlterBoss"
 local selectedBuilder = "SaberBoss"
 local selectedPityTarget = "Atomic"
 
-Tabs.Raids:AddDropdown("PityBuilderDrop", {Title = "Pity Builder Boss (Farms to 24)", Values = builderBosses, Multi = false, Default = "SaberBoss"}):OnChanged(function(Value) selectedBuilder = Value end)
-Tabs.Raids:AddInput("PityTargetInput", {Title = "Target Boss (Spawns on 25)", Default = "Atomic"}):OnChanged(function(Value) selectedPityTarget = Value end)
+Tabs.Raids:AddDropdown("PityBuilderDrop", {Title = "Pity Builder Boss (Farms to 24)", Values = builderBosses, Multi = false}):OnChanged(function(Value) if Value and Value ~= "" then selectedBuilder = Value end end)
+Tabs.Raids:AddInput("PityTargetInput", {Title = "Target Boss (Spawns on 25)"}):OnChanged(function(Value) if Value and Value ~= "" then selectedPityTarget = Value end end)
 Tabs.Raids:AddParagraph({Title = "Valid Targets", Content = "Type exactly: Atomic, TrueAizen, or the name of a natural boss."})
 
 Tabs.Raids:AddToggle("PityFarmToggle", {Title = "Enable Pity Farming Loop", Default = false}):OnChanged(function(Value)
