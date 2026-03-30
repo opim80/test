@@ -68,11 +68,13 @@ local killTimedBossesActive = false
 local selectedMobs = {} 
 local selectedWeapon = ""
 local vectorMethod = "vector.create(X, Y, Z)" 
-local backupTweenSpeed = 65 
+local backupTweenSpeed = 0.1
+local instantTPActive = false -- New Instant TP state
 local auraTask = nil
 local cameraTrackActive = false
 local cameraTask = nil
 local isTraversing = false
+local isAttacking = false -- Strict Combat State Tracker
 
 -- Feature Variables
 local autoKaitunActive = false
@@ -89,6 +91,9 @@ local cycleDelay = 1
 -- Bosses & Pity Variables
 local pityFarmingActive = false
 local pityFarmingTask = nil
+local pityTweenToBuilderActive = true
+local disableMovesOnBuilder = false
+local isFarmingBuilder = false
 local selectedBuilder = "SaberBoss"
 local selectedPityTarget = "Atomic"
 
@@ -118,6 +123,7 @@ local StatusDisplay = nil
 
 -- Store new cleanup function globally
 getgenv().CSMDH_Cleanup = function()
+    isAttacking = false
     if auraTask then task.cancel(auraTask) end
     if dungeonLoopTask then task.cancel(dungeonLoopTask) end
     if kaitunTask then task.cancel(kaitunTask) end
@@ -306,9 +312,13 @@ end)
 local function startAutoAbility(moveNum, toggleRef, delayRef)
     task.spawn(function()
         while task.wait(0.1) do
-            if toggleRef.Value and (killAuraActive or autoKaitunActive or specificQuestActive or pityFarmingActive) then
-                pcall(function() ReplicatedStorage:WaitForChild("AbilitySystem"):WaitForChild("Remotes"):WaitForChild("RequestAbility"):FireServer(moveNum) end)
-                task.wait(delayRef.Value)
+            if toggleRef.Value and isAttacking then
+                if isFarmingBuilder and disableMovesOnBuilder then
+                    -- Do not fire abilities against the builder boss
+                else
+                    pcall(function() ReplicatedStorage:WaitForChild("AbilitySystem"):WaitForChild("Remotes"):WaitForChild("RequestAbility"):FireServer(moveNum) end)
+                    task.wait(delayRef.Value)
+                end
             end
         end
     end)
@@ -351,8 +361,14 @@ local function TweenToSync(targetPos)
     if activeTween then activeTween:Cancel() end
     EnableNoclip()
 
-    local dist = (hrp.Position - targetPos).Magnitude
-    local ti = TweenInfo.new(dist / backupTweenSpeed, Enum.EasingStyle.Linear)
+    local ti
+    if instantTPActive then
+        ti = TweenInfo.new(0, Enum.EasingStyle.Linear)
+    else
+        local dist = (hrp.Position - targetPos).Magnitude
+        ti = TweenInfo.new(dist / backupTweenSpeed, Enum.EasingStyle.Linear)
+    end
+    
     activeTween = TweenService:Create(hrp, ti, {CFrame = CFrame.new(targetPos)})
     activeTweenTarget = targetPos
     activeTween:Play()
@@ -371,14 +387,28 @@ local function TweenToAsync(targetPos)
     if activeTween then activeTween:Cancel() end
     EnableNoclip()
 
-    local dist = (hrp.Position - targetPos).Magnitude
-    local ti = TweenInfo.new(dist / backupTweenSpeed, Enum.EasingStyle.Linear)
+    local ti
+    if instantTPActive then
+        ti = TweenInfo.new(0, Enum.EasingStyle.Linear)
+    else
+        local dist = (hrp.Position - targetPos).Magnitude
+        ti = TweenInfo.new(dist / backupTweenSpeed, Enum.EasingStyle.Linear)
+    end
+    
     activeTween = TweenService:Create(hrp, ti, {CFrame = CFrame.new(targetPos)})
     activeTweenTarget = targetPos
     activeTween:Play()
 end
 
 local function SmartTraverse(targetPos)
+    if instantTPActive then
+        isTraversing = true
+        updateStatus("Instant TP: Warping directly to target...")
+        TweenToSync(targetPos)
+        isTraversing = false
+        return
+    end
+
     isTraversing = true
     updateStatus("Quick Traversal: Resetting character...")
     LocalPlayer.Character:BreakJoints()
@@ -498,26 +528,31 @@ local function StartSpecificQuest(questName)
                         if hrp2 then
                             local combatPos = targetPart.Position + getTargetOffset()
                             if (hrp2.Position - combatPos).Magnitude > 2500 then
+                                isAttacking = false
                                 task.spawn(function() SmartTraverse(combatPos) end)
                                 task.wait(1)
                                 break
                             elseif (hrp2.Position - combatPos).Magnitude > 15 then
+                                isAttacking = false
                                 TweenToAsync(combatPos)
                             else
                                 if activeTween then activeTween:Cancel(); activeTween = nil end
                                 DisableNoclip()
                                 hrp2.CFrame = CFrame.new(combatPos)
                                 if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                isAttacking = true
                                 FireHitRemote(targetPart.Position)
                                 updateStatus("Specific Quest: Farming " .. targetQ.NPC .. " | HP: " .. math.floor(targetMob.Humanoid.Health))
                             end
                         end
                     end
                 else
+                    isAttacking = false
                     break -- Mob dead or despawned, fetch quest again
                 end
                 task.wait(0.25)
             end
+            isAttacking = false
             task.wait(0.25)
         end
     end)
@@ -533,11 +568,17 @@ local function StartPityFarming(targetBoss, builderBoss)
             local currentPity = GetPityAmount()
 
             if currentPity < 24 then
+                isFarmingBuilder = true
                 updateStatus("Pity Farm: Building Pity (" .. currentPity .. "/24) -> " .. builderBoss)
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then
                     local spawnerPos = Vector3.new(652, -4, -1019)
-                    if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end
+                    local dist = (hrp.Position - spawnerPos).Magnitude
+                    if dist > 2500 then 
+                        SmartTraverse(spawnerPos) 
+                    elseif dist > 15 then 
+                        TweenToSync(spawnerPos + Vector3.new(0,5,0)) 
+                    end
                 end
 
                 pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestSummonBoss"):FireServer(builderBoss) end)
@@ -558,34 +599,49 @@ local function StartPityFarming(targetBoss, builderBoss)
                             local combatPos = targetPart.Position + getTargetOffset()
                             local hrp2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                             if hrp2 then
-                                if (hrp2.Position - combatPos).Magnitude > 2500 then SmartTraverse(combatPos); break
-                                elseif (hrp2.Position - combatPos).Magnitude > 15 then TweenToAsync(combatPos)
+                                if pityTweenToBuilderActive then
+                                    if (hrp2.Position - combatPos).Magnitude > 2500 then isAttacking = false; SmartTraverse(combatPos); break
+                                    elseif (hrp2.Position - combatPos).Magnitude > 15 then isAttacking = false; TweenToAsync(combatPos)
+                                    else
+                                        if activeTween then activeTween:Cancel(); activeTween = nil end
+                                        DisableNoclip()
+                                        hrp2.CFrame = CFrame.new(combatPos)
+                                        if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                        isAttacking = true
+                                        FireHitRemote(targetPart.Position)
+                                    end
                                 else
-                                    if activeTween then activeTween:Cancel(); activeTween = nil end
-                                    DisableNoclip()
-                                    hrp2.CFrame = CFrame.new(combatPos)
                                     if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                    isAttacking = true
                                     FireHitRemote(targetPart.Position)
                                 end
                             end
                         end
                     else
-                        break -- Dead, loop restarts to check pity
+                        isAttacking = false
+                        break 
                     end
                     task.wait(0.25)
                 end
 
             elseif currentPity >= 24 then
+                isFarmingBuilder = false
                 updateStatus("Pity Farm: PITY FULL! Spawning Target -> " .. targetBoss)
                 local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 
                 if targetBoss == "Atomic" or targetBoss == "AtomicBoss" then
                     local spawnerPos = Vector3.new(127, 3, 1878)
-                    if hrp then if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end end
+                    if hrp then 
+                        local dist = (hrp.Position - spawnerPos).Magnitude
+                        if dist > 2500 then SmartTraverse(spawnerPos) elseif dist > 15 then TweenToSync(spawnerPos + Vector3.new(0,5,0)) end 
+                    end
                     pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnAtomic"):FireServer("Normal") end)
                 elseif targetBoss == "TrueAizen" then
                     local spawnerPos = Vector3.new(-1284, 1604, 1753)
-                    if hrp then if (hrp.Position - spawnerPos).Magnitude > 2500 then SmartTraverse(spawnerPos) else TweenToSync(spawnerPos + Vector3.new(0,5,0)) end end
+                    if hrp then 
+                        local dist = (hrp.Position - spawnerPos).Magnitude
+                        if dist > 2500 then SmartTraverse(spawnerPos) elseif dist > 15 then TweenToSync(spawnerPos + Vector3.new(0,5,0)) end 
+                    end
                     pcall(function() ReplicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("RequestSpawnTrueAizen"):FireServer("Normal") end)
                 end
                 task.wait(2)
@@ -605,25 +661,30 @@ local function StartPityFarming(targetBoss, builderBoss)
                             local combatPos = targetPart.Position + getTargetOffset()
                             local hrp2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                             if hrp2 then
-                                if (hrp2.Position - combatPos).Magnitude > 2500 then SmartTraverse(combatPos); break
-                                elseif (hrp2.Position - combatPos).Magnitude > 15 then TweenToAsync(combatPos)
+                                if (hrp2.Position - combatPos).Magnitude > 2500 then isAttacking = false; SmartTraverse(combatPos); break
+                                elseif (hrp2.Position - combatPos).Magnitude > 15 then isAttacking = false; TweenToAsync(combatPos)
                                 else
                                     if activeTween then activeTween:Cancel(); activeTween = nil end
                                     DisableNoclip()
                                     hrp2.CFrame = CFrame.new(combatPos)
                                     if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                    isAttacking = true
                                     FireHitRemote(targetPart.Position)
                                 end
                             end
                         end
                     else
+                        isAttacking = false
                         updateStatus("Pity Farm: Waiting for " .. targetBoss .. " to exist in Workspace...")
                     end
                     task.wait(0.25)
                 end
             end
+            isAttacking = false
             task.wait(0.5)
         end
+        isAttacking = false
+        isFarmingBuilder = false
     end)
 end
 
@@ -714,12 +775,21 @@ local function StartKaitun()
                     local targetPart = getTargetPart(closestMob)
                     if targetPart then
                         local combatPos = targetPart.Position + getTargetOffset()
-                        if (hrp.Position - combatPos).Magnitude > 2500 then SmartTraverse(combatPos) else TweenToSync(combatPos) end
-                        if not autoCycleActive then equipWeapon(selectedWeapon) end
-                        FireHitRemote(targetPart.Position)
+                        if (hrp.Position - combatPos).Magnitude > 2500 then 
+                            isAttacking = false
+                            SmartTraverse(combatPos) 
+                        elseif (hrp.Position - combatPos).Magnitude > 15 then 
+                            isAttacking = false
+                            TweenToSync(combatPos) 
+                        else 
+                            isAttacking = true
+                            if not autoCycleActive then equipWeapon(selectedWeapon) end
+                            FireHitRemote(targetPart.Position)
+                        end
                         
                         local timeout = tick() + 2
                         while CurrentHitDamage <= 0 and tick() < timeout do task.wait(0.1) end
+                        isAttacking = false
                     end
                 end
                 continue
@@ -736,6 +806,7 @@ local function StartKaitun()
 
                 if currentKaitunQuest ~= bestQuest then
                     isTraversing = true
+                    isAttacking = false
                     FireAbandonQuest(); task.wait(0.5)
 
                     local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -756,8 +827,10 @@ local function StartKaitun()
                     if hrp then
                         local combatPos = centerPos + getTargetOffset()
                         if (hrp.Position - combatPos).Magnitude > 2500 then
+                            isAttacking = false
                             task.spawn(function() SmartTraverse(combatPos) end); task.wait(1)
                         elseif (hrp.Position - combatPos).Magnitude > 15 then
+                            isAttacking = false
                             TweenToAsync(combatPos)
                         else
                             if activeTween then activeTween:Cancel(); activeTween = nil end
@@ -765,6 +838,7 @@ local function StartKaitun()
                             hrp.CFrame = CFrame.new(combatPos)
                             if not autoCycleActive then equipWeapon(selectedWeapon) end
                             
+                            isAttacking = true
                             for _, npc in ipairs(validMobs) do
                                 local targetPart = getTargetPart(npc)
                                 if targetPart then FireHitRemote(targetPart.Position) end
@@ -772,11 +846,13 @@ local function StartKaitun()
                         end
                     end
                 else
+                    isAttacking = false
                     updateStatus(string.format("Waiting for %s | Check in: %ds", bestQuest.NPC, timeRemaining))
                 end
             end
             task.wait(0.25)
         end
+        isAttacking = false
     end)
 end
 
@@ -816,9 +892,41 @@ local function startKillAura()
 
             currentTarget = bossTarget or bestTarget
 
-            if not validMobFound then
-                if not killAllActive and not killTimedBossesActive and next(selectedMobs) == nil then updateStatus("No mobs selected.") else updateStatus("No selected mobs alive.") end
-                task.wait(0.5); continue
+            if not validMobFound or not currentTarget then
+                isAttacking = false
+                local targetSpawnPos = nil
+
+                if killAllActive then
+                    -- Cycle through all hardcoded quests to locate spawns
+                    getgenv().KACycleIndex = (getgenv().KACycleIndex or 0) + 1
+                    if getgenv().KACycleIndex > #HardcodedQuests then getgenv().KACycleIndex = 1 end
+                    targetSpawnPos = HardcodedQuests[getgenv().KACycleIndex].Pos
+                    updateStatus("KillAll: Teleporting to cycle zone " .. tostring(getgenv().KACycleIndex))
+                else
+                    -- Search HardcodedQuests for the matching selected mob location
+                    for _, q in ipairs(HardcodedQuests) do
+                        if isMobSelected(q.NPC) then
+                            targetSpawnPos = q.Pos
+                            break
+                        end
+                    end
+                    if targetSpawnPos then
+                        updateStatus("KillAura: Teleporting to selected mob spawn zone...")
+                    end
+                end
+
+                if targetSpawnPos then
+                    SmartTraverse(targetSpawnPos + Vector3.new(0, 15, 0))
+                    task.wait(1.5) -- Wait a second for mobs to render/spawn
+                else
+                    if not killAllActive and not killTimedBossesActive and next(selectedMobs) == nil then 
+                        updateStatus("No mobs selected.") 
+                    else 
+                        updateStatus("No selected mobs alive & no spawn zone found.") 
+                    end
+                    task.wait(0.5)
+                end
+                continue
             end
 
             if currentTarget then
@@ -830,14 +938,17 @@ local function startKillAura()
                         if hrp then
                             local combatPos = targetPart.Position + getTargetOffset()
                             if (hrp.Position - combatPos).Magnitude > 2500 then
+                                isAttacking = false
                                 task.spawn(function() SmartTraverse(combatPos) end); task.wait(1); break 
                             elseif (hrp.Position - combatPos).Magnitude > 15 then
+                                isAttacking = false
                                 TweenToAsync(combatPos)
                             else
                                 if activeTween then activeTween:Cancel(); activeTween = nil end
                                 DisableNoclip()
                                 hrp.CFrame = CFrame.new(combatPos)
                                 if not autoCycleActive then equipWeapon(selectedWeapon) end
+                                isAttacking = true
                                 FireHitRemote(targetPart.Position)
                                 updateStatus("Target: " .. currentTarget.Name .. " | HP: " .. tostring(math.floor(hum.Health)))
                             end
@@ -845,9 +956,11 @@ local function startKillAura()
                     end
                     task.wait(0.25)
                 end
+                isAttacking = false
             end
             task.wait(0.1)
         end
+        isAttacking = false
     end)
 end
 
@@ -897,7 +1010,7 @@ local function startAutoDungeon()
 end
 
 -- [[ UI INITIALIZATION ]]
-local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.1 (Tabs Restored & Pity Fixed)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
+local Window = Fluent:CreateWindow({ Title = "Ultimate Hub", SubTitle = "V5.4 (Strict Ability State Machine)", TabWidth = 140, Size = UDim2.fromOffset(580, 460), Acrylic = true, Theme = "Dark" })
 getgenv().CSMDH_Window = Window
 
 task.spawn(function()
@@ -930,7 +1043,7 @@ StatusDisplay = Tabs.Combat:AddParagraph({Title = "Live Analytics & Status", Con
 -- TAB: COMBAT
 Tabs.Combat:AddSection("KillAura Settings")
 getgenv().MasterAuraToggle = Tabs.Combat:AddToggle("MasterAuraToggle", {Title = "Start KillAura", Default = false})
-getgenv().MasterAuraToggle:OnChanged(function(Value) killAuraActive = Value; if killAuraActive then startKillAura() else updateStatus("KillAura Stopped."); if auraTask then task.cancel(auraTask) end end end)
+getgenv().MasterAuraToggle:OnChanged(function(Value) killAuraActive = Value; if killAuraActive then startKillAura() else updateStatus("KillAura Stopped."); if auraTask then task.cancel(auraTask) end; isAttacking = false end end)
 
 Tabs.Combat:AddToggle("KillAllToggle", {Title = "Kill ALL Mobs (Overrides Selection)", Default = false}):OnChanged(function(Value) killAllActive = Value end)
 Tabs.Combat:AddToggle("KillTimedBossesToggle", {Title = "Kill All Timed Bosses (boss_)", Default = false}):OnChanged(function(Value) killTimedBossesActive = Value end)
@@ -966,6 +1079,7 @@ Tabs.Quests:AddToggle("KaitunToggle", {Title = "Enable Kaitun (Best Quest)", Def
     autoKaitunActive = Value
     if autoKaitunActive then StartKaitun() else
         if kaitunTask then task.cancel(kaitunTask) end; if kaitunStatTask then task.cancel(kaitunStatTask) end
+        isAttacking = false
         updateStatus("Kaitun Stopped.")
     end
 end)
@@ -979,7 +1093,7 @@ Tabs.Quests:AddDropdown("SpecificQuestDrop", {Title = "Select Specific Quest", V
 Tabs.Quests:AddToggle("SpecificQuestToggle", {Title = "Farm Specific Quest Infinite", Default = false}):OnChanged(function(Value)
     specificQuestActive = Value
     if specificQuestActive and targetSpecificQuest ~= "" then StartSpecificQuest(targetSpecificQuest) else
-        if specificQuestTask then task.cancel(specificQuestTask) end; updateStatus("Specific Quest Stopped.")
+        if specificQuestTask then task.cancel(specificQuestTask) end; isAttacking = false; updateStatus("Specific Quest Stopped.")
     end
 end)
 
@@ -1005,10 +1119,13 @@ local builderBosses = {"SaberBoss", "QinShiBoss", "IchigoBoss", "SaberAlterBoss"
 Tabs.Bosses:AddDropdown("PityBuilderDrop", {Title = "Pity Builder Boss (Farms to 24)", Values = builderBosses, Multi = false, Default = "SaberBoss"}):OnChanged(function(Value) selectedBuilder = Value end)
 Tabs.Bosses:AddDropdown("PityTargetDrop", {Title = "Target Boss (Spawns on 25)", Values = {"Atomic", "TrueAizen"}, Multi = false, Default = "Atomic"}):OnChanged(function(Value) selectedPityTarget = Value end)
 
+Tabs.Bosses:AddToggle("PityTweenToggle", {Title = "Tween to Builder Boss", Default = true}):OnChanged(function(Value) pityTweenToBuilderActive = Value end)
+Tabs.Bosses:AddToggle("DisableMovesBuilderToggle", {Title = "Disable Auto Moves on Builder", Default = false}):OnChanged(function(Value) disableMovesOnBuilder = Value end)
+
 Tabs.Bosses:AddToggle("PityFarmToggle", {Title = "Enable Pity Farming Loop", Default = false}):OnChanged(function(Value)
     pityFarmingActive = Value
     if pityFarmingActive then StartPityFarming(selectedPityTarget, selectedBuilder) else
-        if pityFarmingTask then task.cancel(pityFarmingTask) end; updateStatus("Pity Farm Stopped.")
+        if pityFarmingTask then task.cancel(pityFarmingTask) end; isAttacking = false; updateStatus("Pity Farm Stopped.")
     end
 end)
 
@@ -1027,7 +1144,13 @@ end)
 
 -- CONFIG LOGIC
 SaveManager:SetLibrary(Fluent); InterfaceManager:SetLibrary(Fluent); SaveManager:IgnoreThemeSettings(); SaveManager:SetIgnoreIndexes({})
-SaveManager:SetFolder("UltimateHub"); InterfaceManager:BuildInterfaceSection(Tabs.Settings); SaveManager:BuildConfigSection(Tabs.Settings)
+SaveManager:SetFolder("UltimateHub"); InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+
+-- ADD INSTANT TP TOGGLE TO SETTINGS TAB
+Tabs.Settings:AddSection("Movement Overrides")
+Tabs.Settings:AddToggle("InstantTPToggle", {Title = "Instant TP (Tween Time: 0)", Default = false}):OnChanged(function(Value) instantTPActive = Value end)
+
+SaveManager:BuildConfigSection(Tabs.Settings)
 
 Window:SelectTab(1)
 task.wait(1.5); pcall(function() SaveManager:LoadAutoloadConfig() end)
