@@ -3,7 +3,7 @@ local currentPlaceId = game.PlaceId
 
 -- Table mapping Place IDs to their specific raw script URLs
 local scriptHub = {
-    [99449877692519] = "https://raw.githubusercontent.com/username/repo/main/game1.lua",
+    [99449877692519] = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/bridgerwestern",
     [77747658251236] = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/sailorbest",
 }
 
