@@ -1,5 +1,4 @@
 -- [[ SINGLE INSTANCE & CLEANUP LOGIC ]]
--- This ensures that if you execute the script again, the old UI and loops are destroyed.
 if getgenv().replacenamehere_Cleanup then
     pcall(function() getgenv().replacenamehere_Cleanup() end)
 end
@@ -7,26 +6,24 @@ end
 -- Wait for Game & Player to load completely
 if not game:IsLoaded() then game.Loaded:Wait() end
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 
 repeat task.wait() until LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
 -- [[ STATE VARIABLES ]]
--- Define your script's toggles and variables here
 local corpseFarmActive = false
+local stayOnGround = false
+local tweenSpeed = 150 -- Defaulting to 150 so you don't accidentally crawl at 1 stud/second
 local corpseFarmTask = nil
+local currentTween = nil
 
 -- Store the cleanup function globally
 getgenv().replacenamehere_Cleanup = function()
-    -- 1. Stop all loops and tasks
     corpseFarmActive = false
     if corpseFarmTask then task.cancel(corpseFarmTask) end
+    if currentTween then currentTween:Cancel() end
     
-    -- 2. Disconnect connections (RunService, etc.)
-    -- if myConnection then myConnection:Disconnect() end
-    
-    -- 3. Destroy the UI
     if getgenv().replacenamehere_Window then 
         pcall(function() getgenv().replacenamehere_Window:Destroy() end) 
     end
@@ -72,7 +69,30 @@ local Tabs = {
 }
 
 -- [[ MAIN TAB ELEMENTS ]]
-Tabs.Main:AddSection("Farming")
+Tabs.Main:AddSection("Farming Settings")
+
+local TweenSpeedInput = Tabs.Main:AddInput("TweenSpeedInput", {
+    Title = "Tween Speed",
+    Default = "150",
+    Numeric = true,
+    Finished = false,
+    Callback = function(Value)
+        local parsed = tonumber(Value)
+        if parsed and parsed > 0 then
+            tweenSpeed = parsed
+        end
+    end
+})
+
+local GroundToggle = Tabs.Main:AddToggle("StayOnGroundToggle", {
+    Title = "Stay On Ground",
+    Default = false,
+    Callback = function(Value)
+        stayOnGround = Value
+    end
+})
+
+Tabs.Main:AddSection("Farm Activation")
 
 local CorpseToggle = Tabs.Main:AddToggle("CorpseFarmToggle", {Title = "Corpse Part Farm", Default = false})
 CorpseToggle:OnChanged(function(Value)
@@ -81,43 +101,62 @@ CorpseToggle:OnChanged(function(Value)
     if corpseFarmActive then
         corpseFarmTask = task.spawn(function()
             while corpseFarmActive do
-                -- Check for the folder (Handling both 'CorpseSpawns' and your typo 'CorpseSpans' just in case)
                 local spawnsFolder = workspace:FindFirstChild("CorpseSpawns") or workspace:FindFirstChild("CorpseSpans")
                 
                 if spawnsFolder then
                     for _, spawnPart in ipairs(spawnsFolder:GetChildren()) do
+                        if not corpseFarmActive then break end -- Exit loop early if toggled off
+                        
                         if spawnPart:IsA("BasePart") and spawnPart.Name == "CorpseSpawn" then
-                            
-                            -- Get all parts physically overlapping/touching the CorpseSpawn part
                             local overlappingParts = workspace:GetPartsInPart(spawnPart)
                             
                             for _, part in ipairs(overlappingParts) do
-                                -- Ensure we aren't detecting the spawn pad itself or our own character
+                                if not corpseFarmActive then break end 
+                                
                                 if part ~= spawnPart and LocalPlayer.Character and not part:IsDescendantOf(LocalPlayer.Character) then
-                                    
                                     local rootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                                     if rootPart then
-                                        -- Teleport to the overlapping part to "farm" it
-                                        rootPart.CFrame = part.CFrame
                                         
-                                        -- Wait a brief moment to allow the game to register the touch/pickup
-                                        task.wait(0.5) 
+                                        local targetPosition = part.Position
+                                        
+                                        -- Stay on Ground Logic (Locks the Y-Axis to your current elevation)
+                                        if stayOnGround then
+                                            targetPosition = Vector3.new(targetPosition.X, rootPart.Position.Y, targetPosition.Z)
+                                        end
+                                        
+                                        -- Infinite Yield Tween Math (Time = Distance / Speed)
+                                        local distance = (rootPart.Position - targetPosition).Magnitude
+                                        local safeSpeed = tweenSpeed > 0 and tweenSpeed or 1
+                                        local tweenTime = distance / safeSpeed
+                                        
+                                        local tweenInfo = TweenInfo.new(tweenTime, Enum.EasingStyle.Linear)
+                                        currentTween = TweenService:Create(rootPart, tweenInfo, {CFrame = CFrame.new(targetPosition)})
+                                        
+                                        -- Play and wait for completion
+                                        currentTween:Play()
+                                        currentTween.Completed:Wait()
+                                        
+                                        -- Short wait to allow the game to register the item pickup
+                                        task.wait(0.2) 
                                     end
                                 end
                             end
-                            
                         end
                     end
                 end
                 
-                -- Wait before checking again to prevent crashing/lagging the game
                 task.wait(0.5)
             end
         end)
     else
+        -- Clean up tasks and tweens when toggled off
         if corpseFarmTask then 
             task.cancel(corpseFarmTask) 
             corpseFarmTask = nil 
+        end
+        if currentTween then
+            currentTween:Cancel()
+            currentTween = nil
         end
     end
 end)
@@ -128,13 +167,11 @@ InterfaceManager:SetLibrary(Fluent)
 SaveManager:IgnoreThemeSettings() 
 SaveManager:SetIgnoreIndexes({})
 
--- Folder name set to replacenamehere
 SaveManager:SetFolder("replacenamehere") 
 
 InterfaceManager:BuildInterfaceSection(Tabs.Settings) 
 SaveManager:BuildConfigSection(Tabs.Settings)
 
--- Select the first tab and load configs
 Window:SelectTab(1)
 task.wait(1.5)
 pcall(function() SaveManager:LoadAutoloadConfig() end)
