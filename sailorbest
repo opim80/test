@@ -1081,7 +1081,7 @@ end)
 
 -- TAB: RAIDS (DUNGEONS)
 Tabs.Raids:AddSection("Dungeon Setup")
-Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "DoubleDungeon"}):OnChanged(function(Value) selectedDungeon = Value end)
+Tabs.Raids:AddDropdown("DungeonType", {Title = "Dungeon Type", Values = {"actuallynothing", "InfiniteTower", "CidDungeon", "RuneDungeon", "DoubleDungeon"}, Multi = false, Default = "actuallynothing"}):OnChanged(function(Value) selectedDungeon = Value end)
 Tabs.Raids:AddButton({Title = "Manual Request Portal", Callback = function() pcall(function() ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("RequestDungeonPortal"):FireServer(selectedDungeon) end) end})
 
 Tabs.Raids:AddSection("Auto Raid Loop")
