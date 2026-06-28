@@ -5,6 +5,7 @@ local currentPlaceId = game.PlaceId
 local scriptHub = {
     [99449877692519] = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/bridgerwestern",
     [77747658251236] = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/sailorbest",
+    [11345435986] = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/betav",
 }
 
 -- Check if the current Place ID exists in our table
