@@ -34,6 +34,79 @@ getgenv().CSMDH_Cleanup = function()
     end
 end
 
+-- [[ CUSTOM MOBILE CONSOLE ]]
+if getgenv().CSMDH_Console then
+    pcall(function() getgenv().CSMDH_Console:Destroy() end)
+end
+
+local function createConsole()
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "CSMDH_MobileConsole"
+    sg.ResetOnSpawn = false
+    sg.Enabled = false
+    
+    if game:GetService("RunService"):IsStudio() then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    else
+        pcall(function() sg.Parent = game:GetService("CoreGui") end)
+    end
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 300, 0, 200)
+    frame.Position = UDim2.new(1, -310, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    frame.BorderSizePixel = 0
+    frame.Parent = sg
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 20)
+    title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Text = " CSMDH Output"
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Font = Enum.Font.Code
+    title.TextSize = 12
+    title.Parent = frame
+    
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, 0, 1, -20)
+    scroll.Position = UDim2.new(0, 0, 0, 20)
+    scroll.BackgroundTransparency = 1
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.ScrollBarThickness = 4
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.Parent = frame
+    
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = scroll
+    
+    getgenv().CSMDH_Console = sg
+    getgenv().CSMDH_ConsoleScroll = scroll
+end
+createConsole()
+
+local function customWarn(msg)
+    warn(msg)
+    if getgenv().CSMDH_ConsoleScroll then
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(1, -10, 0, 0)
+        lbl.AutomaticSize = Enum.AutomaticSize.Y
+        lbl.BackgroundTransparency = 1
+        lbl.TextColor3 = Color3.fromRGB(255, 200, 50)
+        lbl.Text = tostring(msg)
+        lbl.TextWrapped = true
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Font = Enum.Font.Code
+        lbl.TextSize = 12
+        lbl.Parent = getgenv().CSMDH_ConsoleScroll
+        
+        task.delay(0.1, function()
+            getgenv().CSMDH_ConsoleScroll.CanvasPosition = Vector2.new(0, 999999)
+        end)
+    end
+end
+
 -- [[ PRE-LOAD INTERCEPTOR ]]
 local function handleNativeMainMenu()
     local lp = game:GetService("Players").LocalPlayer
@@ -198,7 +271,7 @@ local function initParry()
                                             if Fluent then
                                                 Fluent:Notify({Title = "Learned Attack!", Content = "Mapped hit at TimePosition: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
                                             end
-                                            warn("Learned Timing for " .. tostring(data.animId) .. " -> " .. hitTime .. "s")
+                                            customWarn("Learned Timing for " .. tostring(data.animId) .. " -> " .. hitTime .. "s")
                                         end
                                     end
                                     break
@@ -215,8 +288,9 @@ local function initParry()
     end
     
     local function setupAnimatorLogging(animator)
-        local character = animator.Parent and animator.Parent.Parent
-        if not character or not character:IsA("Model") then return end
+        local character = animator.Parent
+        if character and character.Name == "Humanoid" then character = character.Parent end
+        if not character then return end
         
         getgenv().BlockedAnimations = getgenv().BlockedAnimations or {}
         local animateScript = character:FindFirstChild("aniamte(nolag)")
@@ -251,7 +325,7 @@ local function initParry()
                 spamData.count = spamData.count + 1
                 if spamData.count > 3 then
                     getgenv().BlockedAnimations[animId] = true
-                    print("Blocked spammy animation (Walk/Idle): " .. tostring(animId))
+                    customWarn("Blocked spammy animation (Walk/Idle): " .. tostring(animId))
                 end
             end
             
@@ -312,7 +386,7 @@ local function initParry()
                                 if Fluent then
                                     Fluent:Notify({Title = "Cloud Scraper", Content = "Saved Hit Frame to file: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
                                 end
-                                warn("CloudScraper mapped & saved " .. animId .. " -> " .. hitTime .. "s")
+                                customWarn("CloudScraper mapped & saved " .. animId .. " -> " .. hitTime .. "s")
                             end
                         end
                     end)
@@ -1171,6 +1245,46 @@ end})
 
 Tabs.Debug:AddSection("Cloud Scraper (Experimental)")
 Tabs.Debug:AddToggle("CloudScraperToggle", {Title = "Enable GetObjects Scraper", Default = false})
+Tabs.Debug:AddInput("WebhookURL", {Title = "Discord Webhook URL", Default = ""})
+Tabs.Debug:AddButton({Title = "Send Mappings to Webhook", Callback = function()
+    local url = Fluent.Options.WebhookURL and Fluent.Options.WebhookURL.Value
+    if not url or url == "" then
+        Fluent:Notify({Title = "Error", Content = "Please enter a Webhook URL first.", Duration = 3})
+        return
+    end
+    
+    local http = (request or syn and syn.request or http and http.request or http_request)
+    if not http then
+        Fluent:Notify({Title = "Error", Content = "Your executor does not support HTTP requests.", Duration = 3})
+        return
+    end
+    
+    pcall(function()
+        local data = "{}"
+        if isfile and readfile and isfile("CSMDH_CloudTimings.json") then
+            data = readfile("CSMDH_CloudTimings.json")
+        end
+        
+        local msg = {
+            content = "Here are your Cloud Scraper mappings!\n```json\n" .. data .. "\n```"
+        }
+        
+        http({
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = game:GetService("HttpService"):JSONEncode(msg)
+        })
+        Fluent:Notify({Title = "Success", Content = "Mappings sent to Discord!", Duration = 3})
+    end)
+end})
+
+Tabs.Debug:AddSection("Custom Console")
+Tabs.Debug:AddToggle("ShowConsoleToggle", {Title = "Show Mobile Custom Console", Default = false}):OnChanged(function(v)
+    if getgenv().CSMDH_Console then
+        getgenv().CSMDH_Console.Enabled = v
+    end
+end)
 
 Tabs.Debug:AddSection("Auto Parry")
 Tabs.Debug:AddToggle("AutoParryToggle", {Title = "Enable Auto Parry", Default = false})
@@ -1180,6 +1294,11 @@ Tabs.Debug:AddButton({Title = "Clear Learned Timings", Callback = function()
     getgenv().LearnedTimings = {} 
     getgenv().BlockedAnimations = {}
     getgenv().AnimSpamTracker = {}
+    if getgenv().CSMDH_ConsoleScroll then
+        for _, v in ipairs(getgenv().CSMDH_ConsoleScroll:GetChildren()) do
+            if v:IsA("TextLabel") then v:Destroy() end
+        end
+    end
     Fluent:Notify({Title="Cleared", Content="Wiped all learned animations.", Duration=3})
 end})
 Tabs.Debug:AddDropdown("ParryMethod", {Title = "Parry Method", Values = {"Keypress", "Remote Event"}, Default = "Keypress"})
