@@ -143,6 +143,20 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+
+-- Auto-Execute on Server Hop (Raid & Hopper Survival)
+if queue_on_teleport then
+    local currentScriptUrl = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/main.lua" -- Put your loadstring url here later if hosted, or if executor supports local files:
+    -- queue_on_teleport("loadfile('CSMDH_beta.lua')()") -- fallback
+    
+    -- Attempting to queue the original script execution string if available via getinfo/getupvalues, but hardcoded string works universally for loaders.
+    queue_on_teleport([[
+        task.wait(2)
+        print("Re-executing CSMDH on Teleport...")
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betay"))()
+    ]])
+end
 
 -- Constants
 local MESH_ID_TARGET = "rbxassetid://12439777368"
@@ -186,12 +200,112 @@ local StatusLabel = nil
 local SpeedLabel = nil 
 local HeightLabel = nil 
 local ServerCountLabel = nil
+local RaidStatusLabel = nil
 
 -- Data Labels
 local DataFoundLabel = nil
 local DataFloatLabel = nil
 local DataCollideLabel = nil
 local DataConfLabel = nil
+
+-- [[ RAID AUTOMATION LOGIC ]]
+local raidActive = false
+local raidLoopConnection = nil
+
+local function updateRaidStatus(text)
+    if RaidStatusLabel then
+        RaidStatusLabel:SetTitle("Status: " .. text)
+    end
+end
+
+local function toggleRaidLoop()
+    if raidActive then
+        -- Stop Raid
+        raidActive = false
+        if raidLoopConnection then
+            raidLoopConnection:Disconnect()
+            raidLoopConnection = nil
+        end
+        updateRaidStatus("Stopped.")
+        
+        -- Restore Collisions
+        local map = Workspace:FindFirstChild("map")
+        if map then
+            local rokyo = map:FindFirstChild("Rokyo")
+            if rokyo then
+                local obj1145 = rokyo:FindFirstChild("1145")
+                if obj1145 and obj1145:IsA("BasePart") then
+                    obj1145.CanCollide = true
+                end
+            end
+        end
+        return
+    end
+    
+    -- Start Raid
+    raidActive = true
+    updateRaidStatus("Active (Clipping, Anti-Blur, Prompts Active)")
+    
+    raidLoopConnection = RunService.RenderStepped:Connect(function()
+        if not raidActive then return end
+        
+        -- 1. Wall Clipping Logic (Rokyo 1145)
+        local map = Workspace:FindFirstChild("map")
+        if map then
+            local rokyo = map:FindFirstChild("Rokyo")
+            if rokyo then
+                local obj1145 = rokyo:FindFirstChild("1145")
+                if obj1145 and obj1145:IsA("BasePart") then
+                    if Fluent.Options.RaidNoClipToggle and Fluent.Options.RaidNoClipToggle.Value then
+                        obj1145.CanCollide = false
+                    end
+                end
+            end
+        end
+        
+        -- 2. Anti-Blur (Lighting Effects)
+        if Fluent.Options.RaidAntiBlurToggle and Fluent.Options.RaidAntiBlurToggle.Value then
+            for i = 1, 3 do
+                local blur = Lighting:FindFirstChild("RaidBlur" .. i)
+                if blur and blur:IsA("BlurEffect") then
+                    blur.Size = 0
+                    blur.Enabled = false
+                end
+            end
+        end
+        
+        -- 3. Instant Proximity Prompts (Mansion & ZombieRaid)
+        if Fluent.Options.RaidInstantPromptToggle and Fluent.Options.RaidInstantPromptToggle.Value then
+            local interactable = Workspace:FindFirstChild("Interactable")
+            if interactable then
+                local raids = interactable:FindFirstChild("raids")
+                if raids then
+                    local mansion = raids:FindFirstChild("Mansion")
+                    if mansion then
+                        local trigger = mansion:FindFirstChild("Trigger")
+                        if trigger then
+                            local prompt = trigger:FindFirstChild("ProximityPrompt")
+                            if prompt and prompt:IsA("ProximityPrompt") then
+                                prompt.HoldDuration = 0
+                            end
+                        end
+                    end
+                    
+                    local zombieRaid = raids:FindFirstChild("ZombieRaid")
+                    if zombieRaid then
+                        local trigger2 = zombieRaid:FindFirstChild("Trigger")
+                        if trigger2 then
+                            local prompt2 = trigger2:FindFirstChild("ProximityPrompt")
+                            if prompt2 and prompt2:IsA("ProximityPrompt") then
+                                prompt2.HoldDuration = 0
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+end
 
 -- [[ TESTING FUNCTIONS ]]
 local function initParry()
@@ -1096,8 +1210,22 @@ Tabs.Combat:AddDropdown("ParryMethod", {Title = "Fallback Method", Values = {"Ke
 Tabs.Combat:AddInput("ParryKeyBind", {Title = "Fallback Key (Letter)", Default = "J"})
 
 Tabs.Combat:AddSection("Auto Raid")
--- Placeholder for new raid exploits to be added
-
+RaidStatusLabel = Tabs.Combat:AddParagraph({Title = "Status", Content = "Idle"})
+Tabs.Combat:AddToggle("RaidNoClipToggle", {Title = "Enable Wall Clipping (Rokyo)", Default = true})
+Tabs.Combat:AddToggle("RaidAntiBlurToggle", {Title = "Enable Anti-Blur (Visual)", Default = true})
+Tabs.Combat:AddToggle("RaidInstantPromptToggle", {Title = "Enable Instant Prompts", Default = true})
+Tabs.Combat:AddButton({Title = "Start Raids", Callback = function() 
+    if not raidActive then
+        toggleRaidLoop()
+    else
+        Fluent:Notify({Title = "Notice", Content = "Raid Logic is already running!", Duration = 3})
+    end
+end})
+Tabs.Combat:AddButton({Title = "Stop Raids", Callback = function() 
+    if raidActive then
+        toggleRaidLoop()
+    end
+end})
 -- [[ 3. SERVER LIST TAB ]]
 ServerCountLabel = Tabs.ServerList:AddParagraph({Title = "Server Status", Content = "0/0 Servers Loaded"})
 
