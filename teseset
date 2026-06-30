@@ -1,0 +1,60 @@
+-- ==========================================
+-- Payload Interceptor / Spy Wrapper
+-- ==========================================
+local original_queue = queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+local original_loadstring = loadstring
+local original_require = require
+-- 1. Hook queue_on_teleport
+if original_queue then
+    local function hook_queue(code)
+        print("\n[SPY] CAUGHT QUEUE_ON_TELEPORT PAYLOAD!")
+        print("Saving payload to your executor's workspace folder as 'INTERCEPTED_QUEUE.lua'")
+        
+        -- Save the payload to a file
+        if writefile then
+            writefile("INTERCEPTED_QUEUE.lua", code)
+        end
+        
+        -- Let the original queue happen so the script doesn't break
+        return original_queue(code)
+    end
+    -- Try to use hookfunction for a deep hook
+    if hookfunction then
+        hookfunction(original_queue, hook_queue)
+    else
+        -- Fallback to modifying the global environment
+        getgenv().queue_on_teleport = hook_queue
+        getgenv().queueonteleport = hook_queue
+        if syn then syn.queue_on_teleport = hook_queue end
+    end
+    print("[SPY] queue_on_teleport successfully hooked.")
+else
+    print("[SPY] WARNING: queue_on_teleport not supported by your executor.")
+end
+-- 2. Hook loadstring
+if hookfunction then
+    hookfunction(loadstring, function(chunk, chunkname)
+        if chunk and type(chunk) == "string" and #chunk > 50 then
+            print("\n[SPY] CAUGHT LOADSTRING PAYLOAD!")
+            if writefile then
+                writefile("INTERCEPTED_LOADSTRING_" .. tostring(math.random(1000, 9999)) .. ".lua", chunk)
+            end
+        end
+        return original_loadstring(chunk, chunkname)
+    end)
+    print("[SPY] loadstring successfully hooked.")
+end
+-- 3. Hook require (Asset IDs)
+local old_require
+old_require = hookfunction(require, function(module)
+    if type(module) == "number" then
+        print("\n[SPY] CAUGHT REQUIRE PAYLOAD! Asset ID: " .. tostring(module))
+        if writefile then
+            appendfile("INTERCEPTED_REQUIRES.txt", tostring(module) .. "\n")
+        end
+    end
+    return old_require(module)
+end)
+print("[SPY] require successfully hooked.")
+print("\n[SPY] Wrapper is active! Execute hi.txt now.")
+loadstring(game:HttpGet("https://raw.githubusercontent.com/reinvoxv2/test1/refs/heads/main/CMDHAutofarm"))()
