@@ -155,15 +155,14 @@ local Lighting = game:GetService("Lighting")
 
 -- Auto-Execute on Server Hop (Raid & Hopper Survival)
 if queue_on_teleport then
-    local currentScriptUrl = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/main.lua" -- Put your loadstring url here later if hosted, or if executor supports local files:
-    -- queue_on_teleport("loadfile('CSMDH_beta.lua')()") -- fallback
-    
-    -- Attempting to queue the original script execution string if available via getinfo/getupvalues, but hardcoded string works universally for loaders.
-    queue_on_teleport([[
-        task.wait(2)
-        print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betap"))()
-    ]])
+    Players.LocalPlayer.OnTeleport:Connect(function()
+        local raidFlag = tostring(raidActive == true)
+        local queueStr = "getgenv().CSMDH_InRaidInstance = " .. raidFlag .. ";\n" ..
+                         "task.wait(2);\n" ..
+                         "print('Re-executing CSMDH on Teleport...');\n" ..
+                         "loadstring(game:HttpGet('https://raw.githubusercontent.com/opim80/test/refs/heads/main/betat'))();"
+        pcall(function() queue_on_teleport(queueStr) end)
+    end)
 end
 
 -- Constants
@@ -371,7 +370,7 @@ local function toggleRaidLoop()
     raidActive = true
     updateRaidStatus("Starting Raid Routine...")
     
-    if Fluent.Options.RaidAutoEnterToggle and Fluent.Options.RaidAutoEnterToggle.Value then
+    if Fluent.Options.RaidAutoEnterToggle and Fluent.Options.RaidAutoEnterToggle.Value and not getgenv().CSMDH_InRaidInstance then
         getIntoRaid()
     else
         updateRaidStatus("Active (Clipping, Anti-Blur, Prompts)")
@@ -1568,4 +1567,10 @@ isInitialized = true
 
 if Fluent.Options.HopperToggle.Value then
     runHopperLogic()
+end
+
+if getgenv().CSMDH_InRaidInstance then
+    if not raidActive then
+        toggleRaidLoop()
+    end
 end
