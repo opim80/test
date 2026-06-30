@@ -1,6 +1,8 @@
 -- Targeted Spy Wrapper
 -- Only intercepts high-value exploit functions to avoid making 11k files from obfuscator loops
+
 local HttpService = game:GetService("HttpService")
+
 local function write_log(name, content)
     -- Use a single file and append to it, or use unique names with a limit
     local filename = "spy_log_" .. name .. ".txt"
@@ -10,6 +12,7 @@ local function write_log(name, content)
         writefile(filename, tostring(content))
     end
 end
+
 -- 1. Hook queue_on_teleport
 if queue_on_teleport then
     local old_queue
@@ -19,6 +22,7 @@ if queue_on_teleport then
         
         -- We inject this exact script into the queued code so the spy persists!
         local my_source = [[
+            print("[SPY] SUCCESSFULLY LOADED INTO RAID SERVER! The Spy is active.")
             local function write_log(name, content)
                 local filename = "spy_log_" .. name .. ".txt"
                 if isfile(filename) then appendfile(filename, "\n\n--- NEW INTERCEPT ---\n\n" .. tostring(content)) else writefile(filename, tostring(content)) end
@@ -37,6 +41,23 @@ if queue_on_teleport then
                     return old_request(req)
                 end)
             end
+            
+            -- Hook VirtualInputManager inside the raid server!
+            local vim = game:GetService("VirtualInputManager")
+            if vim then
+                local old_namecall
+                old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
+                    local method = getnamecallmethod()
+                    if self == vim then
+                        if method == "SendKeyEvent" or method == "SendMouseButtonEvent" then
+                            local args = {...}
+                            local log_str = string.format("VIM:%s(%s)", method, table.concat(args, ", "))
+                            write_log("combat_logic", log_str)
+                        end
+                    end
+                    return old_namecall(self, ...)
+                end)
+            end
         ]]
         
         -- Prepend our spy to their code
@@ -44,6 +65,7 @@ if queue_on_teleport then
         return old_queue(modified_code)
     end)
 end
+
 -- 2. Hook HTTP Requests (to catch payloads or work.ink checks)
 if request then
     local old_request
@@ -55,10 +77,12 @@ if request then
         return old_request(req_tbl)
     end)
 end
+
 local old_httpget
 old_httpget = hookfunction(game.HttpGet, function(self, url, ...)
     print("[SPY] Intercepted HttpGet: " .. tostring(url))
     write_log("httpget", url)
     return old_httpget(self, url, ...)
 end)
+
 print("[SPY] Wrapper initialized! You can now run the obfuscated script.")
