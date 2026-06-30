@@ -1,5 +1,5 @@
 --[[
-    CSMDH meth | V1.3.5
+    CSMDH meth | V1.3.5.1
     Professional Devil Heart Automation Utility
     
     Update Log:
@@ -308,26 +308,9 @@ local function initParry()
             local animId = track.Animation and track.Animation.AnimationId
             if not animId or animId == "" then return end
             
-            getgenv().AnimSpamTracker = getgenv().AnimSpamTracker or {}
             getgenv().BlockedAnimations = getgenv().BlockedAnimations or {}
             getgenv().LearnedTimings = getgenv().LearnedTimings or {}
             getgenv().PendingAnimations = getgenv().PendingAnimations or {}
-            
-            if not getgenv().BlockedAnimations[animId] then
-                if not getgenv().AnimSpamTracker[animId] then
-                    getgenv().AnimSpamTracker[animId] = {count = 0, firstTime = os.clock()}
-                end
-                local spamData = getgenv().AnimSpamTracker[animId]
-                if os.clock() - spamData.firstTime > 5 then
-                    spamData.count = 0
-                    spamData.firstTime = os.clock()
-                end
-                spamData.count = spamData.count + 1
-                if spamData.count > 3 then
-                    getgenv().BlockedAnimations[animId] = true
-                    customWarn("Blocked spammy animation (Walk/Idle): " .. tostring(animId))
-                end
-            end
             
             -- Cloud Timings Initialization
             local CLOUD_FILE = "CSMDH_CloudTimings.json"
@@ -530,7 +513,7 @@ local function sendWebhook(title, msg, color)
         local data = {
             embeds = {{
                 title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation V1.3.5" },
+                footer = { text = "CSMDH Automation V1.3.5.1" },
                 timestamp = DateTime.now():ToIsoDate()
             }}
         }
@@ -1293,7 +1276,6 @@ Tabs.Debug:AddToggle("ShowRadiusToggle", {Title = "Show 10-Stud Learning Radius"
 Tabs.Debug:AddButton({Title = "Clear Learned Timings", Callback = function() 
     getgenv().LearnedTimings = {} 
     getgenv().BlockedAnimations = {}
-    getgenv().AnimSpamTracker = {}
     if getgenv().CSMDH_ConsoleScroll then
         for _, v in ipairs(getgenv().CSMDH_ConsoleScroll:GetChildren()) do
             if v:IsA("TextLabel") then v:Destroy() end
