@@ -154,7 +154,7 @@ if queue_on_teleport then
     queue_on_teleport([[
         task.wait(2)
         print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betag"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betah"))()
     ]])
 end
 
@@ -200,7 +200,6 @@ local StatusLabel = nil
 local SpeedLabel = nil 
 local HeightLabel = nil 
 local ServerCountLabel = nil
-local RaidStatusLabel = nil
 
 -- Data Labels
 local DataFoundLabel = nil
@@ -212,10 +211,76 @@ local DataConfLabel = nil
 local raidActive = false
 local raidLoopConnection = nil
 
-local function updateRaidStatus(text)
-    if RaidStatusLabel then
-        RaidStatusLabel:SetTitle("Status: " .. text)
+local function createRaidScreen()
+    if getgenv().CSMDH_RaidScreen then pcall(function() getgenv().CSMDH_RaidScreen:Destroy() end) end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "CSMDH_RaidScreen"
+    sg.ResetOnSpawn = false
+    sg.Enabled = true
+    
+    local frame = Instance.new("Frame", sg)
+    frame.Size = UDim2.new(0, 300, 0, 40)
+    frame.Position = UDim2.new(0.5, -150, 0, 10)
+    frame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+    frame.BackgroundTransparency = 0.3
+    frame.BorderSizePixel = 2
+    frame.BorderColor3 = Color3.fromRGB(220, 50, 50)
+    
+    local txt = Instance.new("TextLabel", frame)
+    txt.Size = UDim2.new(1, 0, 1, 0)
+    txt.BackgroundTransparency = 1
+    txt.TextColor3 = Color3.new(1, 1, 1)
+    txt.Text = "Raid Status: Idle"
+    txt.Font = Enum.Font.GothamBold
+    txt.TextSize = 18
+    
+    getgenv().CSMDH_RaidScreen = sg
+    getgenv().CSMDH_RaidText = txt
+    
+    if game:GetService("RunService"):IsStudio() then
+        sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+    else
+        pcall(function() sg.Parent = game:GetService("CoreGui") end)
     end
+end
+createRaidScreen()
+
+local function updateRaidStatus(text)
+    if getgenv().CSMDH_RaidText then
+        getgenv().CSMDH_RaidText.Text = "Raid Status: " .. text
+    end
+end
+
+local function getIntoRaid()
+    task.spawn(function()
+        local lp = game:GetService("Players").LocalPlayer
+        local char = lp.Character
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+        local hrp = char.HumanoidRootPart
+        
+        updateRaidStatus("Teleporting to Raid...")
+        
+        local tpSeq = {
+            Vector3.new(1218.646, 1777.767, -834.123),
+            Vector3.new(1194.452, 1761.865, -828.518),
+            Vector3.new(161.865, 154.31, -216.054),
+            Vector3.new(139.943, 139.579, -169.602),
+            Vector3.new(1005, 1680, -845),
+            Vector3.new(1024, 1661.17, -825),
+            Vector3.new(84, 78, -40),
+            Vector3.new(84, 44, -9)
+        }
+        
+        for _, pos in ipairs(tpSeq) do
+            if not raidActive then break end
+            hrp.CFrame = CFrame.new(pos)
+            task.wait(0.2)
+        end
+        
+        if raidActive then
+            updateRaidStatus("Reached Raid! Prompts active.")
+        end
+    end)
 end
 
 local function toggleRaidLoop()
@@ -244,7 +309,13 @@ local function toggleRaidLoop()
     
     -- Start Raid
     raidActive = true
-    updateRaidStatus("Active (Clipping, Anti-Blur, Prompts Active)")
+    updateRaidStatus("Starting Raid Routine...")
+    
+    if Fluent.Options.RaidAutoEnterToggle and Fluent.Options.RaidAutoEnterToggle.Value then
+        getIntoRaid()
+    else
+        updateRaidStatus("Active (Clipping, Anti-Blur, Prompts)")
+    end
     
     raidLoopConnection = RunService.RenderStepped:Connect(function()
         if not raidActive then return end
@@ -1210,7 +1281,7 @@ Tabs.Combat:AddDropdown("ParryMethod", {Title = "Fallback Method", Values = {"Ke
 Tabs.Combat:AddInput("ParryKeyBind", {Title = "Fallback Key (Letter)", Default = "J"})
 
 Tabs.Combat:AddSection("Auto Raid")
-RaidStatusLabel = Tabs.Combat:AddParagraph({Title = "Status", Content = "Idle"})
+Tabs.Combat:AddToggle("RaidAutoEnterToggle", {Title = "Teleport into Raid Sequence", Default = true})
 Tabs.Combat:AddToggle("RaidNoClipToggle", {Title = "Enable Wall Clipping (Rokyo)", Default = true})
 Tabs.Combat:AddToggle("RaidAntiBlurToggle", {Title = "Enable Anti-Blur (Visual)", Default = true})
 Tabs.Combat:AddToggle("RaidInstantPromptToggle", {Title = "Enable Instant Prompts", Default = true})
