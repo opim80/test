@@ -1,5 +1,5 @@
 --[[
-    CSMDH meth | V1.3.5
+    CSMDH meth | V1.3.5.1
     Professional Devil Heart Automation Utility
     
     Update Log:
@@ -513,7 +513,7 @@ local function sendWebhook(title, msg, color)
         local data = {
             embeds = {{
                 title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation V1.3.5" },
+                footer = { text = "CSMDH Automation V1.3.5.1" },
                 timestamp = DateTime.now():ToIsoDate()
             }}
         }
