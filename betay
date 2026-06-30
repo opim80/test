@@ -222,6 +222,11 @@ local function initParry()
 
             local method = Fluent.Options.ParryMethod and Fluent.Options.ParryMethod.Value or "Keypress"
             
+            -- Unblockables (Q) MUST be physically dashed. You cannot "parry" them via remote.
+            if requiredKey == "Q" then
+                method = "Keypress"
+            end
+            
             if method == "Remote Event" then
                 local args = { "unfair" }
                 local eventsFolder = ReplicatedStorage:WaitForChild("events", 3)
