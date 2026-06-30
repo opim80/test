@@ -155,14 +155,12 @@ local Lighting = game:GetService("Lighting")
 
 -- Auto-Execute on Server Hop (Raid & Hopper Survival)
 if queue_on_teleport then
-    Players.LocalPlayer.OnTeleport:Connect(function()
-        local raidFlag = tostring(raidActive == true)
-        local queueStr = "getgenv().CSMDH_InRaidInstance = " .. raidFlag .. ";\n" ..
-                         "task.wait(2);\n" ..
-                         "print('Re-executing CSMDH on Teleport...');\n" ..
-                         "loadstring(game:HttpGet('https://raw.githubusercontent.com/opim80/test/refs/heads/main/betat'))();"
-        pcall(function() queue_on_teleport(queueStr) end)
-    end)
+    local currentScriptUrl = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/main.lua"
+    queue_on_teleport([[
+        task.wait(2)
+        print("Re-executing CSMDH on Teleport...")
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betak"))()
+    ]])
 end
 
 -- Constants
@@ -370,7 +368,8 @@ local function toggleRaidLoop()
     raidActive = true
     updateRaidStatus("Starting Raid Routine...")
     
-    if Fluent.Options.RaidAutoEnterToggle and Fluent.Options.RaidAutoEnterToggle.Value and not getgenv().CSMDH_InRaidInstance then
+    local isOverworld = Workspace:FindFirstChild("Interactable") and Workspace.Interactable:FindFirstChild("raids")
+    if Fluent.Options.RaidAutoEnterToggle and Fluent.Options.RaidAutoEnterToggle.Value and isOverworld then
         getIntoRaid()
     else
         updateRaidStatus("Active (Clipping, Anti-Blur, Prompts)")
@@ -1344,16 +1343,21 @@ Tabs.Combat:AddDropdown("ParryMethod", {Title = "Fallback Method", Values = {"Ke
 Tabs.Combat:AddInput("ParryKeyBind", {Title = "Fallback Key (Letter)", Default = "J"})
 
 Tabs.Combat:AddSection("Auto Raid")
+Tabs.Combat:AddToggle("RaidMasterToggle", {Title = "Enable Auto-Raid Loop", Default = false})
 Tabs.Combat:AddDropdown("TargetRaid", {Title = "Target Raid Instance", Values = {"Mansion", "Zombie Raid"}, Default = "Zombie Raid"})
-Tabs.Combat:AddToggle("RaidAutoEnterToggle", {Title = "Teleport into Raid Sequence", Default = true})
-Tabs.Combat:AddToggle("RaidNoClipToggle", {Title = "Enable Wall Clipping (Rokyo)", Default = true})
-Tabs.Combat:AddToggle("RaidAntiBlurToggle", {Title = "Enable Anti-Blur (Visual)", Default = true})
-Tabs.Combat:AddToggle("RaidInstantPromptToggle", {Title = "Enable Instant Prompts", Default = true})
+Tabs.Combat:AddToggle("RaidAutoEnterToggle", {Title = "Teleport into Raid Sequence", Default = false})
+Tabs.Combat:AddToggle("RaidNoClipToggle", {Title = "Enable Wall Clipping (Rokyo)", Default = false})
+Tabs.Combat:AddToggle("RaidAntiBlurToggle", {Title = "Enable Anti-Blur (Visual)", Default = false})
+Tabs.Combat:AddToggle("RaidInstantPromptToggle", {Title = "Enable Instant Prompts", Default = false})
 Tabs.Combat:AddButton({Title = "Start Raids", Callback = function() 
-    if not raidActive then
-        toggleRaidLoop()
+    if Fluent.Options.RaidMasterToggle.Value then
+        if not raidActive then
+            toggleRaidLoop()
+        else
+            Fluent:Notify({Title = "Notice", Content = "Raid Logic is already running!", Duration = 3})
+        end
     else
-        Fluent:Notify({Title = "Notice", Content = "Raid Logic is already running!", Duration = 3})
+        Fluent:Notify({Title = "Error", Content = "Enable Auto-Raid Loop Toggle First!", Duration = 3})
     end
 end})
 Tabs.Combat:AddButton({Title = "Stop Raids", Callback = function() 
@@ -1569,7 +1573,7 @@ if Fluent.Options.HopperToggle.Value then
     runHopperLogic()
 end
 
-if getgenv().CSMDH_InRaidInstance then
+if Fluent.Options.RaidMasterToggle and Fluent.Options.RaidMasterToggle.Value then
     if not raidActive then
         toggleRaidLoop()
     end
