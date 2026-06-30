@@ -332,65 +332,96 @@ local function initParry()
                 end
             end
             
-            -- Cloud Scraper Logic (GetObjects)
-            if not getgenv().CloudTimings[tostring(animId)] and not getgenv().BlockedAnimations[animId] and Fluent and Fluent.Options and Fluent.Options.CloudScraperToggle and Fluent.Options.CloudScraperToggle.Value then
-                if not getgenv().CloudScrapeAttempts then getgenv().CloudScrapeAttempts = {} end
-                if not getgenv().CloudScrapeAttempts[animId] then
-                    getgenv().CloudScrapeAttempts[animId] = true
-                    
-                    if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
-                        customWarn("CloudScraper: Attempting to download & scrape " .. tostring(animId))
-                    end
-                    
-                    task.spawn(function()
-                        local success, objects = pcall(function()
-                            return game:GetObjects(animId)
-                        end)
-                        if success and objects and objects[1] and objects[1]:IsA("KeyframeSequence") then
-                            local sequence = objects[1]
-                            local hitTime = nil
+            -- Global Logging
+            getgenv().AllLoggedAnimations = getgenv().AllLoggedAnimations or {}
+            getgenv().TotalLoggedAnimations = getgenv().TotalLoggedAnimations or 0
+            if not getgenv().AllLoggedAnimations[animId] then
+                getgenv().AllLoggedAnimations[animId] = true
+                getgenv().TotalLoggedAnimations = getgenv().TotalLoggedAnimations + 1
+                if Fluent and Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                    customWarn(string.format("Logged new unique animation: %s (Total Unique: %d)", tostring(animId), getgenv().TotalLoggedAnimations))
+                end
+            end
+            
+            -- Cloud Scraper Queueing
+            if not getgenv().ScraperQueue then
+                getgenv().ScraperQueue = {}
+                getgenv().ScraperTotalQueued = 0
+                getgenv().ScraperProcessed = 0
+                getgenv().CloudScrapeAttempts = {}
+                
+                task.spawn(function()
+                    while task.wait(0.2) do
+                        if getgenv().CSMDH_Unloaded then break end
+                        if #getgenv().ScraperQueue > 0 and Fluent and Fluent.Options.CloudScraperToggle and Fluent.Options.CloudScraperToggle.Value then
+                            local id = table.remove(getgenv().ScraperQueue, 1)
+                            getgenv().ScraperProcessed = getgenv().ScraperProcessed + 1
                             
-                            for _, desc in ipairs(sequence:GetDescendants()) do
-                                if desc:IsA("KeyframeMarker") then
-                                    local name = string.lower(desc.Name)
-                                    if name == "hit" or name == "damage" or name == "attack" or name == "swing" then
-                                        hitTime = desc.Parent.Time
-                                        break
-                                    end
-                                end
+                            local current = getgenv().ScraperProcessed
+                            local total = getgenv().ScraperTotalQueued
+                            
+                            if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                                customWarn(string.format("CloudScraper [%d/%d]: Downloading & checking %s", current, total, tostring(id)))
                             end
                             
-                            if not hitTime then
-                                for _, desc in ipairs(sequence:GetChildren()) do
-                                    if desc:IsA("Keyframe") then
+                            local success, objects = pcall(function()
+                                return game:GetObjects(id)
+                            end)
+                            
+                            if success and objects and objects[1] and objects[1]:IsA("KeyframeSequence") then
+                                local sequence = objects[1]
+                                local hitTime = nil
+                                
+                                for _, desc in ipairs(sequence:GetDescendants()) do
+                                    if desc:IsA("KeyframeMarker") then
                                         local name = string.lower(desc.Name)
-                                        if name == "hit" or name == "damage" or name == "attack" then
-                                            hitTime = desc.Time
+                                        if name == "hit" or name == "damage" or name == "attack" or name == "swing" then
+                                            hitTime = desc.Parent.Time
                                             break
                                         end
                                     end
                                 end
-                            end
-                            
-                            if hitTime and hitTime > 0.05 then
-                                getgenv().CloudTimings[tostring(animId)] = hitTime
-                                if writefile then
-                                    pcall(function()
-                                        writefile(CLOUD_FILE, game:GetService("HttpService"):JSONEncode(getgenv().CloudTimings))
-                                    end)
+                                
+                                if not hitTime then
+                                    for _, desc in ipairs(sequence:GetChildren()) do
+                                        if desc:IsA("Keyframe") then
+                                            local name = string.lower(desc.Name)
+                                            if name == "hit" or name == "damage" or name == "attack" then
+                                                hitTime = desc.Time
+                                                break
+                                            end
+                                        end
+                                    end
                                 end
-                                if Fluent then
-                                    Fluent:Notify({Title = "Cloud Scraper", Content = "Saved Hit Frame to file: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
-                                end
-                                print("[CSMDH] SUCCESS! CloudScraper mapped " .. animId .. " -> " .. hitTime .. "s")
-                                customWarn("✅ CloudScraper MAPPED: " .. animId .. " -> " .. hitTime .. "s")
-                            else
-                                if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
-                                    customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(animId))
+                                
+                                if hitTime and hitTime > 0.05 then
+                                    getgenv().CloudTimings[tostring(id)] = hitTime
+                                    if writefile then
+                                        pcall(function()
+                                            writefile(CLOUD_FILE, game:GetService("HttpService"):JSONEncode(getgenv().CloudTimings))
+                                        end)
+                                    end
+                                    if Fluent then
+                                        Fluent:Notify({Title = "Cloud Scraper", Content = "Saved Hit Frame to file: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
+                                    end
+                                    print("[CSMDH] SUCCESS! CloudScraper mapped " .. id .. " -> " .. hitTime .. "s")
+                                    customWarn("✅ CloudScraper MAPPED: " .. id .. " -> " .. hitTime .. "s")
+                                else
+                                    if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                                        customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(id))
+                                    end
                                 end
                             end
                         end
-                    end)
+                    end
+                end)
+            end
+            
+            if not getgenv().CloudTimings[tostring(animId)] and not getgenv().BlockedAnimations[animId] then
+                if not getgenv().CloudScrapeAttempts[animId] then
+                    getgenv().CloudScrapeAttempts[animId] = true
+                    getgenv().ScraperTotalQueued = getgenv().ScraperTotalQueued + 1
+                    table.insert(getgenv().ScraperQueue, animId)
                 end
             end
             
