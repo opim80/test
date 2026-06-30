@@ -107,6 +107,14 @@ local function customWarn(msg)
     end
 end
 
+local function debugPrint(msg)
+    pcall(function()
+        if Fluent and Fluent.Options and Fluent.Options.CodeDebugToggle and Fluent.Options.CodeDebugToggle.Value then
+            customWarn("[DEBUG] " .. tostring(msg))
+        end
+    end)
+end
+
 -- [[ PRE-LOAD INTERCEPTOR ]]
 local function handleNativeMainMenu()
     local lp = game:GetService("Players").LocalPlayer
@@ -154,7 +162,7 @@ if queue_on_teleport then
     queue_on_teleport([[
         task.wait(2)
         print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betan"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betal"))()
     ]])
 end
 
@@ -259,6 +267,7 @@ local function getIntoRaid()
         local hrp = char.HumanoidRootPart
         
         updateRaidStatus("Pathing to Raid Entrance...")
+        debugPrint("Pathing to Raid Entrance CFrame (1232, 709, 473)...")
         
         -- The exact CFrame from the original script to arrive at the Raid door
         hrp.CFrame = CFrame.new(1232, 709.1, 473) * CFrame.Angles(math.pi, 0, 0)
@@ -277,6 +286,7 @@ local function getIntoRaid()
                 if mansion and mansion:FindFirstChild("Trigger") then
                     local prompt = mansion.Trigger:FindFirstChild("ProximityPrompt")
                     if prompt then 
+                        debugPrint("Fired Mansion Raid Prompt!")
                         fireproximityprompt(prompt) 
                         task.wait(0.2)
                     end
@@ -287,6 +297,7 @@ local function getIntoRaid()
                 if zombie and zombie:FindFirstChild("Trigger") then
                     local prompt = zombie.Trigger:FindFirstChild("ProximityPrompt")
                     if prompt then 
+                        debugPrint("Fired Zombie Raid Prompt!")
                         fireproximityprompt(prompt)
                         task.wait(0.2)
                     end
@@ -404,6 +415,8 @@ local function initParry()
     
     local function fireParryEvent(requiredKey)
         if not Fluent or not Fluent.Options then return end
+        
+        debugPrint("fireParryEvent triggered! Required key: " .. tostring(requiredKey))
         
         -- Respect Toggles based on mapped key
         if requiredKey == "Q" and not Fluent.Options.AutoDodgeToggle.Value then return end
@@ -527,6 +540,8 @@ local function initParry()
             
             local animId = string.match(rawId, "%d+")
             if not animId then return end
+            
+            debugPrint("Animation Played: " .. tostring(animId) .. " on " .. character.Name)
             
             local animData = getgenv().CloudTimings[tostring(animId)]
             -- The JSON now stores tables: { hitTime = 0.5, key = "Q" }
@@ -1423,6 +1438,7 @@ Tabs.Debug:AddToggle("ShowConsoleToggle", {Title = "Show Mobile Custom Console",
         getgenv().CSMDH_Console.Enabled = v
     end
 end)
+Tabs.Debug:AddToggle("CodeDebugToggle", {Title = "Enable Code Debug Outputs", Default = false})
 
 Tabs.Debug:AddButton({Title = "Test Parry Keypress (VIM/Executor)", Callback = function()
     pcall(function()
