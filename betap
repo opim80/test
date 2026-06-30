@@ -162,7 +162,7 @@ if queue_on_teleport then
     queue_on_teleport([[
         task.wait(2)
         print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betah"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betap"))()
     ]])
 end
 
@@ -314,27 +314,25 @@ local function getIntoRaid()
         if interactable then
             local raids = interactable:FindFirstChild("raids")
             if raids then
-                local found = false
+                local target = Fluent.Options.TargetRaid and Fluent.Options.TargetRaid.Value or "Zombie Raid"
+                local raidFolder = nil
                 
-                -- Try Mansion Raid
-                local mansion = raids:FindFirstChild("Mansion")
-                if mansion and mansion:FindFirstChild("Trigger") then
-                    local prompt = mansion.Trigger:FindFirstChild("ProximityPrompt")
-                    if prompt then 
-                        forceTriggerPrompt(prompt)
-                        found = true
-                    end
+                if target == "Mansion" then
+                    raidFolder = raids:FindFirstChild("Mansion")
+                elseif target == "Zombie Raid" then
+                    raidFolder = raids:FindFirstChild("ZombieRaid")
                 end
                 
-                -- Try Zombie Raid
-                if not found then
-                    local zombie = raids:FindFirstChild("ZombieRaid")
-                    if zombie and zombie:FindFirstChild("Trigger") then
-                        local prompt = zombie.Trigger:FindFirstChild("ProximityPrompt")
-                        if prompt then 
-                            forceTriggerPrompt(prompt)
-                        end
+                if raidFolder and raidFolder:FindFirstChild("Trigger") then
+                    local prompt = raidFolder.Trigger:FindFirstChild("ProximityPrompt")
+                    if prompt then
+                        debugPrint("Found target prompt for: " .. target)
+                        forceTriggerPrompt(prompt)
+                    else
+                        debugPrint("No ProximityPrompt found in " .. target .. " trigger.")
                     end
+                else
+                    debugPrint(target .. " not found in Workspace.Interactable.raids")
                 end
             end
         end
@@ -1347,6 +1345,7 @@ Tabs.Combat:AddDropdown("ParryMethod", {Title = "Fallback Method", Values = {"Ke
 Tabs.Combat:AddInput("ParryKeyBind", {Title = "Fallback Key (Letter)", Default = "J"})
 
 Tabs.Combat:AddSection("Auto Raid")
+Tabs.Combat:AddDropdown("TargetRaid", {Title = "Target Raid Instance", Values = {"Mansion", "Zombie Raid"}, Default = "Zombie Raid"})
 Tabs.Combat:AddToggle("RaidAutoEnterToggle", {Title = "Teleport into Raid Sequence", Default = true})
 Tabs.Combat:AddToggle("RaidNoClipToggle", {Title = "Enable Wall Clipping (Rokyo)", Default = true})
 Tabs.Combat:AddToggle("RaidAntiBlurToggle", {Title = "Enable Anti-Blur (Visual)", Default = true})
