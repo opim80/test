@@ -288,13 +288,17 @@ local function initParry()
     end
     
     local function setupAnimatorLogging(animator)
-        local character = animator.Parent
-        local humanoid = nil
-        if character and character.Name == "Humanoid" then 
-            humanoid = character
-            character = character.Parent 
+        if getgenv().CSMDH_HookedObjects and getgenv().CSMDH_HookedObjects[animator] then return end
+        getgenv().CSMDH_HookedObjects = getgenv().CSMDH_HookedObjects or setmetatable({}, {__mode = "k"})
+        getgenv().CSMDH_HookedObjects[animator] = true
+        
+        local character = animator
+        while character and not character:IsA("Model") and character ~= workspace do
+            character = character.Parent
         end
-        if not character then return end
+        if not character or character == workspace then return end
+        
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
         
         getgenv().BlockedAnimations = getgenv().BlockedAnimations or {}
         local animateScript = character:FindFirstChild("aniamte(nolag)")
@@ -447,20 +451,21 @@ local function initParry()
         
         local conn = animator.AnimationPlayed:Connect(onAnimationPlayed)
         table.insert(getgenv().ActiveConnections, conn)
-        
-        if humanoid then
-            local humConn = humanoid.AnimationPlayed:Connect(onAnimationPlayed)
-            table.insert(getgenv().ActiveConnections, humConn)
-        end
     end
     
     local function scanForAnimators(parent)
+        local function checkObj(obj)
+            if obj:IsA("Animator") or obj:IsA("Humanoid") or obj:IsA("AnimationController") then
+                setupAnimatorLogging(obj)
+            end
+        end
+        
         for _, obj in ipairs(parent:GetDescendants()) do
-            if obj:IsA("Animator") then setupAnimatorLogging(obj) end
+            checkObj(obj)
         end
         local conn = parent.DescendantAdded:Connect(function(obj)
             if getgenv().CSMDH_Unloaded then return end
-            if obj:IsA("Animator") then setupAnimatorLogging(obj) end
+            checkObj(obj)
         end)
         table.insert(getgenv().ActiveConnections, conn)
     end
