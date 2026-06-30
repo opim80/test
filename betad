@@ -372,10 +372,16 @@ local function initParry()
                                 local sequence = objects[1]
                                 local hitTime = nil
                                 
+                                local validNames = {
+                                    ["hit"] = true, ["damage"] = true, ["attack"] = true, ["swing"] = true,
+                                    ["action"] = true, ["strike"] = true, ["slash"] = true, ["punch"] = true,
+                                    ["kick"] = true, ["parry"] = true, ["shoot"] = true, ["fire"] = true, ["cast"] = true
+                                }
+                                
                                 for _, desc in ipairs(sequence:GetDescendants()) do
                                     if desc:IsA("KeyframeMarker") then
                                         local name = string.lower(desc.Name)
-                                        if name == "hit" or name == "damage" or name == "attack" or name == "swing" then
+                                        if validNames[name] or string.find(name, "hit") or string.find(name, "damage") then
                                             hitTime = desc.Parent.Time
                                             break
                                         end
@@ -386,7 +392,7 @@ local function initParry()
                                     for _, desc in ipairs(sequence:GetChildren()) do
                                         if desc:IsA("Keyframe") then
                                             local name = string.lower(desc.Name)
-                                            if name == "hit" or name == "damage" or name == "attack" then
+                                            if validNames[name] or string.find(name, "hit") or string.find(name, "damage") then
                                                 hitTime = desc.Time
                                                 break
                                             end
@@ -407,11 +413,13 @@ local function initParry()
                                     print("[CSMDH] SUCCESS! CloudScraper mapped " .. id .. " -> " .. hitTime .. "s")
                                     customWarn("✅ CloudScraper MAPPED: " .. id .. " -> " .. hitTime .. "s")
                                 else
+                                    getgenv().CloudScrapeAttempts[id] = true -- Downloaded but no marker, never retry
                                     if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
                                         customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(id))
                                     end
                                 end
                             else
+                                getgenv().CloudScrapeAttempts[id] = os.clock() -- Network error, retry allowed after 60s
                                 if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
                                     customWarn("CloudScraper: BLOCKED BY ROBLOX (HTTP 403/Error) for " .. tostring(id))
                                 end
@@ -422,7 +430,8 @@ local function initParry()
             end
             
             if not getgenv().CloudTimings[tostring(animId)] and not getgenv().BlockedAnimations[animId] then
-                if not getgenv().CloudScrapeAttempts[animId] then
+                local attemptData = getgenv().CloudScrapeAttempts[animId]
+                if not attemptData or (type(attemptData) == "number" and os.clock() - attemptData > 60) then
                     getgenv().CloudScrapeAttempts[animId] = true
                     getgenv().ScraperTotalQueued = getgenv().ScraperTotalQueued + 1
                     table.insert(getgenv().ScraperQueue, animId)
