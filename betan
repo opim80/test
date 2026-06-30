@@ -288,29 +288,15 @@ local function initParry()
     end
     
     local function setupAnimatorLogging(animator)
-        task.spawn(function()
-            local character = animator.Parent
-            local attempts = 0
-            while not character and attempts < 10 do
-                task.wait(0.5)
-                character = animator.Parent
-                attempts = attempts + 1
-            end
-            
-            if character and character.Name == "Humanoid" then 
-                attempts = 0
-                local parent = character.Parent
-                while not parent and attempts < 10 do
-                    task.wait(0.5)
-                    parent = character.Parent
-                    attempts = attempts + 1
-                end
-                character = parent
-            end
-            
-            if not character then return end
-            
-            getgenv().BlockedAnimations = getgenv().BlockedAnimations or {}
+        local character = animator.Parent
+        local humanoid = nil
+        if character and character.Name == "Humanoid" then 
+            humanoid = character
+            character = character.Parent 
+        end
+        if not character then return end
+        
+        getgenv().BlockedAnimations = getgenv().BlockedAnimations or {}
         local animateScript = character:FindFirstChild("aniamte(nolag)")
         if animateScript then
             for _, child in ipairs(animateScript:GetDescendants()) do
@@ -320,7 +306,7 @@ local function initParry()
             end
         end
         
-        local conn = animator.AnimationPlayed:Connect(function(track)
+        local function onAnimationPlayed(track)
             if getgenv().CSMDH_Unloaded then return end
             
             local animId = track.Animation and track.Animation.AnimationId
@@ -457,10 +443,15 @@ local function initParry()
                 val.Value = tostring(animId)
                 val.Parent = folder
             end
-            
-        end)
+        end
+        
+        local conn = animator.AnimationPlayed:Connect(onAnimationPlayed)
         table.insert(getgenv().ActiveConnections, conn)
-        end)
+        
+        if humanoid then
+            local humConn = humanoid.AnimationPlayed:Connect(onAnimationPlayed)
+            table.insert(getgenv().ActiveConnections, humConn)
+        end
     end
     
     local function scanForAnimators(parent)
