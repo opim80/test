@@ -268,6 +268,27 @@ local function initParry()
         return getgenv().OriginalNamecall(self, ...)
     end
     
+    if not getgenv().CloudTimings then
+        pcall(function()
+            local url = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/timings"
+            local content = game:HttpGet(url)
+            if content and content ~= "" then
+                getgenv().CloudTimings = game:GetService("HttpService"):JSONDecode(content)
+            end
+        end)
+        
+        -- Fallback to workspace file if HTTP get fails
+        if not getgenv().CloudTimings then
+            if isfile and isfile("CSMDH_CloudTimings.json") then
+                local success, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile("CSMDH_CloudTimings.json")) end)
+                getgenv().CloudTimings = success and decoded or {}
+            else
+                getgenv().CloudTimings = {}
+                warn("Cloud Timings could not be loaded from Github or Workspace.")
+            end
+        end
+    end
+    
     local function setupAnimatorLogging(animator)
         if getgenv().CSMDH_HookedObjects and getgenv().CSMDH_HookedObjects[animator] then return end
         getgenv().CSMDH_HookedObjects = getgenv().CSMDH_HookedObjects or setmetatable({}, {__mode = "k"})
@@ -416,7 +437,7 @@ local function sendWebhook(title, msg, color)
         local data = {
             embeds = {{
                 title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation V1.3.6" },
+                footer = { text = "CSMDH Automation V1.3.5" },
                 timestamp = DateTime.now():ToIsoDate()
             }}
         }
@@ -1045,8 +1066,26 @@ Tabs.Combat:AddToggle("AutoParryToggle", {Title = "Enable Auto Parry (F)", Defau
 Tabs.Combat:AddToggle("AutoDodgeToggle", {Title = "Enable Auto Dodge (Q)", Default = false})
 Tabs.Combat:AddToggle("AutoAttackToggle", {Title = "Enable Auto Attack (M1)", Default = false})
 Tabs.Combat:AddButton({Title = "Reload JSON Timings", Callback = function() 
-    getgenv().CloudTimings = nil
-    Fluent:Notify({Title = "Success", Content = "Timings reloaded from file!", Duration = 3})
+    local success, err = pcall(function()
+        local url = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/timings"
+        local content = game:HttpGet(url)
+        getgenv().CloudTimings = game:GetService("HttpService"):JSONDecode(content)
+    end)
+    
+    if success and getgenv().CloudTimings then
+        Fluent:Notify({Title = "Success", Content = "Timings reloaded from GitHub!", Duration = 3})
+    else
+        -- Fallback
+        if isfile and isfile("CSMDH_CloudTimings.json") then
+            local success2, decoded = pcall(function() return game:GetService("HttpService"):JSONDecode(readfile("CSMDH_CloudTimings.json")) end)
+            if success2 and decoded then
+                getgenv().CloudTimings = decoded
+                Fluent:Notify({Title = "Success", Content = "Timings reloaded from Local Workspace!", Duration = 3})
+                return
+            end
+        end
+        Fluent:Notify({Title = "Error", Content = "Failed to fetch from GitHub and Local Workspace.", Duration = 3})
+    end
 end})
 Tabs.Combat:AddDropdown("ParryMethod", {Title = "Fallback Method", Values = {"Keypress", "Remote Event"}, Default = "Keypress"})
 Tabs.Combat:AddInput("ParryKeyBind", {Title = "Fallback Key (Letter)", Default = "J"})
