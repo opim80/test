@@ -411,6 +411,10 @@ local function initParry()
                                         customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(id))
                                     end
                                 end
+                            else
+                                if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                                    customWarn("CloudScraper: BLOCKED BY ROBLOX (HTTP 403/Error) for " .. tostring(id))
+                                end
                             end
                         end
                     end
