@@ -294,8 +294,11 @@ local function initParry()
         local function onAnimationPlayed(track)
             if getgenv().CSMDH_Unloaded then return end
             
-            local animId = track.Animation and track.Animation.AnimationId
-            if not animId or animId == "" then return end
+            local rawId = track.Animation and track.Animation.AnimationId
+            if not rawId or rawId == "" then return end
+            
+            local animId = string.match(rawId, "%d+")
+            if not animId then return end
             
             local animData = getgenv().CloudTimings[tostring(animId)]
             -- The JSON now stores tables: { hitTime = 0.5, key = "Q" }
@@ -413,7 +416,7 @@ local function sendWebhook(title, msg, color)
         local data = {
             embeds = {{
                 title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation V1.3.5" },
+                footer = { text = "CSMDH Automation V1.3.6" },
                 timestamp = DateTime.now():ToIsoDate()
             }}
         }
