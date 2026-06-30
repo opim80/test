@@ -154,7 +154,7 @@ if queue_on_teleport then
     queue_on_teleport([[
         task.wait(2)
         print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betah"))()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betan"))()
     ]])
 end
 
@@ -258,27 +258,44 @@ local function getIntoRaid()
         if not char or not char:FindFirstChild("HumanoidRootPart") then return end
         local hrp = char.HumanoidRootPart
         
-        updateRaidStatus("Teleporting to Raid...")
+        updateRaidStatus("Pathing to Raid Entrance...")
         
-        local tpSeq = {
-            Vector3.new(1218.646, 1777.767, -834.123),
-            Vector3.new(1194.452, 1761.865, -828.518),
-            Vector3.new(161.865, 154.31, -216.054),
-            Vector3.new(139.943, 139.579, -169.602),
-            Vector3.new(1005, 1680, -845),
-            Vector3.new(1024, 1661.17, -825),
-            Vector3.new(84, 78, -40),
-            Vector3.new(84, 44, -9)
-        }
+        -- The exact CFrame from the original script to arrive at the Raid door
+        hrp.CFrame = CFrame.new(1232, 709.1, 473) * CFrame.Angles(math.pi, 0, 0)
+        task.wait(0.5)
         
-        for _, pos in ipairs(tpSeq) do
-            if not raidActive then break end
-            hrp.CFrame = CFrame.new(pos)
-            task.wait(0.2)
+        if not raidActive then return end
+        updateRaidStatus("Firing Raid Prompts...")
+        
+        -- Automatically fire the prompts to get into the raid
+        local interactable = Workspace:FindFirstChild("Interactable")
+        if interactable then
+            local raids = interactable:FindFirstChild("raids")
+            if raids then
+                -- Try Mansion Raid
+                local mansion = raids:FindFirstChild("Mansion")
+                if mansion and mansion:FindFirstChild("Trigger") then
+                    local prompt = mansion.Trigger:FindFirstChild("ProximityPrompt")
+                    if prompt then 
+                        fireproximityprompt(prompt) 
+                        task.wait(0.2)
+                    end
+                end
+                
+                -- Try Zombie Raid
+                local zombie = raids:FindFirstChild("ZombieRaid")
+                if zombie and zombie:FindFirstChild("Trigger") then
+                    local prompt = zombie.Trigger:FindFirstChild("ProximityPrompt")
+                    if prompt then 
+                        fireproximityprompt(prompt)
+                        task.wait(0.2)
+                    end
+                end
+            end
         end
         
         if raidActive then
-            updateRaidStatus("Reached Raid! Prompts active.")
+            updateRaidStatus("Entered Raid! (Waiting for map load)")
         end
     end)
 end
