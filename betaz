@@ -1,5 +1,5 @@
 --[[
-    CSMDH meth | V1.3.5.2
+    CSMDH meth | V1.3.5
     Professional Devil Heart Automation Utility
     
     Update Log:
@@ -329,6 +329,11 @@ local function initParry()
                 if not getgenv().CloudScrapeAttempts then getgenv().CloudScrapeAttempts = {} end
                 if not getgenv().CloudScrapeAttempts[animId] then
                     getgenv().CloudScrapeAttempts[animId] = true
+                    
+                    if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                        customWarn("CloudScraper: Attempting to download & scrape " .. tostring(animId))
+                    end
+                    
                     task.spawn(function()
                         local success, objects = pcall(function()
                             return game:GetObjects(animId)
@@ -370,6 +375,10 @@ local function initParry()
                                     Fluent:Notify({Title = "Cloud Scraper", Content = "Saved Hit Frame to file: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
                                 end
                                 customWarn("CloudScraper mapped & saved " .. animId .. " -> " .. hitTime .. "s")
+                            else
+                                if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
+                                    customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(animId))
+                                end
                             end
                         end
                     end)
@@ -1207,6 +1216,7 @@ end})
 
 Tabs.Debug:AddSection("Cloud Scraper (Experimental)")
 Tabs.Debug:AddToggle("CloudScraperToggle", {Title = "Enable GetObjects Scraper", Default = false})
+Tabs.Debug:AddToggle("CloudScraperLogToggle", {Title = "Log Scraper Attempts", Default = false})
 Tabs.Debug:AddInput("WebhookURL", {Title = "Discord Webhook URL", Default = ""})
 Tabs.Debug:AddButton({Title = "Send Mappings to Webhook", Callback = function()
     local url = Fluent.Options.WebhookURL and Fluent.Options.WebhookURL.Value
