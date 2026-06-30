@@ -1,5 +1,5 @@
 --[[
-    CSMDH meth | V1.3.5.1
+    CSMDH meth | V1.3.5.2
     Professional Devil Heart Automation Utility
     
     Update Log:
@@ -430,27 +430,6 @@ local function initParry()
                 val.Parent = folder
             end
             
-            local markerConn
-            markerConn = track.KeyframeReached:Connect(function(markerName)
-                if getgenv().CSMDH_Unloaded then 
-                    markerConn:Disconnect()
-                    return 
-                end
-                
-                local lowerName = string.lower(markerName)
-                if lowerName ~= "end" and lowerName ~= "" then
-                    if Fluent then
-                        Fluent:Notify({
-                            Title = "⚠️ MARKER DETECTED ⚠️", 
-                            Content = "NPC: " .. character.Name .. "\nMarker: '" .. markerName .. "'", 
-                            Duration = 5
-                        })
-                    end
-                    warn("!!! MARKER DETECTED: " .. markerName .. " on " .. character.Name .. " !!!")
-                end
-            end)
-            table.insert(getgenv().ActiveConnections, markerConn)
-            
         end)
         table.insert(getgenv().ActiveConnections, conn)
     end
@@ -513,7 +492,7 @@ local function sendWebhook(title, msg, color)
         local data = {
             embeds = {{
                 title = title, description = msg, color = color,
-                footer = { text = "CSMDH Automation V1.3.5.1" },
+                footer = { text = "CSMDH Automation V1.3.5" },
                 timestamp = DateTime.now():ToIsoDate()
             }}
         }
