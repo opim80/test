@@ -374,7 +374,8 @@ local function initParry()
                                 if Fluent then
                                     Fluent:Notify({Title = "Cloud Scraper", Content = "Saved Hit Frame to file: " .. string.format("%.2f", hitTime) .. "s", Duration = 5})
                                 end
-                                customWarn("CloudScraper mapped & saved " .. animId .. " -> " .. hitTime .. "s")
+                                print("[CSMDH] SUCCESS! CloudScraper mapped " .. animId .. " -> " .. hitTime .. "s")
+                                customWarn("✅ CloudScraper MAPPED: " .. animId .. " -> " .. hitTime .. "s")
                             else
                                 if Fluent.Options.CloudScraperLogToggle and Fluent.Options.CloudScraperLogToggle.Value then
                                     customWarn("CloudScraper: Failed to find Hit frame in " .. tostring(animId))
