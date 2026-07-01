@@ -117,24 +117,41 @@ end
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
 local function handleNativeMainMenu()
-    local lp = game:GetService("Players").LocalPlayer
-    if not lp then return end
-    
-    local playerGui = lp:FindFirstChild("PlayerGui")
-    if playerGui then
-        local playButton = playerGui:FindFirstChild("MainMenu") 
-            and playerGui.MainMenu:FindFirstChild("Menu")
-            and playerGui.MainMenu.Menu:FindFirstChild("MainMenu")
-            and playerGui.MainMenu.Menu.MainMenu:FindFirstChild("PlayButton")
-
-        if playButton and playButton:IsA("GuiButton") then
-            if getconnections then
-                for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
-                    connection:Fire()
+    task.spawn(function()
+        local lp = game:GetService("Players").LocalPlayer
+        if not lp then return end
+        
+        local playerGui = lp:WaitForChild("PlayerGui", 10)
+        if not playerGui then return end
+        
+        local menu = playerGui:WaitForChild("Menu", 10)
+        if not menu then return end
+        
+        local loading = menu:WaitForChild("Loading", 5)
+        if loading then
+            local skip = loading:WaitForChild("SKIP", 5)
+            if skip then
+                -- Wait for SKIP to disappear
+                while skip and skip.Parent do
+                    if skip:IsA("GuiObject") and not skip.Visible then
+                        break
+                    end
+                    task.wait(0.2)
                 end
             end
         end
-    end
+        
+        task.wait(0.5) -- Small safety buffer
+        
+        local playButton = menu:FindFirstChild("Play")
+        if playButton and playButton:IsA("GuiButton") then
+            if getconnections then
+                for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+                    pcall(function() connection:Fire() end)
+                end
+            end
+        end
+    end)
 end
 
 handleNativeMainMenu()
@@ -168,7 +185,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betal"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betay"))()
             ]])
         end
     end)
