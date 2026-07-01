@@ -217,7 +217,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betam"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betay"))()
             ]])
         end
     end)
@@ -1444,6 +1444,77 @@ Tabs.Sniper:AddButton({
     Callback = refreshHeartDropdown
 })
 
+local espObjects = {}
+Tabs.Sniper:AddToggle("HeartESPToggle", {Title = "Toggle ESP Highlights", Default = false }):OnChanged(function(v)
+    -- Clean up existing ESP
+    for _, esp in pairs(espObjects) do
+        if esp and esp.Parent then pcall(function() esp:Destroy() end) end
+    end
+    espObjects = {}
+    
+    if v then
+        local map = workspace:FindFirstChild("map")
+        local rokyos = map and map:FindFirstChild("Rokyo")
+        if not map or not rokyos then return end
+        
+        for i, object in ipairs(rokyos:GetChildren()) do
+            if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
+                if object:FindFirstChildOfClass("PointLight") then
+                    local pos = object.Position
+                    local status = "Valid"
+                    local isBait = false
+                    
+                    if pos.Y < AC_BAIT_Y_LIMIT then
+                        status = "ACBait ⚠️"
+                        isBait = true
+                    else
+                        local success, s = pcall(function() return analyzeHeartPhysics(object) end)
+                        if success and s ~= "Valid" then
+                            status = s .. " ⚠️"
+                        end
+                    end
+                    
+                    local ignoreBait = Fluent.Options.IgnoreACBait and Fluent.Options.IgnoreACBait.Value
+                    if isBait and not ignoreBait then
+                        continue -- Don't highlight AC Bait if user chose not to ignore it
+                    end
+                    
+                    -- Create Physical Highlight
+                    local hl = Instance.new("Highlight")
+                    hl.Name = "CSMDH_ESP"
+                    hl.Adornee = object
+                    hl.FillColor = isBait and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(255, 0, 0)
+                    hl.FillTransparency = 0.5
+                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    hl.Parent = object
+                    
+                    -- Create Text Tag
+                    local bg = Instance.new("BillboardGui")
+                    bg.Name = "CSMDH_ESP_Text"
+                    bg.Adornee = object
+                    bg.Size = UDim2.new(0, 150, 0, 40)
+                    bg.StudsOffset = Vector3.new(0, 3, 0)
+                    bg.AlwaysOnTop = true
+                    
+                    local txt = Instance.new("TextLabel", bg)
+                    txt.Size = UDim2.new(1, 0, 1, 0)
+                    txt.BackgroundTransparency = 1
+                    txt.Text = "Heart [" .. status .. "]"
+                    txt.TextColor3 = isBait and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(50, 255, 50)
+                    txt.TextStrokeTransparency = 0.3
+                    txt.Font = Enum.Font.GothamBold
+                    txt.TextSize = 13
+                    
+                    bg.Parent = object
+                    
+                    table.insert(espObjects, hl)
+                    table.insert(espObjects, bg)
+                end
+            end
+        end
+    end
+end)
+
 Tabs.Sniper:AddButton({
     Title = "View Selected Heart (Camera)",
     Callback = function()
@@ -1456,8 +1527,8 @@ Tabs.Sniper:AddButton({
                 viewerCamOriginalSubject = cam.CameraSubject
                 viewerCamOriginalType = cam.CameraType
             end
-            cam.CameraType = Enum.CameraType.Scriptable
-            cam.CFrame = CFrame.new(obj.Position + Vector3.new(0, 15, 15), obj.Position)
+            cam.CameraType = Enum.CameraType.Attach
+            cam.CameraSubject = obj
         end
     end
 })
