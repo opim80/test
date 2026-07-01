@@ -153,46 +153,53 @@ local function handleNativeMainMenu()
     
     local playButton = menu:WaitForChild("Play", 5)
     if playButton and playButton:IsA("GuiButton") then
-        -- Method 1: PC Executors (Synapse, Krnl)
-        if getconnections then
-            for _, connection in pairs(getconnections(playButton.MouseButton1Down)) do
-                pcall(function() connection:Fire() end)
+        local clickTimeout = 0
+        -- Force yield script until the Play button disappears (30-second cap to prevent permanent freeze)
+        while playButton.Parent and playButton.Visible and clickTimeout < 60 do
+            -- Method 1: PC Executors (Synapse, Krnl)
+            if getconnections then
+                for _, connection in pairs(getconnections(playButton.MouseButton1Down)) do
+                    pcall(function() connection:Fire() end)
+                end
+                for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+                    pcall(function() connection:Fire() end)
+                end
+                for _, connection in pairs(getconnections(playButton.MouseButton1Up)) do
+                    pcall(function() connection:Fire() end)
+                end
             end
-            for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
-                pcall(function() connection:Fire() end)
+            
+            -- Method 1.5: Mobile Executors (Delta, Codex, Arceus)
+            if firesignal then
+                pcall(function() firesignal(playButton.MouseButton1Down) end)
+                pcall(function() firesignal(playButton.MouseButton1Click) end)
+                pcall(function() firesignal(playButton.Activated) end)
             end
-            for _, connection in pairs(getconnections(playButton.MouseButton1Up)) do
-                pcall(function() connection:Fire() end)
-            end
+            
+            -- Method 2: Fallback native virtual click
+            pcall(function()
+                local vim = game:GetService("VirtualInputManager")
+                if vim then
+                    local absPos = playButton.AbsolutePosition
+                    local absSize = playButton.AbsoluteSize
+                    local centerX = absPos.X + (absSize.X / 2)
+                    local centerY = absPos.Y + (absSize.Y / 2)
+                    
+                    -- Exact center click
+                    vim:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+                    task.wait(0.05)
+                    vim:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
+                    
+                    -- +36px offset click (For PC topbar/Mobile notch inconsistencies)
+                    vim:SendMouseButtonEvent(centerX, centerY + 36, 0, true, game, 0)
+                    task.wait(0.05)
+                    vim:SendMouseButtonEvent(centerX, centerY + 36, 0, false, game, 0)
+                end
+            end)
+            
+            task.wait(0.5)
+            clickTimeout = clickTimeout + 1
         end
-        
-        -- Method 1.5: Mobile Executors (Delta, Codex, Arceus)
-        if firesignal then
-            pcall(function() firesignal(playButton.MouseButton1Down) end)
-            pcall(function() firesignal(playButton.MouseButton1Click) end)
-            pcall(function() firesignal(playButton.Activated) end)
-        end
-        
-        -- Method 2: Fallback native virtual click
-        pcall(function()
-            local vim = game:GetService("VirtualInputManager")
-            if vim then
-                local absPos = playButton.AbsolutePosition
-                local absSize = playButton.AbsoluteSize
-                local centerX = absPos.X + (absSize.X / 2)
-                local centerY = absPos.Y + (absSize.Y / 2)
-                
-                -- Exact center click
-                vim:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
-                task.wait(0.05)
-                vim:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
-                
-                -- +36px offset click (For PC topbar/Mobile notch inconsistencies)
-                vim:SendMouseButtonEvent(centerX, centerY + 36, 0, true, game, 0)
-                task.wait(0.05)
-                vim:SendMouseButtonEvent(centerX, centerY + 36, 0, false, game, 0)
-            end
-        end)
     end
     
     -- Yield an extra second to let the character physically spawn in before the rest of the script loads
@@ -230,7 +237,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betay"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betan"))()
             ]])
         end
     end)
