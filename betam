@@ -217,7 +217,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betat"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betam"))()
             ]])
         end
     end)
@@ -928,7 +928,11 @@ local function findDevilHeart()
                 local pos = object.Position
                 currentHeartRef = object 
                 if pos.Y < AC_BAIT_Y_LIMIT then 
-                    return "ACBait", pos, object 
+                    if Fluent.Options.IgnoreACBait and Fluent.Options.IgnoreACBait.Value then
+                        return "Valid", pos, object
+                    else
+                        return "ACBait", pos, object 
+                    end
                 end
                 
                 local status, reason = analyzeHeartPhysics(object)
@@ -1376,6 +1380,99 @@ StatusLabel = Tabs.Sniper:AddParagraph({Title = "Status", Content = "Idle"})
 Tabs.Sniper:AddToggle("HopperToggle", {Title = "Enable Auto-Hop", Default = false }):OnChanged(function(v) if not v then cleanupMovement() end end)
 Tabs.Sniper:AddToggle("AutoTweenOnFind", {Title = "Tween Upon Detection", Default = true })
 Tabs.Sniper:AddToggle("InstantTeleportToggle", {Title = "Instant CFrame Teleport (No Tween)", Default = false })
+
+Tabs.Sniper:AddToggle("IgnoreACBait", {Title = "Ignore AC Bait Detection (Risky)", Default = false})
+
+Tabs.Sniper:AddSection("Heart Viewer")
+
+local heartListDropdown
+local cachedHearts = {}
+local viewerCamOriginalSubject = nil
+local viewerCamOriginalType = nil
+
+local function refreshHeartDropdown()
+    cachedHearts = {}
+    local map = workspace:FindFirstChild("map")
+    local rokyos = map and map:FindFirstChild("Rokyo")
+    if not map or not rokyos then
+        heartListDropdown:SetValues({"No Hearts Found"})
+        heartListDropdown:SetValue("No Hearts Found")
+        return
+    end
+
+    local list = {}
+    for i, object in ipairs(rokyos:GetChildren()) do
+        if object:IsA("MeshPart") and object.MeshId == MESH_ID_TARGET then
+            if object:FindFirstChildOfClass("PointLight") then
+                local pos = object.Position
+                local status = "Valid"
+                
+                if pos.Y < AC_BAIT_Y_LIMIT then
+                    status = "ACBait ⚠️"
+                else
+                    local success, s = pcall(function() return analyzeHeartPhysics(object) end)
+                    if success and s ~= "Valid" then
+                        status = s .. " ⚠️"
+                    end
+                end
+                
+                local name = string.format("Heart %d [%s]", i, status)
+                table.insert(list, name)
+                cachedHearts[name] = object
+            end
+        end
+    end
+    
+    if #list == 0 then
+        heartListDropdown:SetValues({"No Hearts Found"})
+        heartListDropdown:SetValue("No Hearts Found")
+    else
+        heartListDropdown:SetValues(list)
+        heartListDropdown:SetValue(list[1])
+    end
+end
+
+heartListDropdown = Tabs.Sniper:AddDropdown("HeartViewerDropdown", {
+    Title = "Map Hearts",
+    Values = {"Click Refresh"},
+    Multi = false,
+    Default = "Click Refresh"
+})
+
+Tabs.Sniper:AddButton({
+    Title = "Refresh Hearts",
+    Callback = refreshHeartDropdown
+})
+
+Tabs.Sniper:AddButton({
+    Title = "View Selected Heart (Camera)",
+    Callback = function()
+        if not Fluent.Options.HeartViewerDropdown then return end
+        local selected = Fluent.Options.HeartViewerDropdown.Value
+        local obj = cachedHearts[selected]
+        if obj then
+            local cam = workspace.CurrentCamera
+            if not viewerCamOriginalSubject then
+                viewerCamOriginalSubject = cam.CameraSubject
+                viewerCamOriginalType = cam.CameraType
+            end
+            cam.CameraType = Enum.CameraType.Scriptable
+            cam.CFrame = CFrame.new(obj.Position + Vector3.new(0, 15, 15), obj.Position)
+        end
+    end
+})
+
+Tabs.Sniper:AddButton({
+    Title = "Stop Viewing",
+    Callback = function()
+        local cam = workspace.CurrentCamera
+        if viewerCamOriginalSubject then
+            cam.CameraType = viewerCamOriginalType or Enum.CameraType.Custom
+            cam.CameraSubject = viewerCamOriginalSubject
+            viewerCamOriginalSubject = nil
+        end
+    end
+})
 
 Tabs.Sniper:AddSection("Inventory")
 Tabs.Sniper:AddSlider("MaxHeartLimit", {Title = "Stop at Amount", Default = 1, Min = 1, Max = 10, Rounding = 1})
