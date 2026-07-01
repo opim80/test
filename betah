@@ -185,7 +185,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betay"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betah"))()
             ]])
         end
     end)
@@ -249,7 +249,7 @@ local function createRaidScreen()
     local sg = Instance.new("ScreenGui")
     sg.Name = "CSMDH_RaidScreen"
     sg.ResetOnSpawn = false
-    sg.Enabled = true
+    sg.Enabled = false
     
     local frame = Instance.new("Frame", sg)
     frame.Size = UDim2.new(0, 300, 0, 40)
@@ -281,6 +281,10 @@ createRaidScreen()
 local function updateRaidStatus(text)
     if getgenv().CSMDH_RaidText then
         getgenv().CSMDH_RaidText.Text = "Raid Status: " .. text
+    end
+    if getgenv().CSMDH_RaidScreen then
+        local isOverworld = Workspace:FindFirstChild("Interactable") and Workspace.Interactable:FindFirstChild("raids")
+        getgenv().CSMDH_RaidScreen.Enabled = not isOverworld
     end
 end
 
@@ -1263,8 +1267,16 @@ local function runHopperLogic()
                     sendWebhook("Inventory Full", "Skipping valid heart", 0x00AAFF)
                     serverHop()
                 else
-                    sendWebhook("Heart Found", "Tweening to target...", 0x00FF00)
-                    if Fluent.Options.AutoTweenOnFind.Value then
+                    if Fluent.Options.InstantTeleportToggle and Fluent.Options.InstantTeleportToggle.Value then
+                        sendWebhook("Heart Found", "Instant Teleporting to target...", 0x00FF00)
+                        local lp = game:GetService("Players").LocalPlayer
+                        if lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
+                            lp.Character.HumanoidRootPart.CFrame = heartObj.CFrame
+                            task.wait(0.2)
+                            collectHeart(heartObj)
+                        end
+                    elseif Fluent.Options.AutoTweenOnFind.Value then
+                        sendWebhook("Heart Found", "Tweening to target...", 0x00FF00)
                         startStagedTween(heartPos, heartObj)
                     end
                     if not Fluent.Options.HopperToggle.Value then break end
@@ -1308,14 +1320,30 @@ local Tabs = {
     Sniper = Window:AddTab({ Title = "Heart Sniper", Icon = "target" }),
     Combat = Window:AddTab({ Title = "Combat & Raids", Icon = "swords" }),
     ServerList = Window:AddTab({ Title = "Server List", Icon = "list" }),
+    Changelog = Window:AddTab({ Title = "Update Log", Icon = "scroll" }),
     Config = Window:AddTab({ Title = "Settings", Icon = "settings" }),
     Debug = Window:AddTab({ Title = "Debug Check", Icon = "bug" })
 }
+
+Tabs.Changelog:AddParagraph({
+    Title = "Recent Updates (v1.3.5)",
+    Content = [[
+- Rebuilt Pre-Load Interceptor for new UI (Loading.SKIP -> Menu.Play)
+- Implemented Instant CFrame Teleport alternative for Heart Sniper
+- Made Raid Status UI explicitly invisible outside of Raid Instances
+- Added Master Toggle & SaveManager persistence for Auto-Raid Loop
+- Added Smart Overworld Detection to prevent pathing glitches in raids
+- Added 'Auto-Re-Execute on Teleport' global setting
+- Advanced Auto-Dodge and Auto-Parry fallback implementations
+- Added standalone Mobile Debug Console and external Raid Status GUI
+]]
+})
 
 -- [[ 1. HEART SNIPER TAB ]]
 StatusLabel = Tabs.Sniper:AddParagraph({Title = "Status", Content = "Idle"})
 Tabs.Sniper:AddToggle("HopperToggle", {Title = "Enable Auto-Hop", Default = false }):OnChanged(function(v) if not v then cleanupMovement() end end)
 Tabs.Sniper:AddToggle("AutoTweenOnFind", {Title = "Tween Upon Detection", Default = true })
+Tabs.Sniper:AddToggle("InstantTeleportToggle", {Title = "Instant CFrame Teleport (No Tween)", Default = false })
 
 Tabs.Sniper:AddSection("Inventory")
 Tabs.Sniper:AddSlider("MaxHeartLimit", {Title = "Stop at Amount", Default = 1, Min = 1, Max = 10, Rounding = 1})
