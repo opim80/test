@@ -135,12 +135,13 @@ local function handleNativeMainMenu()
     
     if loaded and loaded:IsA("GuiObject") then
         -- Wait for it to become visible (loading finished)
-        while not loaded.Visible do
+        -- Added .Parent check to prevent crash if the game natively destroys the UI element
+        while loaded.Parent and not loaded.Visible do
             task.wait(0.2)
         end
         
         -- Wait for it to become invisible (ready to hit play)
-        while loaded.Visible do
+        while loaded.Parent and loaded.Visible do
             task.wait(0.2)
         end
     end
@@ -213,7 +214,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betax"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betaj"))()
             ]])
         end
     end)
