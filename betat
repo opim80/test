@@ -141,12 +141,7 @@ local function handleNativeMainMenu()
             t1 = t1 + 1
         end
         
-        -- Wait for it to become invisible (10s max)
-        local t2 = 0
-        while loaded.Parent and loaded.Visible and t2 < 50 do
-            task.wait(0.2)
-            t2 = t2 + 1
-        end
+        -- Removed the "wait for invisible" loop. We strike the Play button the millisecond it becomes visible.
     end
     
     task.wait(0.5) -- Safety buffer
@@ -222,7 +217,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betah"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betat"))()
             ]])
         end
     end)
