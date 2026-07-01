@@ -155,12 +155,23 @@ local Lighting = game:GetService("Lighting")
 
 -- Auto-Execute on Server Hop (Raid & Hopper Survival)
 if queue_on_teleport then
-    local currentScriptUrl = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/main.lua"
-    queue_on_teleport([[
-        task.wait(2)
-        print("Re-executing CSMDH on Teleport...")
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betau"))()
-    ]])
+    Players.LocalPlayer.OnTeleport:Connect(function()
+        local shouldQueue = true
+        pcall(function()
+            if Fluent and Fluent.Options and Fluent.Options.AutoQueueScript then
+                shouldQueue = Fluent.Options.AutoQueueScript.Value
+            end
+        end)
+        
+        if shouldQueue then
+            local currentScriptUrl = "https://raw.githubusercontent.com/opim80/test/refs/heads/main/main.lua"
+            queue_on_teleport([[
+                task.wait(2)
+                print("Re-executing CSMDH on Teleport...")
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betal"))()
+            ]])
+        end
+    end)
 end
 
 -- Constants
@@ -1521,6 +1532,7 @@ end)
 Tabs.Config:AddButton({Title = "ULTRA Fast Mode (Delete Mesh/Parts)", Callback = runUltraFastMode})
 
 Tabs.Config:AddSection("Server")
+Tabs.Config:AddToggle("AutoQueueScript", {Title = "Auto-Re-Execute on Teleport", Default = true})
 Tabs.Config:AddSlider("ServerLogExpiry", {Title = "Block Server (Min)", Default = 30, Min = 1, Max = 60, Rounding = 1})
 Tabs.Config:AddButton({Title = "Clear Server Cache", Callback = function()
     if isfile(SERVER_LOG_FILE) then
