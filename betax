@@ -213,7 +213,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betaz"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betax"))()
             ]])
         end
     end)
