@@ -117,58 +117,69 @@ end
 
 -- [[ PRE-LOAD INTERCEPTOR ]]
 local function handleNativeMainMenu()
-    task.spawn(function()
-        local lp = game:GetService("Players").LocalPlayer
-        if not lp then return end
+    local lp = game:GetService("Players").LocalPlayer
+    if not lp then return end
+    
+    local playerGui = lp:WaitForChild("PlayerGui", 10)
+    if not playerGui then return end
+    
+    -- 5-second timeout. If Menu doesn't exist (e.g. inside a Raid), skip interceptor gracefully.
+    local menu = playerGui:WaitForChild("Menu", 5)
+    if not menu then return end
+    
+    local loading = menu:WaitForChild("Loading", 10)
+    if not loading then return end
+    
+    -- Wait for the 'Loaded' indicator
+    local loaded = loading:WaitForChild("Loaded", 300)
+    
+    if loaded and loaded:IsA("GuiObject") then
+        -- Wait for it to become visible (loading finished)
+        while not loaded.Visible do
+            task.wait(0.2)
+        end
         
-        -- Infinite yield until UI objects natively load
-        local playerGui = lp:WaitForChild("PlayerGui")
-        local menu = playerGui:WaitForChild("Menu")
-        local loading = menu:WaitForChild("Loading")
-        
-        -- Wait for the 'Loaded' indicator instead of SKIP
-        local loaded = loading:WaitForChild("Loaded")
-        
-        -- If 'Loaded' is a UI element, wait for it to become visible (some games pre-create it as invisible)
-        if loaded:IsA("GuiObject") then
-            while not loaded.Visible do
-                task.wait(0.2)
+        -- Wait for it to become invisible (ready to hit play)
+        while loaded.Visible do
+            task.wait(0.2)
+        end
+    end
+    
+    task.wait(0.5) -- Safety buffer
+    
+    local playButton = menu:WaitForChild("Play", 5)
+    if playButton and playButton:IsA("GuiButton") then
+        -- Method 1: Executors
+        if getconnections then
+            for _, connection in pairs(getconnections(playButton.MouseButton1Down)) do
+                pcall(function() connection:Fire() end)
+            end
+            for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
+                pcall(function() connection:Fire() end)
+            end
+            for _, connection in pairs(getconnections(playButton.MouseButton1Up)) do
+                pcall(function() connection:Fire() end)
             end
         end
         
-        task.wait(1) -- Safety buffer
-        
-        local playButton = menu:WaitForChild("Play")
-        if playButton and playButton:IsA("GuiButton") then
-            -- Method 1: Executors
-            if getconnections then
-                for _, connection in pairs(getconnections(playButton.MouseButton1Down)) do
-                    pcall(function() connection:Fire() end)
-                end
-                for _, connection in pairs(getconnections(playButton.MouseButton1Click)) do
-                    pcall(function() connection:Fire() end)
-                end
-                for _, connection in pairs(getconnections(playButton.MouseButton1Up)) do
-                    pcall(function() connection:Fire() end)
-                end
+        -- Method 2: Fallback native virtual click
+        -- Calculates exact center of the button on the screen to physically click it
+        pcall(function()
+            local vim = game:GetService("VirtualInputManager")
+            if vim then
+                local absPos = playButton.AbsolutePosition
+                local absSize = playButton.AbsoluteSize
+                local centerX = absPos.X + (absSize.X / 2)
+                local centerY = absPos.Y + (absSize.Y / 2) + 36 -- +36px offset for Roblox topbar
+                vim:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
+                task.wait(0.1)
+                vim:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
             end
-            
-            -- Method 2: Fallback native virtual click
-            -- Calculates exact center of the button on the screen to physically click it
-            pcall(function()
-                local vim = game:GetService("VirtualInputManager")
-                if vim then
-                    local absPos = playButton.AbsolutePosition
-                    local absSize = playButton.AbsoluteSize
-                    local centerX = absPos.X + (absSize.X / 2)
-                    local centerY = absPos.Y + (absSize.Y / 2) + 36 -- +36px offset for Roblox topbar
-                    vim:SendMouseButtonEvent(centerX, centerY, 0, true, game, 0)
-                    task.wait(0.1)
-                    vim:SendMouseButtonEvent(centerX, centerY, 0, false, game, 0)
-                end
-            end)
-        end
-    end)
+        end)
+    end
+    
+    -- Yield an extra second to let the character physically spawn in before the rest of the script loads
+    task.wait(1)
 end
 
 handleNativeMainMenu()
@@ -202,7 +213,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betal"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betaz"))()
             ]])
         end
     end)
