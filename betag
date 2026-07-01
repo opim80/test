@@ -125,14 +125,15 @@ local function handleNativeMainMenu()
         local playerGui = lp:WaitForChild("PlayerGui")
         local menu = playerGui:WaitForChild("Menu")
         local loading = menu:WaitForChild("Loading")
-        local skip = loading:WaitForChild("SKIP")
         
-        -- Wait for SKIP to disappear natively
-        while skip and skip.Parent do
-            if skip:IsA("GuiObject") and not skip.Visible then
-                break
+        -- Wait for the 'Loaded' indicator instead of SKIP
+        local loaded = loading:WaitForChild("Loaded")
+        
+        -- If 'Loaded' is a UI element, wait for it to become visible (some games pre-create it as invisible)
+        if loaded:IsA("GuiObject") then
+            while not loaded.Visible do
+                task.wait(0.2)
             end
-            task.wait(0.2)
         end
         
         task.wait(1) -- Safety buffer
@@ -190,7 +191,7 @@ if queue_on_teleport then
             queue_on_teleport([[
                 task.wait(2)
                 print("Re-executing CSMDH on Teleport...")
-                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betau"))()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/opim80/test/refs/heads/main/betag"))()
             ]])
         end
     end)
