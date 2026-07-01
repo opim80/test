@@ -42,22 +42,42 @@ if queue_on_teleport then
                 end)
             end
             
-            -- Hook VirtualInputManager inside the raid server!
+            -- Hook VirtualInputManager and VirtualUser
             local vim = game:GetService("VirtualInputManager")
-            if vim then
-                local old_namecall
-                old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
-                    local method = getnamecallmethod()
-                    if self == vim then
-                        if method == "SendKeyEvent" or method == "SendMouseButtonEvent" then
-                            local args = {...}
-                            local log_str = string.format("VIM:%s(%s)", method, table.concat(args, ", "))
-                            write_log("combat_logic", log_str)
-                        end
+            local vu = game:GetService("VirtualUser")
+            
+            local old_namecall
+            old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
+                local method = getnamecallmethod()
+                if self == vim or self == vu then
+                    if method:find("KeyEvent") or method:find("MouseButton") or method:find("Click") or method:find("Button") then
+                        local args = {...}
+                        local arg_strings = {}
+                        for i,v in pairs(args) do table.insert(arg_strings, tostring(v)) end
+                        local log_str = string.format("INPUT:%s:%s(%s)", tostring(self), method, table.concat(arg_strings, ", "))
+                        write_log("combat_logic", log_str)
                     end
-                    return old_namecall(self, ...)
-                end)
+                end
+                return old_namecall(self, ...)
+            end)
+
+            -- Hook Exploit-Level Input Functions (in case they bypass Roblox APIs)
+            local function hook_exploit_input(func_name)
+                local env = getgenv and getgenv() or getfenv(0)
+                if env[func_name] then
+                    local old_func
+                    old_func = hookfunction(env[func_name], function(...)
+                        local args = {...}
+                        local arg_strings = {}
+                        for i,v in pairs(args) do table.insert(arg_strings, tostring(v)) end
+                        write_log("combat_logic", string.format("EXPLOIT_INPUT:%s(%s)", func_name, table.concat(arg_strings, ", ")))
+                        return old_func(...)
+                    end)
+                end
             end
+            
+            local exploit_inputs = {"keypress", "keyrelease", "mouse1click", "mouse1press", "mouse1release", "mouse2click", "mouse2press", "mouse2release", "mousemoverel"}
+            for _, name in ipairs(exploit_inputs) do hook_exploit_input(name) end
         ]]
         
         -- Prepend our spy to their code
