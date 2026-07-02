@@ -81,18 +81,44 @@ if queue_on_teleport then
                     local arg_strings = {}
                     for i, v in pairs(args) do 
                         if type(v) == "table" then
-                            table.insert(arg_strings, "Table")
+                            table.insert(arg_strings, "{}")
                         elseif type(v) == "buffer" then
                             local b_str = buffer.tostring(v)
                             local hex = {}
                             for j=1, #b_str do table.insert(hex, string.format("%02X", string.byte(b_str, j))) end
-                            table.insert(arg_strings, "Buffer[" .. table.concat(hex, " ") .. "]")
+                            -- Format buffer as a string conversion for easy copy-pasting
+                            local byte_string = ""
+                            for j=1, #b_str do
+                                byte_string = byte_string .. "\\" .. string.byte(b_str, j)
+                            end
+                            table.insert(arg_strings, "buffer.fromstring(\"" .. byte_string .. "\")")
+                        elseif type(v) == "string" then
+                            table.insert(arg_strings, "\"" .. tostring(v) .. "\"")
+                        elseif type(v) == "number" or type(v) == "boolean" then
+                            table.insert(arg_strings, tostring(v))
                         else
-                            table.insert(arg_strings, type(v) .. "(" .. tostring(v) .. ")")
+                            table.insert(arg_strings, "nil --[[" .. type(v) .. "]]")
                         end
                     end
-                    local log_str = string.format("REMOTE:%s:%s(%s)", tostring(self), method, table.concat(arg_strings, ", "))
-                    write_log("combat_remotes", log_str)
+                    
+                    local full_path = self:GetFullName()
+                    -- Fix path formatting (e.g. Workspace.Model instead of Workspace["Model"])
+                    full_path = full_path:gsub("%.", "%.") 
+                    
+                    local log_str = string.format("game.%s:%s(%s)", full_path, method, table.concat(arg_strings, ", "))
+                    
+                    -- Read existing logs to avoid duplicates
+                    local is_duplicate = false
+                    pcall(function()
+                        local existing = readfile("spy_logs/spy_log_combat_remotes.txt")
+                        if existing:find(log_str, 1, true) then
+                            is_duplicate = true
+                        end
+                    end)
+                    
+                    if not is_duplicate then
+                        write_log("combat_remotes", log_str)
+                    end
                 end
                 
                 return old_namecall(self, ...)
