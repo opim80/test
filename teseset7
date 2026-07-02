@@ -97,7 +97,7 @@ if queue_on_teleport then
                         elseif type(v) == "number" or type(v) == "boolean" then
                             table.insert(arg_strings, tostring(v))
                         else
-                            table.insert(arg_strings, "nil --[[" .. type(v) .. "]]")
+                            table.insert(arg_strings, "nil -- (" .. type(v) .. ")")
                         end
                     end
                     
