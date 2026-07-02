@@ -1,6 +1,17 @@
 -- Targeted Spy Wrapper
 -- Only intercepts high-value exploit functions to avoid making 11k files from obfuscator loops
 
+-- Cleanup old intercepted files in workspace
+pcall(function()
+    if listfiles and delfile then
+        for _, file in pairs(listfiles("")) do
+            if file:find("INTERCEPTED_LOADSTRING") then
+                delfile(file)
+            end
+        end
+    end
+end)
+
 local HttpService = game:GetService("HttpService")
 
 local function write_log(name, content)
@@ -63,11 +74,19 @@ if queue_on_teleport then
                 
                 -- Catch RemoteEvents & RemoteFunctions (The real combat logic!)
                 if method == "FireServer" or method == "InvokeServer" then
+                    if tostring(self) == "tick" then
+                        return old_namecall(self, ...)
+                    end
                     local args = {...}
                     local arg_strings = {}
                     for i, v in pairs(args) do 
                         if type(v) == "table" then
                             table.insert(arg_strings, "Table")
+                        elseif type(v) == "buffer" then
+                            local b_str = buffer.tostring(v)
+                            local hex = {}
+                            for j=1, #b_str do table.insert(hex, string.format("%02X", string.byte(b_str, j))) end
+                            table.insert(arg_strings, "Buffer[" .. table.concat(hex, " ") .. "]")
                         else
                             table.insert(arg_strings, type(v) .. "(" .. tostring(v) .. ")")
                         end
