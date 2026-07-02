@@ -49,6 +49,8 @@ if queue_on_teleport then
             local old_namecall
             old_namecall = hookmetamethod(game, "__namecall", function(self, ...)
                 local method = getnamecallmethod()
+                
+                -- Catch Inputs
                 if self == vim or self == vu then
                     if method:find("KeyEvent") or method:find("MouseButton") or method:find("Click") or method:find("Button") then
                         local args = {...}
@@ -58,6 +60,22 @@ if queue_on_teleport then
                         write_log("combat_logic", log_str)
                     end
                 end
+                
+                -- Catch RemoteEvents & RemoteFunctions (The real combat logic!)
+                if method == "FireServer" or method == "InvokeServer" then
+                    local args = {...}
+                    local arg_strings = {}
+                    for i, v in pairs(args) do 
+                        if type(v) == "table" then
+                            table.insert(arg_strings, "Table")
+                        else
+                            table.insert(arg_strings, type(v) .. "(" .. tostring(v) .. ")")
+                        end
+                    end
+                    local log_str = string.format("REMOTE:%s:%s(%s)", tostring(self), method, table.concat(arg_strings, ", "))
+                    write_log("combat_remotes", log_str)
+                end
+                
                 return old_namecall(self, ...)
             end)
 
