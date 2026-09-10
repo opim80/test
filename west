@@ -1,57 +1,73 @@
 --!nocheck
 -- ============================================================
 -- BRIDGER HUB (BW) - MAIN LOADER & ORCHESTRATOR
--- Clean Modular Architecture (GitHub Web Loader)
 -- ============================================================
 
--- ── ADONIS ANTICHEAT BYPASS (RUNS FIRST) ──────────────────────────────────
-pcall(function()
-    local getinfo = getinfo or debug.getinfo
-    local DEBUG = false
-    local Hooked = {}
-    local Detected, Kill
+local activeLoadingContext = "Initialization"
 
-    local syn = rawget(getfenv(), "syn")
-    local setidentity = setthreadidentity or set_thread_identity or setidentity or (syn and syn.set_thread_identity)
-    if setidentity then pcall(setidentity, 2) end
+-- ── UNTAMPERED ADONIS BYPASS (WITH MODULE TRACKER) ──────────
+do
+local getinfo = getinfo or debug.getinfo
+local DEBUG = true -- Enables flag printing
+local Hooked = {}
 
-    local getgc_fn = getgc or get_gc_objects
-    local hook_fn = hookfunction or replaceclosure
+local Detected, Kill
 
-    if getgc_fn and hook_fn then
-        for _, v in ipairs(getgc_fn(true)) do
-            if typeof(v) == "table" then
-                local DetectFunc = rawget(v, "Detected")
-                local KillFunc = rawget(v, "Kill")
+setthreadidentity(2)
 
-                if typeof(DetectFunc) == "function" and not Detected then
-                    Detected = DetectFunc
-                    local Old; Old = hook_fn(Detected, function(Action, Info, NoCrash)
-                        return true
-                    end)
+for i, v in getgc(true) do
+    if typeof(v) == "table" then
+        local DetectFunc = rawget(v, "Detected")
+        local KillFunc = rawget(v, "Kill")
+    
+        if typeof(DetectFunc) == "function" and not Detected then
+            Detected = DetectFunc
+            
+            local Old; Old = hookfunction(Detected, function(Action, Info, NoCrash)
+                if Action ~= "_" then
+                    if DEBUG then
+                        warn(`🚨 ADONIS TRIGGERED during [{activeLoadingContext}]!`)
+                        warn(`   Method: {Action}`)
+                        warn(`   Info:   {Info}`)
+                    end
                 end
+                
+                return true
+            end)
 
-                if rawget(v, "Variables") and rawget(v, "Process") and typeof(KillFunc) == "function" and not Kill then
-                    Kill = KillFunc
-                    local Old; Old = hook_fn(Kill, function(Info) end)
+            table.insert(Hooked, Detected)
+        end
+
+        if rawget(v, "Variables") and rawget(v, "Process") and typeof(KillFunc) == "function" and not Kill then
+            Kill = KillFunc
+            local Old; Old = hookfunction(Kill, function(Info)
+                if DEBUG then
+                    warn(`🚨 ADONIS KILL ATTEMPT during [{activeLoadingContext}]! Info: {Info}`)
                 end
-            end
+            end)
+
+            table.insert(Hooked, Kill)
         end
     end
+end
 
-    if getrenv and getrenv().debug and getrenv().debug.info and hook_fn then
-        local Old; Old = hook_fn(getrenv().debug.info, newcclosure(function(...)
-            local LevelOrFunc, Info = ...
-            if Detected and LevelOrFunc == Detected then
-                return coroutine.yield(coroutine.running())
-            end
-            return Old(...)
-        end))
+local Old; Old = hookfunction(getrenv().debug.info, newcclosure(function(...)
+    local LevelOrFunc, Info = ...
+
+    if Detected and LevelOrFunc == Detected then
+        if DEBUG then
+            warn(`Adonis Integrity Checked & Bypassed during [{activeLoadingContext}]!`)
+        end
+
+        return coroutine.yield(coroutine.running())
     end
+    
+    return Old(...)
+end))
 
-    if setidentity then pcall(setidentity, 7) end
-end)
--- ──────────────────────────────────────────────────────────────────────────
+setthreadidentity(7)
+end
+-- ────────────────────────────────────────────────────────────
 
 if getgenv().BW3_Unload then
     pcall(getgenv().BW3_Unload)
@@ -67,39 +83,53 @@ local SHARED = {
     SAINT = { status = "idle", detects = 0, grabs = 0, lastPart = "none" },
     FARM = {},
 }
-setmetatable(SHARED, {
-    __index = getgenv(),
-    __newindex = function(t, k, v)
-        rawset(t, k, v)
-    end
-})
 
-setfenv(1, setmetatable({}, {
-    __index = SHARED,
-    __newindex = SHARED
-}))
-
+-- Module Loader with Leak Detection
 local function loadModule(name, ctx)
+    activeLoadingContext = name
+    print(string.format("📦 [BW Loader] Fetching and loading module: %s...", name))
+
     local url = "https://raw.githubusercontent.com/opim80/test/main/west_" .. name
     local content
     local ok, err = pcall(function() content = game:HttpGet(url) end)
-    if not ok or not content then error(string.format("[BW Loader] Failed to fetch module %s\nURL: %s", name, url)) end
+    
+    if not ok or not content or #content < 20 then 
+        error(string.format("[BW Loader] Failed to download 'west_%s' from GitHub. URL: %s", name, url)) 
+    end
 
-    local fn, compileErr = loadstring(content, "=" .. name)
-    if not fn then error(string.format("[BW Loader] Compile error in %s: %s", name, tostring(compileErr))) end
+    local fn, compileErr = loadstring(content, "=west_" .. name)
+    if not fn then 
+        error(string.format("[BW Loader] Compile error in 'west_%s': %s", name, tostring(compileErr))) 
+    end
+
+    -- Snapshot getgenv() keys before execution to detect global leaks
+    local beforeGenv = {}
+    for k in pairs(getgenv()) do beforeGenv[k] = true end
 
     setfenv(fn, setmetatable({}, { __index = SHARED, __newindex = SHARED }))
     local okRun, res = pcall(fn, ctx)
-    if not okRun then error(string.format("[BW Loader] Runtime error in %s: %s", name, tostring(res))) end
+    if not okRun then 
+        error(string.format("[BW Loader] Runtime error in 'west_%s': %s", name, tostring(res))) 
+    end
+
+    -- Check if module polluted getgenv() directly
+    for k in pairs(getgenv()) do
+        if not beforeGenv[k] and k ~= "BW3" and k ~= "BW3_Gen" and k ~= "BW3_Unload" and k ~= "BWCache" then
+            warn(string.format("⚠️ [GLOBAL LEAK DETECTED] Module '%s' wrote directly to getgenv: '%s'", name, tostring(k)))
+        end
+    end
 
     if type(res) == "table" then
         for k, v in pairs(res) do SHARED[k] = v end
     end
+
+    print(string.format("✅ [BW Loader] Loaded: %s", name))
     return res
 end
 
 local ctx = { SHARED = SHARED, loadModule = loadModule }
 
+-- Load modules sequentially
 local Core = loadModule("Core", ctx)
 ctx.Core = Core; ctx.Services = Core.Services; ctx.S = Core.S; ctx.track = Core.track; ctx.loop = Core.loop; ctx.conns = Core.conns; ctx.loops = Core.loops; ctx.draws = Core.draws
 
@@ -146,23 +176,26 @@ ctx.Tabs = Tabs
 
 Tabs.initTabs()
 
+activeLoadingContext = "Runtime"
+
+-- ── TELEMETRY LOOP ──────────────────────────────────────────
 S.statusLoop = true
 loop("statusLoop", 0.35, function()
-    local curM = moola and moola() or 0
-    local curBait = countTool and countTool("Bait") or 0
+    local curM = (SHARED.moola and SHARED.moola()) or (moola and moola()) or 0
+    local curBait = (SHARED.countTool and SHARED.countTool("Bait")) or (countTool and countTool("Bait")) or 0
     local curCatches = FISH.catches or 0
-    local curRod = findTool and (findTool("FishingRod") ~= nil) or false
+    local curRod = SHARED.findTool and (SHARED.findTool("FishingRod") ~= nil) or false
     
     local horseName = "None"
-    if myHorse then
-        local h = myHorse()
+    if SHARED.myHorse then
+        local h = SHARED.myHorse()
         horseName = h and h.Name or "None"
     end
     
-    local hasCorpse = holdingCorpse and holdingCorpse() or false
+    local hasCorpse = SHARED.holdingCorpse and SHARED.holdingCorpse() or false
 
     local myStand, myTier, myAlign, myExp = "None", "1", "Neutral", "0"
-    if getStandInfo then myStand, myTier, myAlign, myExp = getStandInfo() end
+    if SHARED.getStandInfo then myStand, myTier, myAlign, myExp = SHARED.getStandInfo() end
 
     if UI.quickStatsLabel then
         UI.quickStatsLabel.Text = ("$%d  •  %d Bait  •  %d Caught"):format(curM, curBait, curCatches)
@@ -186,22 +219,21 @@ loop("statusLoop", 0.35, function()
         Status.color = Color3.fromRGB(70, 200, 140)
         local waitSecs = (castPhase == "casted" and lastCast > 0) and math.floor(os.clock() - lastCast) or 0
         local baitTag = S.requireBait and ("Bait: " .. curBait) or (curBait > 0 and ("Bait: " .. curBait) or "No Bait")
-        
         local sIdx = spotIndex or 1
         Status.detail = ("%s | Spot #%d | Catches: %d | Rod: %s"):format(baitTag, sIdx, curCatches, curRod and "Yes" or "No")
         if castPhase == "casted" then
             Status.action = ("Waiting for bite (%ds)..."):format(waitSecs)
         end
     elseif S.autoChests or S.autoHerbs then
-        Status.detail = ("Chests/Herbs Opened: %d | Range: %d studs"):format(FARM.opened, S.promptRange)
+        Status.detail = ("Chests/Herbs Opened: %d | Range: %d studs"):format(FARM.opened or 0, S.promptRange or 25)
     elseif S.saintWatch then
-        Status.detail = ("Detects: %d | Grabs: %d | Holding Corpse: %s"):format(SAINT.detects, SAINT.grabs, tostring(hasCorpse))
+        Status.detail = ("Detects: %d | Grabs: %d | Holding Corpse: %s"):format(SAINT.detects or 0, SAINT.grabs or 0, tostring(hasCorpse))
     else
         Status.detail = ("Moola: $%d | Bait: %d | Horse: %s"):format(curM, curBait, horseName)
     end
 
-    if countDogbane then
-        local curDogbane = countDogbane()
+    if SHARED.countDogbane then
+        local curDogbane = SHARED.countDogbane()
         if lastDogbaneCount == -1 then
             lastDogbaneCount = curDogbane
         elseif curDogbane > lastDogbaneCount then
@@ -214,8 +246,8 @@ loop("statusLoop", 0.35, function()
                     { name = "💰 Moola", value = "$" .. tostring(curM), inline = true },
                     { name = "📍 Status", value = string.format("[%s] %s", Status.state, Status.action), inline = false },
                 }
-                if sendDiscordWebhook then sendDiscordWebhook("🌿 Dogbane Herb Acquired!", "New Dogbane Herb collected!", fields, 0xAF82FF) end
-                if logAction then logAction("WEBHOOK", ("Dispatched Dogbane alert webhook (+%d herb(s))"):format(diff), Color3.fromRGB(175, 130, 255), "WEBHOOK") end
+                if SHARED.sendDiscordWebhook then SHARED.sendDiscordWebhook("🌿 Dogbane Herb Acquired!", "New Dogbane Herb collected!", fields, 0xAF82FF) end
+                if SHARED.logAction then SHARED.logAction("WEBHOOK", ("Dispatched Dogbane alert webhook (+%d herb(s))"):format(diff), Color3.fromRGB(175, 130, 255), "WEBHOOK") end
             end
         elseif curDogbane < lastDogbaneCount then
             lastDogbaneCount = curDogbane
@@ -225,7 +257,7 @@ loop("statusLoop", 0.35, function()
     if S.webhookIntervalEnabled and S.webhookUrl and S.webhookUrl ~= "" then
         local intervalSec = math.max(1, S.webhookInterval or 10) * 60
         if os.clock() - lastWebhookSend >= intervalSec then
-            if sendInventoryWebhook then sendInventoryWebhook("⏱️ Periodic Telemetry (" .. tostring(S.webhookInterval) .. "m)") end
+            if SHARED.sendInventoryWebhook then SHARED.sendInventoryWebhook("⏱️ Periodic Telemetry (" .. tostring(S.webhookInterval) .. "m)") end
         end
     end
 
@@ -234,6 +266,7 @@ loop("statusLoop", 0.35, function()
     if UI.updateBlackscreen then pcall(UI.updateBlackscreen) end
 end)
 
+-- Floating Action Button
 do
     local fab = mk("TextButton", {
         Size = UDim2.fromOffset(42, 42),
@@ -283,40 +316,40 @@ do
             end
         elseif S.horseFlyKey and S.horseFlyKey ~= "None" and i.KeyCode.Name == S.horseFlyKey then
             S.fakeHorseFly = not S.fakeHorseFly
-            if S.fakeHorseFly and startFakeHorseFly then
-                startFakeHorseFly()
-            elseif stopFakeHorseFly then
-                stopFakeHorseFly(true)
+            if S.fakeHorseFly and SHARED.startFakeHorseFly then
+                SHARED.startFakeHorseFly()
+            elseif SHARED.stopFakeHorseFly then
+                SHARED.stopFakeHorseFly(true)
             end
             if UI.updateToggles then pcall(UI.updateToggles) end
         end
     end))
 
     syncActiveFeatures = function()
-        if updateAllTogglesUI then pcall(updateAllTogglesUI) end
+        if UI.updateAllTogglesUI then pcall(UI.updateAllTogglesUI) end
         if S.autoFish then
-            if not loops["autoFish"] and startFishing then startFishing() end
+            if not loops["autoFish"] and SHARED.startFishing then SHARED.startFishing() end
         else
-            if loops["autoFish"] and stopFishing then stopFishing() end
+            if loops["autoFish"] and SHARED.stopFishing then SHARED.stopFishing() end
         end
         if S.silentAim and COMBAT.start then COMBAT.start() end
         if S.iHateYou and COMBAT.startIHateYou then COMBAT.startIHateYou() end
         if S.autoHopNearPlayer and not loops["autoHopNearPlayer"] then
-            loop("autoHopNearPlayer", 0.5, playerProximityTick)
+            loop("autoHopNearPlayer", 0.5, SHARED.playerProximityTick)
         end
         if S.autoChests and not loops["autoChests"] then
-            loop("autoChests", 0.8, function() farmTick("Chests", "chest", false) end)
+            loop("autoChests", 0.8, function() SHARED.farmTick("Chests", "chest", false) end)
         end
         if S.autoHerbs and not loops["autoHerbs"] then
-            loop("autoHerbs", 0.8, function() farmTick("SpawnedHerbs", "herb", false) end)
+            loop("autoHerbs", 0.8, function() SHARED.farmTick("SpawnedHerbs", "herb", false) end)
         end
         if S.autoBuy and not loops["autoBuy"] then
-            loop("autoBuy", 1.5, autoBuyTick)
+            loop("autoBuy", 1.5, SHARED.autoBuyTick)
         end
         if S.saintWatch and not loops["saintWatch"] then
-            loop("saintWatch", 2, saintTick)
+            loop("saintWatch", 2, SHARED.saintTick)
         end
-        if ensureESP then pcall(ensureESP) end
+        if SHARED.ensureESP then pcall(SHARED.ensureESP) end
         if UI.setBlackscreen and S.blackscreen ~= nil then
             pcall(function() UI.setBlackscreen(S.blackscreen) end)
         end
@@ -327,18 +360,18 @@ do
         UI = UI,
         Status = Status,
         COMBAT = COMBAT,
-        startFakeHorseFly = startFakeHorseFly,
-        stopFakeHorseFly = stopFakeHorseFly,
-        mountHorse = mountHorse,
-        summonHorse = summonHorse,
-        dismount = dismount,
-        isMounted = isMounted,
+        startFakeHorseFly = SHARED.startFakeHorseFly,
+        stopFakeHorseFly = SHARED.stopFakeHorseFly,
+        mountHorse = SHARED.mountHorse,
+        summonHorse = SHARED.summonHorse,
+        dismount = SHARED.dismount,
+        isMounted = SHARED.isMounted,
         setBlackscreen = UI.setBlackscreen,
-        serverHop = serverHop,
-        playerProximityTick = playerProximityTick,
+        serverHop = SHARED.serverHop,
+        playerProximityTick = SHARED.playerProximityTick,
         syncActiveFeatures = syncActiveFeatures,
-        loadConfig = loadConfig,
-        applyGenvConfig = applyGenvConfig,
+        loadConfig = SHARED.loadConfig,
+        applyGenvConfig = SHARED.applyGenvConfig,
     }
 end
 
@@ -351,7 +384,7 @@ local function destroy()
     if COMBAT.stopIHateYou then pcall(COMBAT.stopIHateYou) end
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     conns = {}
-    if clearDraws then pcall(clearDraws) end
+    if SHARED.clearDraws then pcall(SHARED.clearDraws) end
     if UI.gui then pcall(function() UI.gui:Destroy() end) end
     if UI.hudGui then pcall(function() UI.hudGui:Destroy() end) end
     if UI.bsGui then pcall(function() UI.bsGui:Destroy() end) end
