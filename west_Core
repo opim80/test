@@ -1,59 +1,10 @@
 --!nocheck
 -- ============================================================
 -- BRIDGER HUB (BW) - MODULE: Core
--- Services, Capabilities, Adonis Bypass, Settings & Lifecycle
+-- Services, Capabilities, Settings Defaults & Lifecycle
 -- ============================================================
 local ctx = ...
-local SHARED = getfenv()
 
--- ── ADONIS ANTICHEAT BYPASS (GOD MODE NETWORK HOOK) ──────────────────────
-pcall(function()
-    local hook_fn = hookfunction or replaceclosure
-    local getgc_fn = getgc or get_gc_objects
-
-    -- 1. Memory Hook
-    if getgc_fn and hook_fn then
-        for _, v in pairs(getgc_fn(true)) do
-            if type(v) == "table" then
-                if rawget(v, "Detected") and type(rawget(v, "Detected")) == "function" then
-                    hook_fn(rawget(v, "Detected"), function() return end)
-                end
-                if rawget(v, "Kill") and type(rawget(v, "Kill")) == "function" then
-                    hook_fn(rawget(v, "Kill"), function() return end)
-                end
-            elseif type(v) == "function" then
-                local info = debug.getinfo(v)
-                if info and (info.name == "Detected" or info.name == "Kill" or info.name == "Kick") then
-                    hook_fn(v, function() return end)
-                end
-            end
-        end
-    end
-
-    -- 2. Network Silencer (Blocks Adonis from sending the kick command)
-    local OldNamecall
-    OldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        if not checkcaller() then
-            local method = getnamecallmethod()
-            if method == "FireServer" or method == "InvokeServer" then
-                local args = {...}
-                if type(args[1]) == "string" then
-                    local str = string.lower(args[1])
-                    if string.find(str, "detected") or string.find(str, "kick") or string.find(str, "crash") or string.find(str, "log") or string.find(str, "exploit") then
-                        return -- Drop the report
-                    end
-                end
-                local name = string.lower(tostring(self.Name))
-                if string.find(name, "adonis") or name == "client" then
-                    return -- Drop Adonis remote
-                end
-            end
-        end
-        return OldNamecall(self, ...)
-    end)
-end)
-
--- ── ROBLOX SERVICES & AUTO-LOADER ──────────────────────────────────────────
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -62,6 +13,7 @@ local WS = game:GetService("Workspace")
 local TS = game:GetService("TweenService")
 local LP = Players.LocalPlayer
 
+-- Auto-spawn into game if currently on MainMenu
 pcall(function()
     local wf = RS:FindFirstChild("WesternFramework")
     local remotes = wf and wf:FindFirstChild("Shared") and wf.Shared:FindFirstChild("Remotes")
@@ -87,6 +39,7 @@ pcall(function()
     end
 end)
 
+-- Anti-Idle: Prevent 20-minute idle disconnects
 pcall(function()
     local VU = game:GetService("VirtualUser")
     LP.Idled:Connect(function()
@@ -99,6 +52,7 @@ end)
 
 local VERSION = "v3.2"
 
+-- Global settings cache per place
 getgenv().BWCache = getgenv().BWCache or {}
 local PC = getgenv().BWCache[tostring(game.PlaceId)] or {}
 getgenv().BWCache[tostring(game.PlaceId)] = PC
@@ -113,6 +67,7 @@ local function cap(name)
     if typeof(f) ~= "function" then MISSING[#MISSING + 1] = name; return nil end
     return f
 end
+
 local firepp = cap("fireproximityprompt")
 local fireclick = cap("fireclickdetector")
 local _mouseabs = cap("mousemoveabs")
@@ -186,7 +141,6 @@ local lastCatchTime = 0
 local lastKnownFishTotal = 0
 local isSellingFish = false
 local isRestockingBait = false
-local primeTeleportLoader
 local GEN = (getgenv().BW3_Gen or 0) + 1
 getgenv().BW3_Gen = GEN
 
