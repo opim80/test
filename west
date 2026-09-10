@@ -102,6 +102,11 @@ ctx.Config = Config
 local Movement = loadModule("Movement", ctx)
 ctx.Movement = Movement
 
+-- 5.5 Navigation (Baritone A* Pathfinding)
+local Navigation = loadModule("Navigation", ctx)
+ctx.Navigation = Navigation
+SHARED.NAV = Navigation.NAV
+
 -- 6. Safety (Friends Whitelist & Server Hopping)
 local Safety = loadModule("Safety", ctx)
 ctx.Safety = Safety
