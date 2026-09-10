@@ -20,7 +20,6 @@ local TH = {
     text = Color3.fromRGB(242, 244, 250),
     dim = Color3.fromRGB(140, 146, 165),
     darkText = Color3.fromRGB(15, 17, 23),
-
     green = Color3.fromRGB(68, 207, 138),
     amber = Color3.fromRGB(245, 170, 50),
     red = Color3.fromRGB(245, 90, 90),
@@ -41,10 +40,16 @@ local function stroke(p, c, thickness)
     return mk("UIStroke", { Color = c or TH.border, Thickness = thickness or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, p)
 end
 
+-- SAFELY sandbox CoreGui access to prevent executor errors
 local function parentGui(sg)
-    pcall(function() sg.Parent = gethui and gethui() end)
-    if not sg.Parent then pcall(function() sg.Parent = game:GetService("CoreGui") end) end
-    if not sg.Parent then sg.Parent = LP:WaitForChild("PlayerGui") end
+    local ok, hui = pcall(function() return gethui and gethui() end)
+    if ok and hui then sg.Parent = hui return end
+    
+    local ok2, cg = pcall(function() return game:GetService("CoreGui") end)
+    if ok2 and cg then sg.Parent = cg return end
+    
+    local ok3, pg = pcall(function() return LP:FindFirstChild("PlayerGui") or LP:WaitForChild("PlayerGui", 5) end)
+    if ok3 and pg then sg.Parent = pg end
 end
 
 local function card(tab, title)
@@ -87,9 +92,7 @@ local togglesByKey = {}
 local function updateAllTogglesUI()
     for key, fns in pairs(togglesByKey) do
         local val = S[key]
-        for _, fn in ipairs(fns) do
-            pcall(fn, val)
-        end
+        for _, fn in ipairs(fns) do pcall(fn, val) end
     end
 end
 UI.updateAllTogglesUI = updateAllTogglesUI
@@ -97,9 +100,7 @@ UI.updateAllTogglesUI = updateAllTogglesUI
 function UI.setToggle(key, val)
     S[key] = val
     if togglesByKey[key] then
-        for _, fn in ipairs(togglesByKey[key]) do
-            pcall(fn, val)
-        end
+        for _, fn in ipairs(togglesByKey[key]) do pcall(fn, val) end
     end
 end
 
@@ -264,12 +265,10 @@ local function button(parentCard, name, fn)
     stroke(b, TH.border)
 
     track(b.MouseEnter:Connect(function()
-        b.BackgroundColor3 = TH.cardHover
-        b.TextColor3 = TH.accent
+        b.BackgroundColor3 = TH.cardHover; b.TextColor3 = TH.accent
     end))
     track(b.MouseLeave:Connect(function()
-        b.BackgroundColor3 = TH.header
-        b.TextColor3 = TH.text
+        b.BackgroundColor3 = TH.header; b.TextColor3 = TH.text
     end))
     track(b.MouseButton1Click:Connect(function() task.spawn(function() pcall(fn) end) end))
     return b
@@ -377,9 +376,7 @@ local function keybind(parentCard, name, desc, key, defaultKey)
                     btn.TextColor3 = TH.accent
                     pcall(saveConfig)
                     listening = false
-                    task.delay(0.2, function()
-                        S._rebinding = false
-                    end)
+                    task.delay(0.2, function() S._rebinding = false end)
                 end
             end
         end)
@@ -445,18 +442,11 @@ local function textInput(parentCard, name, desc, key, placeholder, onDone)
         if onDone then task.spawn(onDone, tb.Text) end
     end
 
-    track(tb.FocusLost:Connect(function()
-        apply()
-    end))
+    track(tb.FocusLost:Connect(function() apply() end))
 
     local o = {}
-    function o:Set(txt)
-        tb.Text = txt
-        S[key] = txt
-    end
-    function o:Get()
-        return tb.Text
-    end
+    function o:Set(txt) tb.Text = txt; S[key] = txt end
+    function o:Get() return tb.Text end
     return o
 end
 
@@ -665,7 +655,6 @@ local function initMiniHud()
         if not hudGui.Parent then return end
         hudPill.Visible = S.showHud and not S.blackscreen
         
-        -- Safely pull from Status (defined in global env)
         local cStatus = Status or { state = "IDLE", color = TH.accent, action = "", detail = "" }
         hudDot.BackgroundColor3 = cStatus.color
         hudStateBadge.Text = "[" .. cStatus.state .. "]"
@@ -778,7 +767,6 @@ local function initBlackscreenDashboard()
     corner(bsExitBtn, 6)
     stroke(bsExitBtn, TH.border)
 
-    -- Blackscreen Status Display
     local bsStatusBox = mk("Frame", {
         Position = UDim2.fromOffset(14, 50),
         Size = UDim2.new(1, -28, 0, 50),
@@ -833,7 +821,6 @@ local function initBlackscreenDashboard()
     }, bsStatusBox)
     UI.bsDetailText = bsDetailText
 
-    -- Row 1: Moola & Dogbane Herbs
     local bsMoolaCard = mk("Frame", {
         Position = UDim2.fromOffset(14, 108),
         Size = UDim2.new(0.5, -20, 0, 66),
@@ -896,7 +883,6 @@ local function initBlackscreenDashboard()
     }, bsDogbaneCard)
     UI.bsDogbaneVal = bsDogbaneVal
 
-    -- Row 2: Dedicated Stand & Progression Card
     local bsStandCard = mk("Frame", {
         Position = UDim2.fromOffset(14, 182),
         Size = UDim2.new(1, -28, 0, 72),
@@ -940,7 +926,6 @@ local function initBlackscreenDashboard()
     }, bsStandCard)
     UI.bsStandMetaVal = bsStandMetaVal
 
-    -- Row 3: Fish Breakdown Card
     local bsFishCard = mk("Frame", {
         Position = UDim2.fromOffset(14, 262),
         Size = UDim2.new(1, -28, 0, 96),
@@ -1160,7 +1145,6 @@ local function initMainWindow()
         TextXAlignment = Enum.TextXAlignment.Left,
     }, header)
 
-    -- Quick Stats Pill in Header
     local quickStatsPill = mk("Frame", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -145, 0.5, 0),
@@ -1240,7 +1224,6 @@ local function initMainWindow()
     stroke(closeBtn, TH.border)
     UI.closeBtn = closeBtn
 
-    -- Content Container for clean minimizing
     local contentContainer = mk("Frame", {
         Position = UDim2.fromOffset(0, 42),
         Size = UDim2.new(1, 0, 1, -42),
@@ -1263,7 +1246,6 @@ local function initMainWindow()
         UI.setBlackscreen(not S.blackscreen)
     end))
 
-    -- Persistent Live Status Banner (Height 54px, High-Visibility Stand Card)
     local statusBanner = mk("Frame", {
         Position = UDim2.fromOffset(12, 6),
         Size = UDim2.new(1, -24, 0, 54),
@@ -1333,7 +1315,6 @@ local function initMainWindow()
     stroke(logsJumpBtn, TH.border)
     UI.logsJumpBtn = logsJumpBtn
 
-    -- Stand & Character Badge (2-line high-contrast card)
     local bannerStandCard = mk("Frame", {
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, -72, 0.5, 0),
@@ -1386,7 +1367,6 @@ local function initMainWindow()
         end
     end
 
-    -- Tab Navigation
     local tabBar = mk("Frame", {
         Position = UDim2.fromOffset(12, 66),
         Size = UDim2.new(1, -24, 0, 28),
