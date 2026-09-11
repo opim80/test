@@ -1,0 +1,1599 @@
+--!nocheck
+--!nolint
+-- ── ADONIS ANTICHEAT BYPASS (RAW & UN-PCALLED) ─────────────────────────────
+do
+    local Detected, Kill
+    setthreadidentity(2)
+    for _, v in ipairs(getgc(true)) do
+        if typeof(v) == "table" then
+            local d, k = rawget(v, "Detected"), rawget(v, "Kill")
+            if typeof(d) == "function" and not Detected then
+                Detected = d
+                hookfunction(Detected, function() return true end)
+            end
+            if rawget(v, "Variables") and rawget(v, "Process") and typeof(k) == "function" and not Kill then
+                Kill = k
+                hookfunction(Kill, function() end)
+            end
+        end
+    end
+    hookfunction(getrenv().debug.info, newcclosure(function(lvl, ...)
+        if Detected and lvl == Detected then return coroutine.yield(coroutine.running()) end
+        return debug.info(lvl, ...)
+    end))
+    setthreadidentity(7)
+end
+
+-- ── CORE SERVICES & CAPABILITY MAPPINGS ────────────────────────────────────
+local Players = game:GetService("Players")
+local LP = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local RS = game:GetService("ReplicatedStorage")
+local WS = game:GetService("Workspace")
+local TS = game:GetService("TweenService")
+local TPS = game:GetService("TeleportService")
+local Http = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local StarterGui = game:GetService("StarterGui")
+
+local SERVER_SELECTOR_PLACE_ID = 99449877692519
+local MAIN_GAME_PLACE_ID = 133950099874787
+local CONFIG_FILE = "BW3_Config.json"
+
+local function cap(n)
+    local f = rawget(getfenv(), n) or (pcall(function() return getfenv()[n] end) and getfenv()[n])
+    return typeof(f) == "function" and f or nil
+end
+
+local fpp = cap("fireproximityprompt")
+local fsig = cap("firesignal")
+local gcons = cap("getconnections")
+local rf, wf = cap("readfile"), cap("writefile")
+local isf, delf = cap("isfile"), cap("delfile")
+local sclip = cap("setclipboard") or setclipboard
+local req = cap("request") or cap("http_request") or (syn and syn.request) or (http and http.request)
+
+local function fastTriggerButton(btn)
+    if not btn or not btn.Parent then return false end
+    if gcons and (btn:FindFirstChildWhichIsA("GuiObject") or btn:IsA("GuiButton")) then
+        local ok, cons = pcall(gcons, btn.Activated)
+        if ok and cons and #cons > 0 then
+            for _, c in ipairs(cons) do
+                if c.Function then
+                    task.spawn(pcall, c.Function)
+                    return true
+                end
+            end
+        end
+    end
+    if fsig then
+        pcall(fsig, btn.Activated)
+        pcall(fsig, btn.MouseButton1Click)
+        return true
+    end
+    return false
+end
+
+-- ── CONFIGURATION STATE & PERSISTENCE ──────────────────────────────────────
+local S = {
+    running = true,
+    autoChests = false,
+    autoHerbs = false,
+    chestPreRender = true,
+    serverHopOnEmpty = true,
+    playerAvoidRadius = 25,
+    promptRange = 25,
+    espChest = false,
+    espHerb = false,
+    espHorse = false,
+    espPlayers = false,
+    espRange = 1500,
+    lastJobId = "",
+    visitedServers = {},
+    -- Adaptive Optimizer State
+    adaptiveOptimizer = true,
+    lowPopYieldHistory = {},
+    highPopYieldHistory = {},
+    hopCount = 0,
+    currentServerType = "none",
+    -- Webhook & Session Analytics
+    webhookEnabled = false,
+    webhookUrl = "",
+    sessionStartTime = 0,
+    totalChestsLooted = 0,
+    lastWebhookTime = 0,
+    -- Automated 20 Dogbane Delivery Config
+    deliveryEnabled = true,
+    deliveryServerName = "",
+    deliveryUsername = "",
+    deliveryPending = false,
+}
+
+local function saveConfig()
+    if not wf then return end
+    local out = {}
+    for k, v in pairs(S) do
+        if type(v) ~= "function" then out[k] = v end
+    end
+    pcall(wf, CONFIG_FILE, Http:JSONEncode(out))
+end
+
+if isf and rf and isf(CONFIG_FILE) then
+    pcall(function()
+        local d = Http:JSONDecode(rf(CONFIG_FILE))
+        if type(d) == "table" then
+            for k, v in pairs(d) do
+                if S[k] ~= nil then S[k] = v end
+            end
+        end
+    end)
+end
+
+S.visitedServers = S.visitedServers or {}
+S.lowPopYieldHistory = S.lowPopYieldHistory or {}
+S.highPopYieldHistory = S.highPopYieldHistory or {}
+
+if not S.sessionStartTime or S.sessionStartTime == 0 then
+    S.sessionStartTime = os.time()
+end
+
+local function getAvg(tbl)
+    if not tbl or #tbl == 0 then return 0 end
+    local s = 0
+    for _, v in ipairs(tbl) do s = s + v end
+    return s / #tbl
+end
+
+local function markServerVisited(jobId)
+    if not jobId or jobId == "" then return end
+    S.visitedServers = S.visitedServers or {}
+    S.visitedServers[jobId] = os.time()
+    S.lastJobId = jobId
+    saveConfig()
+end
+
+local function isVisited(jobId)
+    if not S.visitedServers or not jobId then return false end
+    local visitTime = S.visitedServers[jobId]
+    if not visitTime then return false end
+    return (os.time() - visitTime) < 1800
+end
+
+local function parentToGui(sg)
+    pcall(function() sg.Parent = gethui and gethui() end)
+    if not sg.Parent then pcall(function() sg.Parent = game:GetService("CoreGui") end) end
+    if not sg.Parent then sg.Parent = LP:WaitForChild("PlayerGui") end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- MODE 1: PROACTIVE ADAPTIVE SERVER SELECTOR (99449877692519)
+-- ══════════════════════════════════════════════════════════════════════════
+if game.PlaceId == SERVER_SELECTOR_PLACE_ID then
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "BW_ServerJoinerHUD"
+    sg.ResetOnSpawn = false
+    parentToGui(sg)
+
+    local card = Instance.new("Frame", sg)
+    card.Size, card.Position = UDim2.fromOffset(450, 92), UDim2.new(0.5, -225, 0, 16)
+    card.BackgroundColor3 = Color3.fromRGB(18, 19, 24)
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 10)
+    local cStr = Instance.new("UIStroke", card)
+    cStr.Color, cStr.Thickness = Color3.fromRGB(215, 160, 70), 1.5
+
+    local title = Instance.new("TextLabel", card)
+    title.Position, title.Size = UDim2.fromOffset(14, 8), UDim2.new(1, -28, 0, 16)
+    title.BackgroundTransparency, title.Font, title.TextSize = 1, Enum.Font.GothamBold, 11
+    title.TextColor3, title.TextXAlignment, title.Text = Color3.fromRGB(215, 160, 70), Enum.TextXAlignment.Left, "PROACTIVE SERVER OPTIMIZER — ADAPTIVE YIELD"
+
+    local sLabel = Instance.new("TextLabel", card)
+    sLabel.Position, sLabel.Size = UDim2.fromOffset(14, 27), UDim2.new(1, -28, 0, 22)
+    sLabel.BackgroundTransparency, sLabel.Font, sLabel.TextSize = 1, Enum.Font.GothamBold, 13
+    sLabel.TextColor3, sLabel.TextXAlignment, sLabel.Text = Color3.fromRGB(240, 240, 245), Enum.TextXAlignment.Left, "Evaluating Server List..."
+
+    local sub = Instance.new("TextLabel", card)
+    sub.Position, sub.Size = UDim2.fromOffset(14, 52), UDim2.new(1, -28, 0, 22)
+    sub.BackgroundTransparency, sub.Font, sub.TextSize = 1, Enum.Font.Gotham, 11
+    sub.TextColor3, sub.TextXAlignment, sub.Text = Color3.fromRGB(150, 150, 160), Enum.TextXAlignment.Left, "Initializing snapshot scanner..."
+
+    TPS.TeleportInitFailed:Connect(function(pl, res, err)
+        if pl == LP then
+            sLabel.Text = "Teleport Rejected: " .. tostring(res)
+            sub.Text = tostring(err)
+        end
+    end)
+
+    task.spawn(function()
+        local attempt = 0
+        local joinV2 = RS:WaitForChild("JoinServerV2", 5)
+        local getServers = RS:WaitForChild("GetServers", 5)
+        local invPerm = RS:WaitForChild("InvokePermissions", 5)
+
+        while game.PlaceId == SERVER_SELECTOR_PLACE_ID do
+            attempt = attempt + 1
+            local pg = LP:FindFirstChildOfClass("PlayerGui")
+            local sb = pg and pg:FindFirstChild("ServerBrowser")
+            local sl = sb and sb:FindFirstChild("ServerList")
+            local sf = sl and sl:FindFirstChild("ScrollingFrame")
+            local snap = pg and pg:FindFirstChild("ServerListSnapshot")
+
+            if invPerm and invPerm:IsA("RemoteEvent") then pcall(function() invPerm:FireServer("getPermissions") end) end
+            if getServers and getServers:IsA("RemoteEvent") then pcall(function() getServers:FireServer("All") end) end
+
+            local target = nil
+            if snap and snap.Value and #snap.Value > 20 then
+                local ok, parsed = pcall(function() return Http:JSONDecode(snap.Value) end)
+                if ok and parsed and parsed.servers then
+                    local isDeliveryHop = S.deliveryPending and (S.deliveryServerName or "") ~= ""
+                    if isDeliveryHop then
+                        local desired = S.deliveryServerName:lower():gsub("%s+", "")
+                        for _, s in ipairs(parsed.servers) do
+                            local sName = (s.serverName or ""):lower():gsub("%s+", "")
+                            if (sName == desired or sName:find(desired, 1, true) or desired:find(sName, 1, true)) and s.playerCount < s.maxPlayers then
+                                target = s
+                                break
+                            end
+                        end
+
+                        if target then
+                            sub.Text = ("Target Delivery Server Matched: '%s' (%d/30)"):format(target.serverName or target.jobId:sub(1, 8), target.playerCount)
+                        else
+                            sLabel.Text = ("Seeking Delivery Server: '%s'"):format(S.deliveryServerName)
+                            sub.Text = "Waiting for designated server to appear in snapshot..."
+                        end
+                    else
+                        local freshLow, freshHigh, freshGeneral = {}, {}, {}
+                        local visited = {}
+
+                        for _, s in ipairs(parsed.servers) do
+                            if s.playerCount < s.maxPlayers and s.playerCount > 0 then
+                                if not isVisited(s.jobId) and s.jobId ~= S.lastJobId then
+                                    if s.playerCount <= 8 then
+                                        freshLow[#freshLow + 1] = s
+                                    elseif s.playerCount >= 14 then
+                                        freshHigh[#freshHigh + 1] = s
+                                    end
+                                    freshGeneral[#freshGeneral + 1] = s
+                                else
+                                    visited[#visited + 1] = s
+                                end
+                            end
+                        end
+
+                        local avgLow = getAvg(S.lowPopYieldHistory)
+                        local avgHigh = getAvg(S.highPopYieldHistory)
+                        local pickMode = "low"
+                        local isExploratory = false
+
+                        if S.adaptiveOptimizer then
+                            if #S.lowPopYieldHistory < 2 or #S.highPopYieldHistory < 2 then
+                                pickMode = ((S.hopCount or 0) % 2 == 0) and "low" or "high"
+                                isExploratory = true
+                            else
+                                local winner = (avgLow >= avgHigh) and "low" or "high"
+                                local loser = (winner == "low") and "high" or "low"
+                                if (S.hopCount or 0) % 5 == 0 then
+                                    pickMode = loser
+                                    isExploratory = true
+                                else
+                                    pickMode = winner
+                                end
+                            end
+                        end
+
+                        local candidatePool = (pickMode == "low") and freshLow or freshHigh
+                        if #candidatePool == 0 then candidatePool = freshGeneral end
+
+                        if #candidatePool > 0 then
+                            if pickMode == "low" then
+                                table.sort(candidatePool, function(a, b) return a.playerCount < b.playerCount end)
+                            else
+                                table.sort(candidatePool, function(a, b) return a.playerCount > b.playerCount end)
+                            end
+                            target = candidatePool[math.min((attempt - 1) % #candidatePool + 1, #candidatePool)]
+                            sub.Text = ("Mode: %s (%s) • Low Yield: %.1f | High Yield: %.1f"):format(
+                                pickMode:upper(),
+                                isExploratory and "Probe" or "Milking Best",
+                                avgLow,
+                                avgHigh
+                            )
+                        elseif #visited > 0 then
+                            table.sort(visited, function(a, b)
+                                return (S.visitedServers[a.jobId] or 0) < (S.visitedServers[b.jobId] or 0)
+                            end)
+                            target = visited[1]
+                            S.visitedServers[target.jobId] = nil
+                            sub.Text = "All servers visited • Recycling oldest visited"
+                        end
+                    end
+                end
+            end
+
+            if target then
+                title.Text = ("AUTO JOINER — DIRECT INJECTION (#%d)"):format(attempt)
+                sLabel.Text = ("%s (%s, %d/30)"):format(target.serverName or target.jobId:sub(1, 8), target.region or "Auto", target.playerCount)
+
+                markServerVisited(target.jobId)
+
+                if sf then
+                    local btn = sf:FindFirstChild(target.jobId)
+                    if btn then fastTriggerButton(btn) end
+                end
+
+                if joinV2 and joinV2:IsA("RemoteFunction") then
+                    task.spawn(pcall, function()
+                        joinV2:InvokeServer("specific", target.jobId)
+                    end)
+                end
+            elseif not (S.deliveryPending and (S.deliveryServerName or "") ~= "") then
+                sLabel.Text = "No candidate in snapshot • Direct Quick Join"
+                if sl and sl:FindFirstChild("BackButton") then fastTriggerButton(sl.BackButton) end
+                if joinV2 and joinV2:IsA("RemoteFunction") then
+                    task.spawn(pcall, function() joinV2:InvokeServer("quick", "All") end)
+                end
+            end
+
+            task.wait(2.2)
+        end
+    end)
+    return
+end
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- MODE 2: MAIN GAMEPLAY CLIENT (133950099874787)
+-- ══════════════════════════════════════════════════════════════════════════
+local IH
+pcall(function()
+    local mods = RS:WaitForChild("Modules", 4)
+    local core = mods and mods:WaitForChild("CoreModules", 4)
+    local ihc = core and core:WaitForChild("InputHandlerClient", 4)
+    if ihc then IH = require(ihc) end
+end)
+
+local function tap(alias, hold)
+    if not IH then return false end
+    pcall(function() IH:FireVirtualInput(alias, true) end)
+    task.wait(hold or 0.08)
+    pcall(function() IH:FireVirtualInput(alias, false) end)
+    return true
+end
+
+if getgenv().BW3_Unload then pcall(getgenv().BW3_Unload) end
+
+local conns, draws = {}, {}
+local GEN = (getgenv().BW3_Gen or 0) + 1
+getgenv().BW3_Gen = GEN
+
+local function char() return LP.Character end
+local function hum() local c = char() return c and c:FindFirstChildOfClass("Humanoid") end
+local function root() local c = char() return c and c:FindFirstChild("HumanoidRootPart") end
+
+local FARM = { status = "idle", opened = 0, runChests = 0, isChestFarmRunning = false }
+local playerSpawnedIn = false
+local isDelivering = false
+local registeredInputs = {}
+
+-- EXACT ANALYZED STAND OFFSET RELATIVE TO RECIPIENT
+local RELATIVE_STAND_OFFSET = Vector3.new(0.494, -0.002, -2.883)
+
+task.spawn(function()
+    task.wait(1.5)
+    local pCount = #Players:GetPlayers()
+    S.currentServerType = (pCount <= 8) and "low" or ((pCount >= 14) and "high" or "mid")
+end)
+
+-- Auto-Spawn in Game World & Track 'Play' Click
+task.spawn(function()
+    local t0 = os.clock()
+    while S.running and os.clock() - t0 < 35 do
+        local c, h, r = char(), hum(), root()
+        local pg = LP:FindFirstChildOfClass("PlayerGui")
+        local mm = pg and pg:FindFirstChild("MainMenu")
+        local playBtn = mm and mm:FindFirstChild("ButtonContainer") and mm.ButtonContainer:FindFirstChild("PlayButton")
+        if playBtn and playBtn.Visible then fastTriggerButton(playBtn) end
+
+        local wfRem = RS:FindFirstChild("WesternFramework")
+        local spEv = wfRem and wfRem:FindFirstChild("Shared") and wfRem.Shared:FindFirstChild("Remotes") and wfRem.Shared.Remotes:FindFirstChild("SpawnPlayerEvent")
+        if spEv then pcall(function() spEv:FireServer() end) end
+
+        if c and h and r and h.Health > 0 and (not mm or not mm.Enabled) then
+            playerSpawnedIn = true
+            break
+        end
+        task.wait(0.8)
+    end
+    playerSpawnedIn = true
+end)
+
+local function isPlayerNear(pos, radius)
+    radius = radius or S.playerAvoidRadius or 25
+    for _, o in ipairs(Players:GetPlayers()) do
+        if o ~= LP and o.Character then
+            local p = o.Character:FindFirstChild("HumanoidRootPart") or o.Character.PrimaryPart
+            if p and (p.Position - pos).Magnitude <= radius then return true end
+        end
+    end
+    return false
+end
+
+-- ── INVENTORY INSPECTION & TARGET AUDITING (SECTION 10 COMPLIANT) ──────────
+local function getInventorySummary()
+    local counts = {}
+    local sources = { LP:FindFirstChild("Backpack"), char() }
+
+    for _, src in ipairs(sources) do
+        if src then
+            for _, obj in ipairs(src:GetChildren()) do
+                if obj:IsA("Tool") then
+                    local name = obj.Name
+                    local amount = 1
+
+                    local base, parenAmt = name:match("^(.-)%s*%(%s*(%d+)%s*%)$")
+                    if base and parenAmt then
+                        name = base
+                        amount = tonumber(parenAmt) or 1
+                    else
+                        local attr = obj:GetAttribute("Amount") or obj:GetAttribute("Quantity") or obj:GetAttribute("Count")
+                        if typeof(attr) == "number" then
+                            amount = attr
+                        else
+                            local val = obj:FindFirstChild("Amount") or obj:FindFirstChild("Quantity")
+                            if val and val:IsA("ValueBase") and typeof(val.Value) == "number" then
+                                amount = val.Value
+                            end
+                        end
+                    end
+                    counts[name] = (counts[name] or 0) + amount
+                end
+            end
+        end
+    end
+    return counts
+end
+
+local function getDogbaneCount()
+    local inv = getInventorySummary()
+    local count = 0
+    for name, amt in pairs(inv) do
+        if name:lower():find("dogbane") then
+            count = count + amt
+        end
+    end
+    return count
+end
+
+local function findTargetPlayer(searchQuery)
+    if not searchQuery or searchQuery == "" then return nil end
+    local query = searchQuery:lower():gsub("%s+", "")
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local pName = p.Name:lower():gsub("%s+", "")
+            local dName = p.DisplayName:lower():gsub("%s+", "")
+            if pName == query or dName == query or pName:find(query, 1, true) or dName:find(query, 1, true) then
+                return p
+            end
+        end
+    end
+    return nil
+end
+
+local function sendWebhook(isManualTest)
+    if not S.webhookEnabled and not isManualTest then return end
+    if not S.webhookUrl or S.webhookUrl == "" or not S.webhookUrl:find("http") then return end
+    if not req then return end
+
+    local inv = getInventorySummary()
+    local dogbaneCount = getDogbaneCount()
+
+    local list = {}
+    for name, cnt in pairs(inv) do
+        if not name:lower():find("dogbane") then
+            list[#list + 1] = { name = name, count = cnt }
+        end
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+
+    local invLines = {}
+    invLines[#invLines + 1] = ("🌿 **Dogbane Herb**: %d"):format(dogbaneCount)
+    for _, item in ipairs(list) do
+        invLines[#invLines + 1] = ("• %s: %d"):format(item.name, item.count)
+    end
+    if #list == 0 and dogbaneCount == 0 then
+        invLines[#invLines + 1] = "• *(Inventory is empty)*"
+    end
+
+    local invStr = table.concat(invLines, "\n")
+    if #invStr > 950 then
+        invStr = invStr:sub(1, 920) .. "\n• ... *(remaining items truncated)*"
+    end
+
+    local elapsed = math.max(1, os.time() - (S.sessionStartTime or os.time()))
+    local hrs = elapsed / 3600
+    local cph = math.floor((S.totalChestsLooted or 0) / hrs + 0.5)
+
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    local s = elapsed % 60
+    local runStr = ("%dh %02dm %02ds"):format(h, m, s)
+
+    local avgLow = getAvg(S.lowPopYieldHistory)
+    local avgHigh = getAvg(S.highPopYieldHistory)
+    local prefStr = (avgLow >= avgHigh) and "Small Servers (Low Pop)" or "Big Servers (High Pop)"
+
+    local payload = {
+        embeds = {
+            {
+                title = isManualTest and "🌾 Bridger: Western — Webhook Test" or "🌾 Bridger: Western — Farm Session Report",
+                color = 14131270,
+                fields = {
+                    { name = "⏱️ Session Runtime", value = runStr, inline = true },
+                    { name = "📦 Total Chests Looted", value = tostring(S.totalChestsLooted or 0), inline = true },
+                    { name = "⚡ Performance Rate", value = ("**%d CPH**"):format(cph), inline = true },
+                    { name = "🧠 Server Optimizer", value = ("Active Preference: **%s**\n• Small Server Avg: **%.1f** chests\n• Big Server Avg: **%.1f** chests"):format(prefStr, avgLow, avgHigh), inline = false },
+                    { name = "🎒 Item Summary (Dogbane Priority)", value = invStr, inline = false },
+                },
+                footer = { text = "BW3 Hyper-Optimized Dispatcher • Every 5 Minutes" },
+                timestamp = DateTime.now():ToIsoDate()
+            }
+        }
+    }
+
+    pcall(function()
+        req({
+            Url = S.webhookUrl,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = Http:JSONEncode(payload)
+        })
+    end)
+end
+
+local function checkAndDispatchWebhook()
+    if not S.webhookEnabled then return end
+    if not S.webhookUrl or S.webhookUrl == "" or not S.webhookUrl:find("http") then return end
+
+    local now = os.time()
+    if (now - (S.lastWebhookTime or 0)) >= 300 then
+        S.lastWebhookTime = now
+        saveConfig()
+        task.spawn(sendWebhook, false)
+    end
+end
+
+task.spawn(function()
+    task.wait(2)
+    while S.running do
+        pcall(checkAndDispatchWebhook)
+        task.wait(1)
+    end
+end)
+
+local hopping = false
+local function serverHop(isDeliveryForced)
+    if hopping then return end
+    if isDelivering and not isDeliveryForced then return end
+    hopping = true
+
+    if not isDeliveryForced then
+        if S.currentServerType == "low" then
+            table.insert(S.lowPopYieldHistory, FARM.runChests)
+            if #S.lowPopYieldHistory > 6 then table.remove(S.lowPopYieldHistory, 1) end
+        elseif S.currentServerType == "high" then
+            table.insert(S.highPopYieldHistory, FARM.runChests)
+            if #S.highPopYieldHistory > 6 then table.remove(S.highPopYieldHistory, 1) end
+        end
+        S.hopCount = (S.hopCount or 0) + 1
+    end
+
+    markServerVisited(game.JobId)
+    pcall(checkAndDispatchWebhook)
+    pcall(function() TPS:Teleport(SERVER_SELECTOR_PLACE_ID, LP) end)
+    task.wait(8)
+    hopping = false
+end
+
+-- ── HORSE SYSTEM (STRICT SEATED CONTROL & 5-TRY FAILSAFE) ───────────────────
+local HORSE = { status = "idle" }
+local lastWhistleTime = 0
+local mountFailCount = 0
+
+local function myHorse()
+    local ent = WS:FindFirstChild("Entities")
+    if not ent then return nil end
+    for _, e in ipairs(ent:GetChildren()) do
+        local o = e:FindFirstChild("Owner")
+        if o and (o.Value == LP or o.Value == LP.Name or tostring(o.Value) == tostring(LP.UserId)) then return e end
+        local a = e:GetAttribute("Owner") or e:GetAttribute("OwnerUserId") or e:GetAttribute("OwnerName")
+        if a and (a == LP.Name or a == LP.UserId or tostring(a) == tostring(LP.UserId)) then return e end
+    end
+    return nil
+end
+
+local function horseRoot()
+    local h = myHorse()
+    return h and h:FindFirstChild("HumanoidRootPart"), h
+end
+
+local function isMounted()
+    local h, c = hum(), char()
+    if h and h.SeatPart then return true end
+    if c and (c:GetAttribute("IsRiding") or c:GetAttribute("Mounted")) then return true end
+    local mh, r = myHorse(), root()
+    if mh and r then
+        local hp = mh:FindFirstChild("HumanoidRootPart")
+        if hp and (hp.Position - r.Position).Magnitude < 6.5 and h and h.Sit then return true end
+    end
+    return false
+end
+
+local function triggerHorseCall()
+    tap("HorseCallInput")
+    pcall(function()
+        local hc = require(RS.Modules.HorseController)
+        for _, uv in pairs(debug.getupvalues(hc.Init)) do
+            if typeof(uv) == "table" and typeof(rawget(uv, "FireServer")) == "function" then
+                uv:FireServer()
+                break
+            end
+        end
+    end)
+end
+
+local function summonHorse(timeout)
+    local h = myHorse()
+    if h then return h end
+
+    if os.clock() - lastWhistleTime < 6 then
+        task.wait(0.4)
+        return myHorse()
+    end
+
+    lastWhistleTime = os.clock()
+    triggerHorseCall()
+    local t0 = os.clock()
+    while os.clock() - t0 < (timeout or 6) do
+        h = myHorse()
+        if h then return h end
+        task.wait(0.2)
+    end
+    return myHorse()
+end
+
+local function reSummonHorseFresh()
+    HORSE.status = "5 failed mounts — re-summoning horse..."
+    local hm = hum()
+    if hm then
+        pcall(function()
+            hm.Sit = false
+            hm:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
+
+    if myHorse() then
+        triggerHorseCall()
+        local t0 = os.clock()
+        while myHorse() and os.clock() - t0 < 3 do task.wait(0.2) end
+        task.wait(1.5)
+    end
+
+    lastWhistleTime = os.clock()
+    triggerHorseCall()
+    local t0, fresh = os.clock(), nil
+    while os.clock() - t0 < 8 do
+        fresh = myHorse()
+        if fresh then break end
+        task.wait(0.25)
+    end
+    task.wait(0.6)
+    return fresh
+end
+
+-- ── LEVEL-GROUND RAYCASTING ENGINE (SECTION 10 COMPLIANT) ───────────────────
+local function findCleanGround(origin, minRadius, maxRadius, ignoreInst)
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.IgnoreWater = true
+    rp.FilterDescendantsInstances = { char(), myHorse(), ignoreInst }
+
+    local bestPos = nil
+    local bestDiff = math.huge
+
+    for radius = (minRadius or 2), (maxRadius or 4), 0.8 do
+        for angle = 0, 315, 45 do
+            local rad = math.rad(angle)
+            local testPos = origin + Vector3.new(math.cos(rad) * radius, 0, math.sin(rad) * radius)
+            local hit = WS:Raycast(testPos + Vector3.new(0, 30, 0), Vector3.new(0, -60, 0), rp)
+
+            if hit and hit.Material ~= Enum.Material.Water and hit.Normal.Y > 0.85 then
+                local diff = math.abs(hit.Position.Y - origin.Y)
+                if diff < bestDiff and diff < 6 then
+                    bestDiff = diff
+                    bestPos = Vector3.new(hit.Position.X, hit.Position.Y + 3.2, hit.Position.Z)
+                    break
+                end
+            end
+        end
+        if bestPos then break end
+    end
+
+    return bestPos or (origin + Vector3.new(2.2, 3.2, 0))
+end
+
+local function instantDismount()
+    tap("HorseDismountInput")
+    tap("ActionInput2")
+    local h = hum()
+    if h then
+        if h.SeatPart then
+            local weld = h.SeatPart:FindFirstChildOfClass("Weld") or h.SeatPart:FindFirstChildOfClass("SeatWeld")
+            if weld then pcall(game.Destroy, weld) end
+        end
+        h.Sit = false
+        h:ChangeState(Enum.HumanoidStateType.GettingUp)
+    end
+
+    local r = root()
+    if r then
+        r.AssemblyLinearVelocity = Vector3.zero
+        r.AssemblyAngularVelocity = Vector3.zero
+    end
+    task.wait(0.15)
+end
+
+local function mountHorse()
+    if isMounted() then
+        mountFailCount = 0
+        return true
+    end
+
+    local h = myHorse() or summonHorse(6)
+    if not h then
+        mountFailCount = mountFailCount + 1
+        if mountFailCount >= 5 then
+            mountFailCount = 0
+            h = reSummonHorseFresh()
+        end
+        if not h then return false end
+    end
+
+    local hp = h:FindFirstChild("HumanoidRootPart")
+    if not hp then return false end
+
+    local r = root()
+    if not r then return false end
+
+    local prompt = h:FindFirstChildWhichIsA("ProximityPrompt", true)
+    local targetPart = (prompt and prompt.Parent and prompt.Parent:IsA("BasePart") and prompt.Parent) or hp
+    local promptPos = targetPart.Position
+
+    local approach = findCleanGround(promptPos, 2.5, 3.5, h)
+    for _ = 1, 8 do
+        r = root()
+        if not r or not targetPart.Parent then break end
+        local d = (promptPos - r.Position).Magnitude
+        if d < 4.5 then break end
+        r.CFrame = CFrame.lookAt(approach, Vector3.new(promptPos.X, approach.Y, promptPos.Z))
+        r.AssemblyLinearVelocity = Vector3.zero
+        task.wait(0.08)
+    end
+
+    if not prompt or not prompt.Parent or not prompt.Enabled then
+        prompt = h:FindFirstChildWhichIsA("ProximityPrompt", true)
+    end
+
+    if prompt and fpp then
+        pcall(fpp, prompt, prompt.HoldDuration or 0)
+    end
+
+    local t0 = os.clock()
+    while os.clock() - t0 < 0.9 do
+        if isMounted() then
+            mountFailCount = 0
+            return true
+        end
+        task.wait(0.04)
+    end
+
+    if not isMounted() and prompt and fpp then
+        r = root()
+        if r and targetPart.Parent then
+            r.CFrame = CFrame.lookAt(promptPos + (r.Position - promptPos).Unit * 2.2, promptPos)
+            r.AssemblyLinearVelocity = Vector3.zero
+            pcall(fpp, prompt, 0)
+            task.wait(0.25)
+        end
+    end
+
+    if isMounted() then
+        mountFailCount = 0
+        return true
+    else
+        mountFailCount = mountFailCount + 1
+        HORSE.status = ("mount failed (%d/5 tries)"):format(mountFailCount)
+
+        if mountFailCount >= 5 then
+            mountFailCount = 0
+            local fresh = reSummonHorseFresh()
+            if fresh then return mountHorse() end
+        end
+        return false
+    end
+end
+
+local function fastHorseTeleport(destGroundPos)
+    local r = root()
+    if not r then return false end
+    if (r.Position - destGroundPos).Magnitude < 10 then return true end
+
+    if not isMounted() and not mountHorse() then return false end
+    local hp = horseRoot()
+    if not hp then return false end
+
+    local t0 = os.clock()
+    while os.clock() - t0 < 0.45 do
+        local rr = root()
+        if rr then
+            rr.CFrame = CFrame.new(destGroundPos + Vector3.new(0, 1.5, 0))
+            rr.AssemblyLinearVelocity = Vector3.zero
+            rr.AssemblyAngularVelocity = Vector3.zero
+        end
+        if hp and hp.Parent then
+            hp.CFrame = CFrame.new(destGroundPos)
+            hp.AssemblyLinearVelocity = Vector3.zero
+            hp.AssemblyAngularVelocity = Vector3.zero
+        end
+        RunService.Heartbeat:Wait()
+
+        if rr and (rr.Position - destGroundPos).Magnitude < 9 then
+            break
+        end
+    end
+
+    local finalR = root()
+    return finalR and (finalR.Position - destGroundPos).Magnitude < 15
+end
+
+-- ── 4-CORNER MAP PRE-RENDER ────────────────────────────────────────────────
+local mapPreRendered = false
+local function run4CornerRender()
+    if not mountHorse() then return false end
+    local corners = {
+        Vector3.new(-5120, 55, -5650),
+        Vector3.new(-1120, 55, -5650),
+        Vector3.new(-1120, 55, -1650),
+        Vector3.new(-5120, 55, -1650),
+    }
+    for idx, c in ipairs(corners) do
+        if not S.running or not S.autoChests or isDelivering then return false end
+        FARM.status = ("pre-render corner %d/4..."):format(idx)
+        fastHorseTeleport(c)
+        pcall(function() LP:RequestStreamAroundAsync(c, 15) end)
+        task.wait(1.1)
+    end
+    mapPreRendered = true
+    return true
+end
+
+-- Forward declaration of farm loop starter
+local startChestFarm
+
+-- ── AUTOMATED TELEPORT & STAND ROUTINE (NO AUTO-DROP) ───────────────────────
+local function runDeliveryRoutine(isManual)
+    if isDelivering then return end
+    isDelivering = true
+
+    local targetUsername = (S.deliveryUsername or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local targetServer = (S.deliveryServerName or ""):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- If no recipient configured, hold farm and display clear action on HUD
+    if targetUsername == "" then
+        FARM.status = "⚠️ Enter Recipient Username in Delivery Tab (Have 20+ Dogbanes)"
+        while S.running and S.deliveryEnabled and ((S.deliveryUsername or ""):gsub("%s+", "") == "") do
+            FARM.status = "⚠️ Enter Recipient Username in Delivery Tab (Have 20+ Dogbanes)"
+            task.wait(1)
+        end
+        if not S.running or not S.deliveryEnabled then
+            isDelivering = false
+            return
+        end
+        targetUsername = (S.deliveryUsername or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+
+    FARM.status = ("20 Dogbanes reached! Preparing travel to '%s'..."):format(targetUsername)
+    task.wait(0.5)
+
+    local recipient = findTargetPlayer(targetUsername)
+
+    -- If recipient is not in this server and explicit server routing is configured, hop
+    if not recipient and targetServer ~= "" then
+        FARM.status = ("Hopping to target server: '%s'..."):format(targetServer)
+        S.deliveryPending = true
+        saveConfig()
+        task.wait(0.6)
+        serverHop(true)
+        task.wait(10)
+        isDelivering = false
+        return
+    end
+
+    -- If no server configured, wait up to 60 seconds for recipient to appear
+    if not recipient then
+        FARM.status = ("Waiting for '%s' to appear in server..."):format(targetUsername)
+        local waitT0 = os.clock()
+        while S.running and isDelivering and os.clock() - waitT0 < 60 do
+            recipient = findTargetPlayer(targetUsername)
+            if recipient then break end
+            task.wait(1.5)
+        end
+
+        if not recipient then
+            FARM.status = ("'%s' not found. Resuming farming..."):format(targetUsername)
+            task.wait(2)
+            isDelivering = false
+            if S.autoChests and not FARM.isChestFarmRunning then startChestFarm() end
+            return
+        end
+    end
+
+    FARM.status = ("Recipient '%s' located. Waiting for character..."):format(recipient.Name)
+    local t0 = os.clock()
+    while S.running and isDelivering and os.clock() - t0 < 25 do
+        if recipient.Character and recipient.Character:FindFirstChild("HumanoidRootPart") then
+            break
+        end
+        task.wait(0.5)
+    end
+
+    local tChar = recipient.Character
+    local targetRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then
+        FARM.status = "Recipient character missing. Resuming farm..."
+        task.wait(2)
+        isDelivering = false
+        if S.autoChests and not FARM.isChestFarmRunning then startChestFarm() end
+        return
+    end
+
+    local targetPos = targetRoot.Position
+
+    -- Step 1: Pre-render map around recipient (only enough studs)
+    FARM.status = ("Pre-rendering map around '%s'..."):format(recipient.Name)
+    pcall(function() LP:RequestStreamAroundAsync(targetPos, 15) end)
+    task.wait(0.8)
+
+    -- Step 2: Safe approach via horse if far away
+    local myR = root()
+    if myR and (myR.Position - targetPos).Magnitude > 35 then
+        FARM.status = "Riding near recipient..."
+        local horsePark = findCleanGround(targetPos, 4.5, 6.5, tChar)
+        fastHorseTeleport(horsePark)
+        task.wait(0.2)
+    end
+
+    -- Step 3: Clean dismount before final positioning
+    instantDismount()
+    task.wait(0.25)
+
+    -- Step 4: Position character at the exact analyzed relative offset
+    local dropPos = targetRoot.CFrame:PointToWorldSpace(RELATIVE_STAND_OFFSET)
+    local curR = root()
+    if curR then
+        curR.CFrame = CFrame.lookAt(dropPos, Vector3.new(targetRoot.Position.X, dropPos.Y, targetRoot.Position.Z))
+        curR.AssemblyLinearVelocity = Vector3.zero
+        curR.AssemblyAngularVelocity = Vector3.zero
+    end
+    task.wait(0.3)
+
+    -- Step 5: Stand & Wait for manual drop (Auto-drop removed)
+    FARM.status = ("In position at %s! Ready for manual drop (🌿 %d Dogbanes)"):format(recipient.Name, getDogbaneCount())
+
+    -- Keep aligned until you drop items below 20 Dogbanes or manually click 'Resume'
+    while S.running and isDelivering and getDogbaneCount() >= 20 do
+        local liveTargetRoot = recipient.Character and recipient.Character:FindFirstChild("HumanoidRootPart")
+        local myRoot = root()
+        if liveTargetRoot and myRoot then
+            local desiredPos = liveTargetRoot.CFrame:PointToWorldSpace(RELATIVE_STAND_OFFSET)
+            if (myRoot.Position - desiredPos).Magnitude > 2.5 then
+                myRoot.CFrame = CFrame.lookAt(desiredPos, Vector3.new(liveTargetRoot.Position.X, desiredPos.Y, liveTargetRoot.Position.Z))
+                myRoot.AssemblyLinearVelocity = Vector3.zero
+                myRoot.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        FARM.status = ("In position! Ready for manual drop (🌿 %d remaining)..."):format(getDogbaneCount())
+        task.wait(1)
+    end
+
+    if isDelivering then
+        FARM.status = "Dogbanes dropped (<20 remaining)! Resuming normal farm..."
+        task.wait(2)
+        S.deliveryPending = false
+        saveConfig()
+        isDelivering = false
+
+        -- Seamlessly resume chest farming
+        if S.autoChests and not FARM.isChestFarmRunning then
+            startChestFarm()
+        end
+    end
+end
+
+-- Monitor for 20 Dogbane Herbs (Strictly Active Only Post-'Play')
+task.spawn(function()
+    while S.running do
+        task.wait(1.5)
+        if playerSpawnedIn and not isDelivering and S.deliveryEnabled then
+            local dogbaneCount = getDogbaneCount()
+            if dogbaneCount >= 20 then
+                task.spawn(runDeliveryRoutine, false)
+            end
+        end
+    end
+end)
+
+-- ── CONFIRMATION-CHECKED HARVEST ENGINE ─────────────────────────────────────
+local SPAWNED_AT, DONE_UNTIL = {}, {}
+for _, fn in ipairs({ "Chests", "SpawnedHerbs" }) do
+    local f = WS:FindFirstChild(fn)
+    if f then
+        for _, it in ipairs(f:GetChildren()) do SPAWNED_AT[it] = 0 end
+        conns[#conns + 1] = f.ChildAdded:Connect(function(it) SPAWNED_AT[it] = os.clock() end)
+        conns[#conns + 1] = f.ChildRemoved:Connect(function(it) SPAWNED_AT[it], DONE_UNTIL[it] = nil, nil end)
+    end
+end
+
+local function isChestConsumed(item, prompt)
+    if not item or not item.Parent or not item:IsDescendantOf(WS) then return true end
+    if not prompt or not prompt.Parent or not prompt.Enabled then return true end
+    if item:GetAttribute("Opened") == true or item:GetAttribute("Looted") == true or item:GetAttribute("Open") == true then
+        return true
+    end
+    return false
+end
+
+local function nearestPrompted(folderName)
+    local r, f = root(), WS:FindFirstChild(folderName)
+    if not r or not f then return nil end
+    local bestPart, bestDist, bestPrompt, bestItem
+    local now = os.clock()
+
+    for _, item in ipairs(f:GetChildren()) do
+        if not (DONE_UNTIL[item] and now < DONE_UNTIL[item]) then
+            local prompt
+            for _, d in ipairs(item:GetDescendants()) do
+                if d:IsA("ProximityPrompt") and d.Enabled then prompt = d break end
+            end
+            if prompt then
+                local promptAnchor = (prompt.Parent and prompt.Parent:IsA("BasePart") and prompt.Parent)
+                local part = promptAnchor or (item:IsA("BasePart") and item) or item:FindFirstChildWhichIsA("BasePart", true)
+
+                if part and not (folderName == "Chests" and isPlayerNear(part.Position, S.playerAvoidRadius)) then
+                    local dist = (part.Position - r.Position).Magnitude
+                    if not bestDist or dist < bestDist then
+                        bestPart, bestDist, bestPrompt, bestItem = part, dist, prompt, item
+                    end
+                end
+            end
+        end
+    end
+    return bestPart, bestDist, bestPrompt, bestItem
+end
+
+local function collectPromptVerified(item, part, prompt)
+    if isDelivering or isChestConsumed(item, prompt) or isPlayerNear(part.Position, S.playerAvoidRadius) then
+        return false
+    end
+
+    local promptPart = (prompt.Parent and prompt.Parent:IsA("BasePart") and prompt.Parent) or part
+    local targetPos = promptPart.Position
+
+    local standPos = findCleanGround(targetPos, 2.5, 3.5, item)
+    local horseParkPos = findCleanGround(standPos, 3.5, 4.8, item)
+
+    local r = root()
+    if r and (r.Position - horseParkPos).Magnitude > S.promptRange then
+        if not fastHorseTeleport(horseParkPos) then return false end
+    end
+
+    instantDismount()
+
+    local arrR = root()
+    if not arrR or isPlayerNear(arrR.Position, S.playerAvoidRadius) then
+        DONE_UNTIL[item] = os.clock() + 8
+        mountHorse()
+        return false
+    end
+
+    if isChestConsumed(item, prompt) then
+        DONE_UNTIL[item] = os.clock() + 45
+        mountHorse()
+        return true
+    end
+
+    arrR.CFrame = CFrame.lookAt(standPos, Vector3.new(targetPos.X, standPos.Y, targetPos.Z))
+    arrR.AssemblyLinearVelocity = Vector3.zero
+    arrR.AssemblyAngularVelocity = Vector3.zero
+
+    local confirmed = false
+    local maxRetries = 7
+
+    for attempt = 1, maxRetries do
+        if isDelivering or isChestConsumed(item, prompt) then
+            confirmed = true
+            break
+        end
+
+        if isPlayerNear(arrR.Position, S.playerAvoidRadius) then
+            DONE_UNTIL[item] = os.clock() + 8
+            break
+        end
+
+        if (arrR.Position - targetPos).Magnitude > 4.5 then
+            arrR.CFrame = CFrame.lookAt(standPos, Vector3.new(targetPos.X, standPos.Y, targetPos.Z))
+            arrR.AssemblyLinearVelocity = Vector3.zero
+        end
+
+        if fpp and prompt and prompt.Parent and prompt.Enabled then
+            pcall(fpp, prompt, prompt.HoldDuration or 0)
+            if (prompt.HoldDuration or 0) > 0 then
+                task.wait(0.04)
+                pcall(fpp, prompt, 0)
+            end
+        end
+
+        local t0 = os.clock()
+        while os.clock() - t0 < 0.36 do
+            if isChestConsumed(item, prompt) then
+                confirmed = true
+                break
+            end
+            RunService.Heartbeat:Wait()
+        end
+
+        if confirmed then break end
+    end
+
+    if confirmed then
+        DONE_UNTIL[item] = os.clock() + 50
+        FARM.opened = FARM.opened + 1
+        FARM.runChests = FARM.runChests + 1
+        S.totalChestsLooted = (S.totalChestsLooted or 0) + 1
+        saveConfig()
+        FARM.status = ("looted chest (%d total)"):format(FARM.opened)
+        pcall(checkAndDispatchWebhook)
+
+        -- Check 20 Dogbane threshold immediately
+        if playerSpawnedIn and S.deliveryEnabled and getDogbaneCount() >= 20 then
+            task.spawn(runDeliveryRoutine, false)
+        end
+    else
+        DONE_UNTIL[item] = os.clock() + 3.5
+        FARM.status = "confirmation pending - retrying soon"
+    end
+
+    mountHorse()
+    return confirmed
+end
+
+startChestFarm = function()
+    if FARM.isChestFarmRunning then return end
+    FARM.isChestFarmRunning = true
+
+    task.spawn(function()
+        FARM.runChests = 0
+        if S.chestPreRender and not mapPreRendered then run4CornerRender() end
+        local emptyChecks = 0
+
+        while S.running and S.autoChests do
+            if isDelivering then
+                task.wait(1)
+            else
+                local part, dist, prompt, item = nearestPrompted("Chests")
+                if not part then
+                    emptyChecks = emptyChecks + 1
+                    if S.serverHopOnEmpty and emptyChecks >= 3 and not isDelivering then
+                        FARM.status = "depleted! hopping server..."
+                        task.wait(0.4)
+                        serverHop(false)
+                        task.wait(3)
+                        emptyChecks = 0
+                    else
+                        FARM.status = ("waiting for chests (%d/3)"):format(emptyChecks)
+                        task.wait(1.2)
+                    end
+                else
+                    emptyChecks = 0
+                    FARM.status = ("harvesting (%d studs)"):format(math.floor(dist))
+                    collectPromptVerified(item, part, prompt)
+                end
+            end
+            RunService.Heartbeat:Wait()
+        end
+        FARM.isChestFarmRunning = false
+        if not isDelivering then
+            FARM.status = "idle"
+        end
+    end)
+end
+
+-- ── DRAWING ESP ────────────────────────────────────────────────────────────
+local espOn = false
+local function getDraw(i)
+    if draws[i] then return draws[i] end
+    local ok, d = pcall(function() return Drawing.new("Text") end)
+    if not ok or not d then return nil end
+    d.Size, d.Center, d.Outline, d.Visible = 13, true, true, false
+    draws[i] = d
+    return d
+end
+
+local function updateESP()
+    local cam, r = WS.CurrentCamera, root()
+    if not cam or not r then
+        for _, d in ipairs(draws) do d.Visible = false end
+        return
+    end
+    local idx = 0
+    local function drawAt(pos, text, color)
+        local sp, on = cam:WorldToViewportPoint(pos)
+        if not on then return end
+        idx = idx + 1
+        local d = getDraw(idx)
+        if d then d.Text, d.Position, d.Color, d.Visible = text, Vector2.new(sp.X, sp.Y), color, true end
+    end
+
+    if S.espChest and WS:FindFirstChild("Chests") then
+        for _, c in ipairs(WS.Chests:GetChildren()) do
+            local p = c:IsA("BasePart") and c or c:FindFirstChildWhichIsA("BasePart", true)
+            if p and (p.Position - r.Position).Magnitude <= S.espRange then
+                drawAt(p.Position, ("CHEST [%d]"):format((p.Position - r.Position).Magnitude), Color3.fromRGB(255, 200, 80))
+            end
+        end
+    end
+    if S.espHerb and WS:FindFirstChild("SpawnedHerbs") then
+        for _, h in ipairs(WS.SpawnedHerbs:GetChildren()) do
+            local p = h:IsA("BasePart") and h or h:FindFirstChildWhichIsA("BasePart", true)
+            if p and (p.Position - r.Position).Magnitude <= S.espRange then
+                drawAt(p.Position, ("HERB [%d]"):format((p.Position - r.Position).Magnitude), Color3.fromRGB(120, 255, 140))
+            end
+        end
+    end
+    if S.espPlayers then
+        for _, o in ipairs(Players:GetPlayers()) do
+            if o ~= LP and o.Character and o.Character:FindFirstChild("Head") then
+                local hd = o.Character.Head
+                local d = (hd.Position - r.Position).Magnitude
+                if d <= S.espRange then
+                    drawAt(hd.Position + Vector3.new(0, 2, 0), ("%s [%d]"):format(o.Name, d), Color3.fromRGB(140, 190, 255))
+                end
+            end
+        end
+    end
+    for i = idx + 1, #draws do draws[i].Visible = false end
+end
+
+local function ensureESP()
+    local want = S.espChest or S.espHerb or S.espHorse or S.espPlayers
+    if want and not espOn then
+        espOn = true
+        task.spawn(function()
+            while S.running and (S.espChest or S.espHerb or S.espHorse or S.espPlayers) do
+                pcall(updateESP)
+                RunService.RenderStepped:Wait()
+            end
+            espOn = false
+            for _, d in ipairs(draws) do d.Visible = false end
+        end)
+    end
+end
+
+-- ── GUI BUILDER (BRIDGER AMBER HUD — DYNAMIC CANVAS SIZE) ───────────────────
+local TH = {
+    bg = Color3.fromRGB(17, 18, 22),
+    pnl = Color3.fromRGB(26, 28, 34),
+    acc = Color3.fromRGB(215, 160, 70),
+    txt = Color3.fromRGB(238, 236, 232),
+    dim = Color3.fromRGB(150, 150, 160)
+}
+
+local hubGui = Instance.new("ScreenGui")
+hubGui.Name, hubGui.ResetOnSpawn = "BW3_Hub", false
+parentToGui(hubGui)
+
+local main = Instance.new("Frame", hubGui)
+main.Size, main.Position, main.BackgroundColor3 = UDim2.fromOffset(520, 420), UDim2.new(0.5, -260, 0.5, -210), TH.bg
+main.Active, main.Draggable = true, true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0, 10)
+local mStr = Instance.new("UIStroke", main)
+mStr.Color = Color3.fromRGB(48, 50, 58)
+
+local top = Instance.new("Frame", main)
+top.Size, top.BackgroundTransparency = UDim2.new(1, 0, 0, 36), 1
+local tLbl = Instance.new("TextLabel", top)
+tLbl.Position, tLbl.Size, tLbl.BackgroundTransparency = UDim2.fromOffset(14, 0), UDim2.new(0.7, 0, 1, 0), 1
+tLbl.Font, tLbl.Text, tLbl.TextColor3, tLbl.TextSize = Enum.Font.GothamBold, "BRIDGER: WESTERN AUTOMATION", TH.acc, 12
+tLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local closeBtn = Instance.new("TextButton", top)
+closeBtn.Position, closeBtn.Size, closeBtn.BackgroundColor3 = UDim2.new(1, -30, 0.5, -11), UDim2.fromOffset(22, 22), TH.pnl
+closeBtn.Font, closeBtn.Text, closeBtn.TextColor3, closeBtn.TextSize = Enum.Font.GothamBold, "X", TH.dim, 11
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+
+local tabBar = Instance.new("Frame", main)
+tabBar.Position, tabBar.Size, tabBar.BackgroundTransparency = UDim2.fromOffset(10, 38), UDim2.new(1, -20, 0, 26), 1
+local tabLayout = Instance.new("UIListLayout", tabBar)
+tabLayout.FillDirection, tabLayout.Padding = Enum.FillDirection.Horizontal, UDim.new(0, 6)
+
+local body = Instance.new("Frame", main)
+body.Position, body.Size, body.BackgroundTransparency = UDim2.fromOffset(0, 68), UDim2.new(1, 0, 1, -68), 1
+
+local tabs = {}
+local function addTab(name)
+    local btn = Instance.new("TextButton", tabBar)
+    btn.Size, btn.AutomaticSize, btn.BackgroundColor3 = UDim2.fromOffset(0, 24), Enum.AutomaticSize.X, TH.pnl
+    btn.Font, btn.Text, btn.TextColor3, btn.TextSize = Enum.Font.GothamMedium, "  " .. name .. "  ", TH.dim, 11
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+
+    local page = Instance.new("ScrollingFrame", body)
+    page.Size, page.BackgroundTransparency, page.Visible = UDim2.fromScale(1, 1), 1, false
+    page.ScrollBarThickness = 4
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
+    local pad = Instance.new("UIPadding", page)
+    pad.PaddingLeft, pad.PaddingRight, pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 12), UDim.new(0, 12), UDim.new(0, 6), UDim.new(0, 10)
+    local lay = Instance.new("UIListLayout", page)
+    lay.Padding = UDim.new(0, 6)
+
+    -- Dynamic Canvas Height Calculation: guarantees smooth scrolling on all executors
+    lay:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        page.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y + 28)
+    end)
+
+    local t = { btn = btn, page = page }
+    btn.MouseButton1Click:Connect(function()
+        for _, o in ipairs(tabs) do
+            o.page.Visible = false
+            o.btn.TextColor3, o.btn.BackgroundColor3 = TH.dim, TH.pnl
+        end
+        page.Visible = true
+        btn.TextColor3, btn.BackgroundColor3 = TH.bg, TH.acc
+    end)
+    tabs[#tabs + 1] = t
+    if #tabs == 1 then
+        page.Visible, btn.TextColor3, btn.BackgroundColor3 = true, TH.bg, TH.acc
+    end
+    return t
+end
+
+local function addToggle(tab, name, key, onChange)
+    local row = Instance.new("Frame", tab.page)
+    row.Size, row.BackgroundColor3 = UDim2.new(1, 0, 0, 28), TH.pnl
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+
+    local lbl = Instance.new("TextLabel", row)
+    lbl.Position, lbl.Size, lbl.BackgroundTransparency = UDim2.fromOffset(10, 0), UDim2.new(1, -60, 1, 0), 1
+    lbl.Font, lbl.Text, lbl.TextColor3, lbl.TextSize = Enum.Font.Gotham, name, TH.txt, 11
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local pill = Instance.new("Frame", row)
+    pill.Position, pill.Size = UDim2.new(1, -38, 0.5, -9), UDim2.fromOffset(30, 18)
+    pill.BackgroundColor3 = S[key] and TH.acc or Color3.fromRGB(55, 58, 66)
+    Instance.new("UICorner", pill).CornerRadius = UDim.new(0, 9)
+
+    local knob = Instance.new("Frame", pill)
+    knob.Position = S[key] and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
+    knob.Size = UDim2.fromOffset(12, 12)
+    knob.BackgroundColor3 = TH.txt
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(0, 6)
+
+    local btn = Instance.new("TextButton", row)
+    btn.Size, btn.BackgroundTransparency, btn.Text = UDim2.fromScale(1, 1), 1, ""
+    btn.MouseButton1Click:Connect(function()
+        S[key] = not S[key]
+        pill.BackgroundColor3 = S[key] and TH.acc or Color3.fromRGB(55, 58, 66)
+        knob.Position = S[key] and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
+        saveConfig()
+        if onChange then task.spawn(onChange, S[key]) end
+    end)
+end
+
+local function addInput(tab, name, key, placeholder)
+    local row = Instance.new("Frame", tab.page)
+    row.Size, row.BackgroundColor3 = UDim2.new(1, 0, 0, 54), TH.pnl
+    Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+    local rStr = Instance.new("UIStroke", row)
+    rStr.Color = Color3.fromRGB(48, 50, 58)
+
+    local lbl = Instance.new("TextLabel", row)
+    lbl.Position, lbl.Size, lbl.BackgroundTransparency = UDim2.fromOffset(10, 4), UDim2.new(1, -20, 0, 16), 1
+    lbl.Font, lbl.Text, lbl.TextColor3, lbl.TextSize = Enum.Font.GothamBold, name, TH.acc, 10
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local tb = Instance.new("TextBox", row)
+    tb.Position, tb.Size = UDim2.fromOffset(10, 24), UDim2.new(1, -20, 0, 22)
+    tb.BackgroundColor3 = Color3.fromRGB(18, 19, 24)
+    tb.Font, tb.Text, tb.TextColor3, tb.TextSize = Enum.Font.Gotham, S[key] or "", TH.txt, 11
+    tb.PlaceholderText, tb.PlaceholderColor3 = placeholder or "", TH.dim
+    tb.ClearTextOnFocus = false
+    Instance.new("UICorner", tb).CornerRadius = UDim.new(0, 4)
+
+    registeredInputs[key] = registeredInputs[key] or {}
+    table.insert(registeredInputs[key], tb)
+
+    local function sync(val)
+        S[key] = val
+        saveConfig()
+        for _, box in ipairs(registeredInputs[key] or {}) do
+            if box ~= tb and box.Text ~= val then box.Text = val end
+        end
+    end
+
+    tb.FocusLost:Connect(function() sync(tb.Text) end)
+    tb:GetPropertyChangedSignal("Text"):Connect(function() sync(tb.Text) end)
+end
+
+local function addButton(tab, name, fn)
+    local b = Instance.new("TextButton", tab.page)
+    b.Size, b.BackgroundColor3 = UDim2.new(1, 0, 0, 28), TH.pnl
+    b.Font, b.Text, b.TextColor3, b.TextSize = Enum.Font.GothamMedium, name, TH.txt, 11
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+    b.MouseButton1Click:Connect(function() task.spawn(pcall, fn) end)
+end
+
+local TFarm = addTab("Farm")
+local TDelivery = addTab("Delivery")
+local TTravel = addTab("Travel")
+local TVisual = addTab("Visual")
+local TInfo = addTab("Info")
+
+local fStat = Instance.new("TextLabel", TFarm.page)
+fStat.Size, fStat.BackgroundTransparency = UDim2.new(1, 0, 0, 20), 1
+fStat.Font, fStat.Text, fStat.TextColor3, fStat.TextSize = Enum.Font.GothamBold, "Status: idle", TH.dim, 11
+fStat.TextXAlignment = Enum.TextXAlignment.Left
+
+-- ── FARM TAB SETTINGS ──────────────────────────────────────────────────────
+addToggle(TFarm, "Auto Farm Chests (Mounted Teleport Only)", "autoChests", function(v)
+    if v then startChestFarm() end
+end)
+addToggle(TFarm, "Auto-Milk Best Server Size (Adaptive 80/20)", "adaptiveOptimizer")
+addToggle(TFarm, "Pre-Render Map 4 Corners", "chestPreRender")
+addToggle(TFarm, "Hop When No Chests", "serverHopOnEmpty")
+
+-- Mirrored Inputs Directly on Farm Tab (Immediately Accessible)
+addInput(TFarm, "Delivery Recipient Username", "deliveryUsername", "Recipient username or display name (case-insensitive)...")
+addInput(TFarm, "Delivery Target Server Name", "deliveryServerName", "Server name to join when at 20 (case-insensitive)...")
+
+addButton(TFarm, "🚀 Teleport to Recipient Position Now", function()
+    task.spawn(runDeliveryRoutine, true)
+end)
+addButton(TFarm, "▶ Resume Normal Farming", function()
+    isDelivering = false
+    S.deliveryPending = false
+    saveConfig()
+    FARM.status = "Manual resume: starting farm..."
+    if S.autoChests and not FARM.isChestFarmRunning then startChestFarm() end
+end)
+addButton(TFarm, "Force Map Pre-Render Now", run4CornerRender)
+addButton(TFarm, "Hop to Server Selector", function() serverHop(false) end)
+
+-- ── DEDICATED DELIVERY TAB ─────────────────────────────────────────────────
+local dStat = Instance.new("TextLabel", TDelivery.page)
+dStat.Size, dStat.BackgroundTransparency = UDim2.new(1, 0, 0, 22), 1
+dStat.Font, dStat.Text, dStat.TextColor3, dStat.TextSize = Enum.Font.GothamBold, "Delivery: Standby", TH.acc, 11
+dStat.TextXAlignment = Enum.TextXAlignment.Left
+
+addToggle(TDelivery, "Enable Auto-Route at 20 Dogbanes", "deliveryEnabled")
+addInput(TDelivery, "Target Server Name", "deliveryServerName", "Server name to join (e.g. California #1)...")
+addInput(TDelivery, "Recipient Username", "deliveryUsername", "Target username / display name...")
+
+addButton(TDelivery, "🚀 Teleport to Recipient Position Now", function()
+    task.spawn(runDeliveryRoutine, true)
+end)
+addButton(TDelivery, "▶ Resume Normal Farming", function()
+    isDelivering = false
+    S.deliveryPending = false
+    saveConfig()
+    FARM.status = "Manual resume: starting farm..."
+    if S.autoChests and not FARM.isChestFarmRunning then startChestFarm() end
+end)
+addButton(TDelivery, "Clear Delivery Settings", function()
+    S.deliveryServerName = ""
+    S.deliveryUsername = ""
+    saveConfig()
+    for _, box in ipairs(registeredInputs["deliveryServerName"] or {}) do box.Text = "" end
+    for _, box in ipairs(registeredInputs["deliveryUsername"] or {}) do box.Text = "" end
+    StarterGui:SetCore("SendNotification", { Title = "BW3 Delivery", Text = "Delivery fields cleared!", Duration = 2 })
+end)
+
+-- ── TRAVEL, VISUAL & INFO TABS ─────────────────────────────────────────────
+addButton(TTravel, "Summon Horse", summonHorse)
+addButton(TTravel, "Mount Horse", mountHorse)
+addButton(TTravel, "Re-Summon Broken Horse", reSummonHorseFresh)
+addButton(TTravel, "Instant Dismount", instantDismount)
+
+addToggle(TVisual, "Chest ESP", "espChest", ensureESP)
+addToggle(TVisual, "Herb ESP", "espHerb", ensureESP)
+addToggle(TVisual, "Player ESP", "espPlayers", ensureESP)
+
+addToggle(TInfo, "Enable Discord Webhook (Every 5 Min)", "webhookEnabled", function(v)
+    if v then pcall(checkAndDispatchWebhook) end
+end)
+addInput(TInfo, "Discord Webhook URL", "webhookUrl", "Paste Discord webhook link here...")
+addButton(TInfo, "Send Webhook Test Now", function()
+    sendWebhook(true)
+    StarterGui:SetCore("SendNotification", { Title = "BW3 Webhook", Text = "Dispatched test embed!", Duration = 3 })
+end)
+addButton(TInfo, "Reset Session Stats (CPH / Time)", function()
+    S.sessionStartTime = os.time()
+    S.totalChestsLooted = 0
+    saveConfig()
+    StarterGui:SetCore("SendNotification", { Title = "BW3 Stats", Text = "Session runtime & CPH reset!", Duration = 3 })
+end)
+addButton(TInfo, "Reset Optimizer History", function()
+    S.lowPopYieldHistory = {}
+    S.highPopYieldHistory = {}
+    S.hopCount = 0
+    saveConfig()
+    StarterGui:SetCore("SendNotification", { Title = "BW3 Optimizer", Text = "Empirical yield history reset!", Duration = 3 })
+end)
+addButton(TInfo, "Save Settings", function()
+    saveConfig()
+    StarterGui:SetCore("SendNotification", { Title = "BW3", Text = "Configuration Saved!", Duration = 2 })
+end)
+addButton(TInfo, "Clear Visited Servers History", function()
+    S.visitedServers = {}
+    saveConfig()
+    StarterGui:SetCore("SendNotification", { Title = "BW3", Text = "Visited servers log cleared!", Duration = 2 })
+end)
+addButton(TInfo, "Reset Config", function()
+    if isf and delf and isf(CONFIG_FILE) then delf(CONFIG_FILE) end
+end)
+addButton(TInfo, "Copy Job ID", function()
+    if sclip then sclip(game.JobId) end
+end)
+
+-- HUD Telemetry Monitor
+task.spawn(function()
+    while S.running do
+        local elapsed = math.max(1, os.time() - (S.sessionStartTime or os.time()))
+        local cph = math.floor((S.totalChestsLooted or 0) / (elapsed / 3600) + 0.5)
+        local avgLow = getAvg(S.lowPopYieldHistory)
+        local avgHigh = getAvg(S.highPopYieldHistory)
+        local optStr = (avgLow >= avgHigh) and "Low" or "High"
+        local dogbanes = getDogbaneCount()
+
+        fStat.Text = ("Status: %s | 🌿 %d/20 | %d CPH | Best: %s (L:%.1f H:%.1f)"):format(
+            FARM.status,
+            dogbanes,
+            cph,
+            optStr,
+            avgLow,
+            avgHigh
+        )
+        dStat.Text = ("Delivery: %s | 🌿 Dogbanes: %d/20"):format(
+            isDelivering and "ACTIVE" or "Standby",
+            dogbanes
+        )
+        task.wait(0.35)
+    end
+end)
+
+-- FAB Toggle Button
+local fab = Instance.new("TextButton", hubGui)
+fab.Size, fab.Position, fab.BackgroundColor3 = UDim2.fromOffset(40, 40), UDim2.new(0, 12, 0.5, -20), TH.pnl
+fab.Font, fab.Text, fab.TextColor3, fab.TextSize = Enum.Font.GothamBold, "BW", TH.acc, 14
+Instance.new("UICorner", fab).CornerRadius = UDim.new(0, 10)
+Instance.new("UIStroke", fab).Color = TH.acc
+fab.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
+
+local function unload()
+    S.running = false
+    getgenv().BW3_Gen = (getgenv().BW3_Gen or 0) + 1
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for _, d in ipairs(draws) do pcall(function() d:Remove() end) end
+    pcall(function() hubGui:Destroy() end)
+    getgenv().BW3_Unload = nil
+end
+getgenv().BW3_Unload = unload
+closeBtn.MouseButton1Click:Connect(unload)
+
+if S.autoChests then startChestFarm() end
+if S.espChest or S.espHerb or S.espPlayers then ensureESP() end
