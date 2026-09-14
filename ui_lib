@@ -1,0 +1,1599 @@
+--!nocheck
+-- ============================================================
+-- BRIDGER HUB • MODULAR DEPTH & SHADOW UI LIBRARY (v4.0)
+-- Native UIShadow, Top-Down Surface Lighting, Specular Bevels,
+-- Recessed Sunken Wells, Spatial Moving Colors & Tactile Physics.
+-- ============================================================
+--
+-- ============================================================
+-- DOCUMENTATION & COMPLETE API REFERENCE
+-- ============================================================
+--
+-- [1] IMPORTING THE LIBRARY
+--   local Library = loadstring(readfile("BW2/UI.txt"))() -- or loadfile("BW2/UI.txt")()
+--
+-- [2] CREATING A WINDOW
+--   local Window = Library:CreateWindow({
+--       Title = "BRIDGER WESTERN",           -- Header title text
+--       Subtitle = "v4.0 Depth & Motion",   -- Header subtitle / version
+--       Size = UDim2.fromOffset(560, 420),   -- Window dimensions (Width, Height)
+--       AccentColor = Color3.fromRGB(99, 102, 241), -- Primary accent hue (optional)
+--       ToggleKey = Enum.KeyCode.RightShift, -- Global hotkey to show/hide window
+--   })
+--   Methods:
+--     Window:CreateTab(tabName: string) -> TabObject
+--     Window:Toggle(state: boolean?) -> void (toggles if nil, or sets explicit state)
+--
+-- [3] CREATING TABS & SECTIONS
+--   local Tab = Window:CreateTab("Combat")
+--   local Section = Tab:CreateSection("Targeting & Aim Engine")
+--
+-- [4] SECTION CONTROLS
+--
+--   • TOGGLE (Tactile slide switch with over-travel bounce & ambient glow):
+--       local Toggle = Section:CreateToggle({
+--           Title = "Silent Aim",
+--           Default = false,
+--           Callback = function(enabled: boolean)
+--               print("Silent Aim state:", enabled)
+--           end,
+--       })
+--       Toggle:Set(true)            -- Programmatically update state
+--       local val = Toggle:Get()     -- Returns current boolean state
+--
+--   • SLIDER (Continuous drag track with real-time numeric readouts):
+--       local Slider = Section:CreateSlider({
+--           Title = "Hit Chance",
+--           Min = 0,
+--           Max = 100,
+--           Default = 75,
+--           Decimals = 0,            -- Number of decimal digits (default 0)
+--           Suffix = "%",            -- Optional display suffix (e.g. "%", " studs", "x")
+--           Callback = function(val: number)
+--               print("Hit Chance:", val)
+--           end,
+--       })
+--       Slider:Set(90)              -- Programmatically set numeric value
+--       local val = Slider:Get()     -- Returns current number
+--
+--   • DROPDOWN (Expanding accordion container with 180° animated chevron):
+--       local Dropdown = Section:CreateDropdown({
+--           Title = "Target Hitbox",
+--           Items = { "Head", "UpperTorso", "HumanoidRootPart", "Random" },
+--           Default = "Head",
+--           Callback = function(selected: string)
+--               print("Target Hitbox:", selected)
+--           end,
+--       })
+--       Dropdown:Set("UpperTorso")   -- Programmatically select option
+--       Dropdown:SetOptions({ "Head", "Torso" }) -- Dynamically update choices
+--       local val = Dropdown:Get()   -- Returns current selected string
+--
+--   • BUTTON (Tactile depressible action button with specular highlight):
+--       local Button = Section:CreateButton({
+--           Title = "Quick Rejoin Server",
+--           Callback = function()
+--               game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId)
+--           end,
+--       })
+--       Button:Fire()               -- Programmatically trigger button callback
+--
+--   • KEYBIND (Interactive hotkey capture pill with listening state):
+--       local Keybind = Section:CreateKeybind({
+--           Title = "Aimbot Activation Key",
+--           Default = Enum.KeyCode.E,
+--           Callback = function(keyCode: Enum.KeyCode)
+--               print("New Keybind assigned:", keyCode.Name)
+--           end,
+--       })
+--       Keybind:Set(Enum.KeyCode.Q) -- Programmatically assign KeyCode
+--       local kc = Keybind:Get()     -- Returns current Enum.KeyCode
+--
+-- [5] NOTIFICATIONS
+--   Library:Notify({
+--       Title = "Bridger Western",
+--       Content = "Aim engine initialized successfully.",
+--       Duration = 4.0,              -- Auto-dismiss timer in seconds
+--       Type = "info",               -- "info", "warn", or "error"
+--   })
+-- ============================================================
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+
+local LP = Players.LocalPlayer or Players:GetPlayers()[1]
+
+local Library = {
+    Version = "4.0.0",
+    Windows = {},
+    ActiveWindow = nil,
+    Gui = nil,
+    NotifyStack = nil,
+}
+
+-- Safe Parent Mount
+local function getMountTarget()
+    local target = nil
+    pcall(function() target = gethui and gethui() end)
+    if not target then pcall(function() target = CoreGui end) end
+    if not target and LP then target = LP:FindFirstChild("PlayerGui") end
+    return target
+end
+
+-- ============================================================
+-- PRIMITIVE BUILDERS & GRAPHICAL HELPERS
+-- ============================================================
+local function mk(cls, props, parent)
+    local inst = Instance.new(cls)
+    for k, v in pairs(props) do inst[k] = v end
+    if parent then inst.Parent = parent end
+    return inst
+end
+
+local function corner(p, r)
+    return mk("UICorner", { CornerRadius = UDim.new(0, r or 6) }, p)
+end
+
+-- Top-down lighting gradient for surfaces (creates physical curvature)
+local function surfaceLight(p, topCol, botCol, rot)
+    return mk("UIGradient", {
+        Rotation = rot or 90,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, topCol),
+            ColorSequenceKeypoint.new(1.0, botCol),
+        }),
+    }, p)
+end
+
+-- Specular edge highlight (machined top bevel fading to dark bottom)
+local function beveledStroke(p, topCol, botCol, th)
+    local s = mk("UIStroke", {
+        Color = Color3.new(1, 1, 1),
+        Thickness = math.round(th or 1),
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, p)
+    mk("UIGradient", {
+        Rotation = 90,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, topCol or Color3.fromRGB(85, 98, 125)),
+            ColorSequenceKeypoint.new(0.4, topCol or Color3.fromRGB(60, 70, 90)),
+            ColorSequenceKeypoint.new(1.0, botCol or Color3.fromRGB(22, 26, 35)),
+        }),
+    }, s)
+    return s
+end
+
+-- Recessed inverted stroke (for sunken wells, bottom catches light)
+local function sunkenStroke(p, th)
+    local s = mk("UIStroke", {
+        Color = Color3.new(1, 1, 1),
+        Thickness = math.round(th or 1),
+        ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+    }, p)
+    mk("UIGradient", {
+        Rotation = 90,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, Color3.fromRGB(16, 18, 24)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(25, 29, 38)),
+            ColorSequenceKeypoint.new(1.0, Color3.fromRGB(50, 58, 75)),
+        }),
+    }, s)
+    return s
+end
+
+-- Spatial Gradient Motion ("Moving colors, not changing colors")
+local function movingGradient(p, props)
+    props = props or {}
+    local rot = props.Rotation or 0
+    local rad = math.rad(rot)
+    local dirX = math.cos(rad)
+    local dirY = math.sin(rad)
+    local startOff = props.StartOffset or Vector2.new(-dirX, -dirY)
+    local endOff = props.EndOffset or Vector2.new(dirX, dirY)
+
+    local grad = mk("UIGradient", {
+        Rotation = rot,
+        Color = props.Color or ColorSequence.new(Color3.new(1, 1, 1)),
+        Offset = startOff,
+    }, p)
+    if props.Transparency then
+        grad.Transparency = props.Transparency
+    end
+
+    local isPingPong = props.PingPong == true
+    local tInfo = TweenInfo.new(
+        props.Speed or 2.5,
+        isPingPong and Enum.EasingStyle.Sine or Enum.EasingStyle.Linear,
+        Enum.EasingDirection.InOut,
+        -1,
+        isPingPong
+    )
+    local tween = TweenService:Create(grad, tInfo, {
+        Offset = endOff
+    })
+    tween:Play()
+    return grad, tween
+end
+
+-- Native UIShadow with Graceful 9-Slice Fallback
+local function addUIShadow(parent, props)
+    props = props or {}
+    local ok, shadow = pcall(Instance.new, "UIShadow")
+    if ok and shadow then
+        shadow.Color = props.Color or Color3.fromRGB(0, 0, 0)
+        shadow.Transparency = props.Transparency or 0.45
+        shadow.BlurRadius = props.BlurRadius or UDim.new(0, 10)
+        shadow.Spread = props.Spread or UDim2.new(0, 0, 0, 0)
+        shadow.Offset = props.Offset or UDim2.new(0, 0, 0, 4)
+        if props.ZIndex then shadow.ZIndex = props.ZIndex end
+        if props.Enabled ~= nil then shadow.Enabled = props.Enabled end
+        shadow.Parent = parent
+        return shadow
+    end
+
+    -- 9-Slice Fallback for environments where UIShadow is not enabled
+    local spreadPx = (props.Spread and props.Spread.X.Offset) or 10
+    local offX = (props.Offset and props.Offset.X.Offset) or 0
+    local offY = (props.Offset and props.Offset.Y.Offset) or 4
+    local s = mk("ImageLabel", {
+        Name = "ShadowFallback",
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, offX, 0.5, offY),
+        Size = UDim2.new(1, spreadPx * 2 + 16, 1, spreadPx * 2 + 16),
+        BackgroundTransparency = 1,
+        Image = "rbxassetid://6014261993",
+        ImageColor3 = props.Color or Color3.fromRGB(0, 0, 0),
+        ImageTransparency = props.Transparency or 0.45,
+        ScaleType = Enum.ScaleType.Slice,
+        SliceCenter = Rect.new(49, 49, 450, 450),
+        ZIndex = math.max(0, (parent.ZIndex or 1) - 1),
+    }, parent.Parent or parent)
+    return s
+end
+
+-- ============================================================
+-- NOTIFICATION SYSTEM
+-- ============================================================
+function Library:InitNotificationStack()
+    if self.NotifyStack and self.NotifyStack.Parent then return end
+
+    local mount = getMountTarget()
+    local notifGui = mk("ScreenGui", {
+        Name = "BW_Notifications",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 100,
+    }, mount)
+
+    self.NotifyStack = mk("Frame", {
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, -20, 1, -20),
+        Size = UDim2.fromOffset(280, 400),
+        BackgroundTransparency = 1,
+    }, notifGui)
+
+    mk("UIListLayout", {
+        VerticalAlignment = Enum.VerticalAlignment.Bottom,
+        HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        Padding = UDim.new(0, 8),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, self.NotifyStack)
+end
+
+function Library:Notify(props)
+    props = props or {}
+    local title = props.Title or "NOTIFICATION"
+    local content = props.Content or ""
+    local duration = props.Duration or 3
+
+    self:InitNotificationStack()
+
+    local item = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 52),
+        Position = UDim2.fromOffset(50, 0),
+        BackgroundColor3 = Color3.fromRGB(16, 19, 26),
+        ClipsDescendants = true,
+    }, self.NotifyStack)
+    corner(item, 6)
+    surfaceLight(item, Color3.fromRGB(24, 29, 40), Color3.fromRGB(14, 16, 22), 90)
+    beveledStroke(item, Color3.fromRGB(75, 90, 120), Color3.fromRGB(20, 24, 32), 1)
+
+    addUIShadow(item, {
+        BlurRadius = UDim.new(0, 8),
+        Offset = UDim2.fromOffset(0, 3),
+        Transparency = 0.5,
+    })
+
+    -- Specular top line
+    local topGleam = mk("Frame", {
+        Position = UDim2.new(0, 0, 0, 0),
+        Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BorderSizePixel = 0,
+    }, item)
+    movingGradient(topGleam, {
+        Rotation = 0,
+        Speed = 2.5,
+        PingPong = true,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, Color3.fromRGB(22, 26, 36)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(129, 140, 248)),
+            ColorSequenceKeypoint.new(1.0, Color3.fromRGB(22, 26, 36)),
+        }),
+    })
+
+    mk("TextLabel", {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 8),
+        Size = UDim2.new(1, -20, 0, 14),
+        Font = Enum.Font.GothamBold,
+        Text = title,
+        TextColor3 = Color3.fromRGB(241, 245, 249),
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, item)
+
+    mk("TextLabel", {
+        BackgroundTransparency = 1,
+        Position = UDim2.fromOffset(10, 24),
+        Size = UDim2.new(1, -20, 0, 16),
+        Font = Enum.Font.GothamMedium,
+        Text = content,
+        TextColor3 = Color3.fromRGB(148, 163, 184),
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, item)
+
+    -- Bottom countdown bar
+    local countBar = mk("Frame", {
+        AnchorPoint = Vector2.new(0, 1),
+        Position = UDim2.new(0, 0, 1, 0),
+        Size = UDim2.new(1, 0, 0, 2),
+        BackgroundColor3 = Color3.fromRGB(99, 102, 241),
+        BorderSizePixel = 0,
+    }, item)
+
+    -- Entrance tween
+    TweenService:Create(item, TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.fromOffset(0, 0)
+    }):Play()
+
+    -- Countdown shrink
+    TweenService:Create(countBar, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
+        Size = UDim2.new(0, 0, 0, 2)
+    }):Play()
+
+    task.delay(duration, function()
+        if not item or not item.Parent then return end
+        local fadeOut = TweenService:Create(item, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.fromOffset(60, 0),
+            BackgroundTransparency = 1
+        })
+        fadeOut:Play()
+        fadeOut.Completed:Connect(function()
+            item:Destroy()
+        end)
+    end)
+end
+
+-- ============================================================
+-- WINDOW CONSTRUCTOR
+-- ============================================================
+function Library:CreateWindow(config)
+    config = config or {}
+    local titleText = config.Title or "BRIDGER WESTERN"
+    local subTitleText = config.SubTitle or "v4.0 DEPTH"
+    local winSize = config.Size or UDim2.fromOffset(540, 440)
+    local toggleKey = config.ToggleKey or Enum.KeyCode.RightControl
+    local accentCol = config.AccentColor or Color3.fromRGB(99, 102, 241)
+
+    -- Root ScreenGui setup
+    local mount = getMountTarget()
+    local guiName = "BW_DepthWindow_" .. tostring(#self.Windows + 1)
+    
+    pcall(function()
+        local existing = mount:FindFirstChild(guiName)
+        if existing then existing:Destroy() end
+    end)
+
+    local gui = mk("ScreenGui", {
+        Name = guiName,
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 50,
+    }, mount)
+
+    local winHolder = mk("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 18),
+        Size = UDim2.new(winSize.X.Scale, winSize.X.Offset - 24, winSize.Y.Scale, winSize.Y.Offset - 20),
+        BackgroundTransparency = 1,
+        Active = true,
+        Draggable = true,
+    }, gui)
+
+    -- Smooth reveal entrance
+    TweenService:Create(winHolder, TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = winSize,
+    }):Play()
+
+    -- Main Elevated Body
+    local window = mk("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.fromRGB(14, 16, 22),
+        ClipsDescendants = false,
+    }, winHolder)
+    corner(window, 10)
+    surfaceLight(window, Color3.fromRGB(22, 26, 36), Color3.fromRGB(11, 13, 18), 90)
+    beveledStroke(window, Color3.fromRGB(80, 94, 125), Color3.fromRGB(20, 24, 32), 1)
+
+    -- Double Layer UIShadow (Floor Separation + Contact Mass)
+    addUIShadow(window, {
+        BlurRadius = UDim.new(0, 30),
+        Spread = UDim2.fromOffset(4, 4),
+        Offset = UDim2.fromOffset(0, 14),
+        Transparency = 0.55,
+        ZIndex = 1,
+    })
+    addUIShadow(window, {
+        BlurRadius = UDim.new(0, 10),
+        Spread = UDim2.fromOffset(0, 0),
+        Offset = UDim2.fromOffset(0, 3),
+        Transparency = 0.35,
+        ZIndex = 2,
+    })
+
+    -- Top Window Title Bar
+    local titleBar = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundTransparency = 1,
+    }, window)
+
+    -- Moving Specular Gleam along Header Separator
+    local titleSeparator = mk("Frame", {
+        Position = UDim2.new(0, 0, 1, -1),
+        Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+        BorderSizePixel = 0,
+    }, titleBar)
+    movingGradient(titleSeparator, {
+        Rotation = 0,
+        Speed = 3.2,
+        PingPong = true,
+        Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.0, Color3.fromRGB(22, 26, 36)),
+            ColorSequenceKeypoint.new(0.35, Color3.fromRGB(35, 45, 68)),
+            ColorSequenceKeypoint.new(0.5, Color3.fromRGB(140, 160, 255)),
+            ColorSequenceKeypoint.new(0.65, Color3.fromRGB(35, 45, 68)),
+            ColorSequenceKeypoint.new(1.0, Color3.fromRGB(22, 26, 36)),
+        }),
+    })
+
+    local accentDot = mk("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 14, 0.5, 0),
+        Size = UDim2.fromOffset(8, 8),
+        BackgroundColor3 = accentCol,
+    }, titleBar)
+    corner(accentDot, 4)
+    surfaceLight(accentDot, Color3.fromRGB(129, 140, 248), Color3.fromRGB(79, 70, 229), 45)
+
+    local titleLbl = mk("TextLabel", {
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 30, 0.5, 0),
+        Size = UDim2.fromOffset(130, 20),
+        Font = Enum.Font.GothamBold,
+        Text = titleText,
+        TextColor3 = Color3.fromRGB(241, 245, 249),
+        TextSize = 12,
+        TextXAlignment = Enum.TextXAlignment.Left,
+    }, titleBar)
+
+    local subBadge = mk("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 168, 0.5, 0),
+        Size = UDim2.fromOffset(72, 18),
+        BackgroundColor3 = Color3.fromRGB(10, 12, 16),
+    }, titleBar)
+    corner(subBadge, 4)
+    sunkenStroke(subBadge, 1)
+
+    local subBadgeLbl = mk("TextLabel", {
+        BackgroundTransparency = 1,
+        Size = UDim2.fromScale(1, 1),
+        Font = Enum.Font.GothamBold,
+        Text = subTitleText,
+        TextColor3 = Color3.fromRGB(148, 163, 184),
+        TextSize = 9,
+    }, subBadge)
+
+    local closeBtn = mk("TextButton", {
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(24, 24),
+        BackgroundColor3 = Color3.fromRGB(20, 24, 32),
+        Font = Enum.Font.GothamBold,
+        Text = "✕",
+        TextColor3 = Color3.fromRGB(148, 163, 184),
+        TextSize = 10,
+        AutoButtonColor = false,
+    }, titleBar)
+    corner(closeBtn, 5)
+    beveledStroke(closeBtn, Color3.fromRGB(50, 60, 80), Color3.fromRGB(18, 22, 30), 1)
+    addUIShadow(closeBtn, {
+        BlurRadius = UDim.new(0, 4),
+        Offset = UDim2.fromOffset(0, 1),
+        Transparency = 0.6,
+    })
+
+    closeBtn.MouseEnter:Connect(function()
+        TweenService:Create(closeBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(32, 38, 52),
+            TextColor3 = Color3.fromRGB(241, 245, 249),
+        }):Play()
+    end)
+    closeBtn.MouseLeave:Connect(function()
+        TweenService:Create(closeBtn, TweenInfo.new(0.15), {
+            BackgroundColor3 = Color3.fromRGB(20, 24, 32),
+            TextColor3 = Color3.fromRGB(148, 163, 184),
+        }):Play()
+    end)
+    closeBtn.MouseButton1Down:Connect(function()
+        TweenService:Create(closeBtn, TweenInfo.new(0.08), {
+            Position = UDim2.new(1, -12, 0.5, 1),
+            BackgroundColor3 = Color3.fromRGB(16, 20, 28),
+        }):Play()
+    end)
+    closeBtn.MouseButton1Up:Connect(function()
+        TweenService:Create(closeBtn, TweenInfo.new(0.12), {
+            Position = UDim2.new(1, -12, 0.5, 0),
+            BackgroundColor3 = Color3.fromRGB(32, 38, 52),
+        }):Play()
+    end)
+
+    -- Sidebar Container
+    local sidebar = mk("Frame", {
+        Position = UDim2.fromOffset(12, 46),
+        Size = UDim2.fromOffset(116, 382),
+        BackgroundColor3 = Color3.fromRGB(13, 15, 20),
+    }, window)
+    corner(sidebar, 8)
+    sunkenStroke(sidebar, 1)
+
+    -- Smooth Sliding Tab Selection Pill (Physical Elevation)
+    local tabPill = mk("Frame", {
+        Size = UDim2.new(1, -12, 0, 30),
+        Position = UDim2.fromOffset(6, 6),
+        BackgroundColor3 = Color3.fromRGB(28, 34, 48),
+        ZIndex = 1,
+        Visible = false,
+    }, sidebar)
+    corner(tabPill, 6)
+    beveledStroke(tabPill, Color3.fromRGB(75, 92, 128), Color3.fromRGB(24, 29, 40), 1)
+    surfaceLight(tabPill, Color3.fromRGB(36, 44, 62), Color3.fromRGB(20, 25, 35), 90)
+    addUIShadow(tabPill, {
+        BlurRadius = UDim.new(0, 5),
+        Offset = UDim2.fromOffset(0, 2),
+        Transparency = 0.45,
+    })
+
+    local pillAccent = mk("Frame", {
+        AnchorPoint = Vector2.new(0, 0.5),
+        Position = UDim2.new(0, 3, 0.5, 0),
+        Size = UDim2.fromOffset(3, 14),
+        BackgroundColor3 = accentCol,
+        BorderSizePixel = 0,
+    }, tabPill)
+    corner(pillAccent, 2)
+
+    -- Tab Buttons Holder
+    local tabsList = mk("Frame", {
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        ZIndex = 2,
+    }, sidebar)
+    local sbLayout = mk("UIListLayout", {
+        Padding = UDim.new(0, 4),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, tabsList)
+    mk("UIPadding", {
+        PaddingTop = UDim.new(0, 6),
+        PaddingBottom = UDim.new(0, 6),
+        PaddingLeft = UDim.new(0, 6),
+        PaddingRight = UDim.new(0, 6),
+    }, tabsList)
+
+    -- Content Viewport Parent
+    local contentParent = mk("Frame", {
+        Position = UDim2.fromOffset(138, 46),
+        Size = UDim2.new(1, -150, 1, -58),
+        BackgroundTransparency = 1,
+    }, window)
+
+    local WindowObj = {
+        Gui = gui,
+        Holder = winHolder,
+        Main = window,
+        Tabs = {},
+        ActiveTab = nil,
+        Visible = true,
+    }
+
+    -- Window Show/Hide Toggle
+    function WindowObj:Toggle(state)
+        if state == nil then state = not self.Visible end
+        self.Visible = state
+        winHolder.Visible = state
+    end
+
+    closeBtn.MouseButton1Click:Connect(function()
+        WindowObj:Toggle()
+    end)
+
+    -- Hotkey Toggle
+    if toggleKey then
+        UserInputService.InputBegan:Connect(function(input, gpe)
+            if not gpe and input.KeyCode == toggleKey then
+                WindowObj:Toggle()
+            end
+        end)
+    end
+
+    -- Tab Registration
+    function WindowObj:CreateTab(name)
+        local tabIdx = #self.Tabs + 1
+
+        -- Tab Viewport Container
+        local tabArea = mk("ScrollingFrame", {
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = Color3.fromRGB(50, 60, 80),
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            Visible = false,
+        }, contentParent)
+
+        mk("UIListLayout", {
+            Padding = UDim.new(0, 8),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, tabArea)
+        mk("UIPadding", {
+            PaddingTop = UDim.new(0, 2),
+            PaddingLeft = UDim.new(0, 2),
+            PaddingRight = UDim.new(0, 8),
+            PaddingBottom = UDim.new(0, 8),
+        }, tabArea)
+
+        -- Tab Sidebar Button
+        local btn = mk("TextButton", {
+            Size = UDim2.new(1, 0, 0, 30),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamMedium,
+            Text = name,
+            TextColor3 = Color3.fromRGB(100, 116, 139),
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            AutoButtonColor = false,
+            ZIndex = 3,
+        }, tabsList)
+        corner(btn, 6)
+        mk("UIPadding", { PaddingLeft = UDim.new(0, 12) }, btn)
+
+        local TabObj = {
+            Name = name,
+            Index = tabIdx,
+            Button = btn,
+            Container = tabArea,
+            Sections = {},
+        }
+
+        local function activateThisTab()
+            if WindowObj.ActiveTab == TabObj then return end
+
+            tabPill.Visible = true
+            local targetY = 6 + (tabIdx - 1) * 34
+            TweenService:Create(tabPill, TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                Position = UDim2.fromOffset(6, targetY)
+            }):Play()
+
+            for _, otherTab in ipairs(WindowObj.Tabs) do
+                local isCur = (otherTab == TabObj)
+                TweenService:Create(otherTab.Button, TweenInfo.new(0.18), {
+                    TextColor3 = isCur and Color3.fromRGB(241, 245, 249) or Color3.fromRGB(100, 116, 139)
+                }):Play()
+                otherTab.Container.Visible = isCur
+            end
+
+            WindowObj.ActiveTab = TabObj
+            tabArea.CanvasPosition = Vector2.new(0, 0)
+        end
+
+        btn.MouseEnter:Connect(function()
+            if WindowObj.ActiveTab ~= TabObj then
+                TweenService:Create(btn, TweenInfo.new(0.14), {
+                    TextColor3 = Color3.fromRGB(168, 182, 204)
+                }):Play()
+            end
+        end)
+        btn.MouseLeave:Connect(function()
+            if WindowObj.ActiveTab ~= TabObj then
+                TweenService:Create(btn, TweenInfo.new(0.14), {
+                    TextColor3 = Color3.fromRGB(100, 116, 139)
+                }):Play()
+            end
+        end)
+        btn.MouseButton1Click:Connect(activateThisTab)
+
+        -- Section (Elevated Card) Builder
+        function TabObj:CreateSection(secTitle)
+            local card = mk("Frame", {
+                Size = UDim2.new(1, 0, 0, 0),
+                AutomaticSize = Enum.AutomaticSize.Y,
+                BackgroundColor3 = Color3.fromRGB(18, 22, 30),
+            }, tabArea)
+            corner(card, 8)
+            surfaceLight(card, Color3.fromRGB(24, 29, 40), Color3.fromRGB(15, 18, 25), 90)
+            beveledStroke(card, Color3.fromRGB(65, 78, 105), Color3.fromRGB(18, 22, 30), 1)
+
+            addUIShadow(card, {
+                BlurRadius = UDim.new(0, 6),
+                Offset = UDim2.fromOffset(0, 2),
+                Transparency = 0.65,
+            })
+
+            mk("UIPadding", {
+                PaddingTop = UDim.new(0, 10),
+                PaddingBottom = UDim.new(0, 10),
+                PaddingLeft = UDim.new(0, 10),
+                PaddingRight = UDim.new(0, 10),
+            }, card)
+            mk("UIListLayout", { Padding = UDim.new(0, 6) }, card)
+
+            local cardHeader = mk("Frame", {
+                Size = UDim2.new(1, 0, 0, 16),
+                BackgroundTransparency = 1,
+            }, card)
+
+            mk("TextLabel", {
+                BackgroundTransparency = 1,
+                Size = UDim2.fromScale(1, 1),
+                Font = Enum.Font.GothamBold,
+                Text = string.upper(secTitle),
+                TextColor3 = Color3.fromRGB(190, 205, 235),
+                TextSize = 10,
+                TextXAlignment = Enum.TextXAlignment.Left,
+            }, cardHeader)
+
+            -- Traveling Specular Accent Beam under Section Header
+            local cardAccent = mk("Frame", {
+                Size = UDim2.new(1, 0, 0, 1),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+            }, card)
+            movingGradient(cardAccent, {
+                Rotation = 0,
+                Speed = 3.6,
+                PingPong = true,
+                Color = ColorSequence.new({
+                    ColorSequenceKeypoint.new(0.0, Color3.fromRGB(18, 22, 30)),
+                    ColorSequenceKeypoint.new(0.4, Color3.fromRGB(38, 48, 70)),
+                    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(129, 140, 248)),
+                    ColorSequenceKeypoint.new(0.6, Color3.fromRGB(38, 48, 70)),
+                    ColorSequenceKeypoint.new(1.0, Color3.fromRGB(18, 22, 30)),
+                }),
+            })
+
+            local SectionObj = {
+                Card = card,
+            }
+
+            -- ========================================================
+            -- COMPONENT: TACTILE TOGGLE
+            -- ========================================================
+            function SectionObj:CreateToggle(tConfig)
+                tConfig = tConfig or {}
+                local tName = tConfig.Name or "Toggle Switch"
+                local tDefault = tConfig.Default == true
+                local tCallback = tConfig.Callback or function() end
+
+                local row = mk("Frame", {
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundColor3 = Color3.fromRGB(12, 14, 19),
+                }, card)
+                corner(row, 6)
+                sunkenStroke(row, 1)
+
+                row.MouseEnter:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(15, 18, 25) }):Play()
+                end)
+                row.MouseLeave:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(12, 14, 19) }):Play()
+                end)
+
+                mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -60, 1, 0),
+                    Font = Enum.Font.GothamMedium,
+                    Text = tName,
+                    TextColor3 = Color3.fromRGB(226, 232, 240),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                }, row)
+
+                local trackWell = mk("Frame", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -10, 0.5, 0),
+                    Size = UDim2.fromOffset(38, 20),
+                    BackgroundColor3 = Color3.fromRGB(8, 10, 13),
+                }, row)
+                corner(trackWell, 10)
+                sunkenStroke(trackWell, 1)
+
+                local trackActive = mk("Frame", {
+                    Size = UDim2.fromScale(1, 1),
+                    BackgroundColor3 = accentCol,
+                    BackgroundTransparency = tDefault and 0 or 1,
+                }, trackWell)
+                corner(trackActive, 10)
+
+                -- Continuous Conduit Flow when active
+                movingGradient(trackActive, {
+                    Rotation = 0,
+                    Speed = 2.2,
+                    PingPong = false,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0.0, Color3.fromRGB(79, 70, 229)),
+                        ColorSequenceKeypoint.new(0.4, Color3.fromRGB(99, 102, 241)),
+                        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(165, 180, 252)),
+                        ColorSequenceKeypoint.new(0.6, Color3.fromRGB(99, 102, 241)),
+                        ColorSequenceKeypoint.new(1.0, Color3.fromRGB(79, 70, 229)),
+                    }),
+                })
+
+                local knob = mk("Frame", {
+                    AnchorPoint = Vector2.new(0, 0.5),
+                    Position = tDefault and UDim2.new(1, -17, 0.5, 0) or UDim2.new(0, 3, 0.5, 0),
+                    Size = UDim2.fromOffset(14, 14),
+                    BackgroundColor3 = Color3.fromRGB(245, 248, 255),
+                    ZIndex = 3,
+                }, trackWell)
+                corner(knob, 7)
+                surfaceLight(knob, Color3.fromRGB(255, 255, 255), Color3.fromRGB(200, 210, 230), 90)
+                beveledStroke(knob, Color3.fromRGB(255, 255, 255), Color3.fromRGB(140, 155, 180), 1)
+
+                addUIShadow(knob, {
+                    BlurRadius = UDim.new(0, 3),
+                    Offset = UDim2.fromOffset(0, 1),
+                    Transparency = 0.35,
+                })
+
+                local trigger = mk("TextButton", {
+                    BackgroundTransparency = 1,
+                    Size = UDim2.fromScale(1, 1),
+                    Text = "",
+                    ZIndex = 4,
+                }, trackWell)
+
+                local ToggleControl = {
+                    Value = tDefault,
+                }
+
+                local function applyState(val, triggerCallback)
+                    ToggleControl.Value = val
+                    local targetPos = val and UDim2.new(1, -17, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)
+                    local targetTrans = val and 0 or 1
+
+                    TweenService:Create(knob, TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                        Position = targetPos
+                    }):Play()
+
+                    TweenService:Create(trackActive, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                        BackgroundTransparency = targetTrans
+                    }):Play()
+
+                    if triggerCallback then
+                        pcall(tCallback, val)
+                    end
+                end
+
+                trigger.MouseButton1Click:Connect(function()
+                    applyState(not ToggleControl.Value, true)
+                end)
+
+                function ToggleControl:Set(val)
+                    applyState(val == true, true)
+                end
+
+                function ToggleControl:Get()
+                    return self.Value
+                end
+
+                return ToggleControl
+            end
+
+            -- ========================================================
+            -- COMPONENT: RECESSED DRAGGABLE SLIDER
+            -- ========================================================
+            function SectionObj:CreateSlider(sConfig)
+                sConfig = sConfig or {}
+                local sName = sConfig.Name or "Slider"
+                local sMin = sConfig.Min or 0
+                local sMax = sConfig.Max or 100
+                local sDefault = sConfig.Default or sMin
+                local sSuffix = sConfig.Suffix or ""
+                local sCallback = sConfig.Callback or function() end
+
+                local row = mk("Frame", {
+                    Size = UDim2.new(1, 0, 0, 50),
+                    BackgroundColor3 = Color3.fromRGB(12, 14, 19),
+                }, card)
+                corner(row, 6)
+                sunkenStroke(row, 1)
+
+                row.MouseEnter:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(15, 18, 25) }):Play()
+                end)
+                row.MouseLeave:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(12, 14, 19) }):Play()
+                end)
+
+                mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(10, 8),
+                    Size = UDim2.new(0.6, 0, 0, 16),
+                    Font = Enum.Font.GothamMedium,
+                    Text = sName,
+                    TextColor3 = Color3.fromRGB(226, 232, 240),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                }, row)
+
+                local valLbl = mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    AnchorPoint = Vector2.new(1, 0),
+                    Position = UDim2.new(1, -10, 0, 8),
+                    Size = UDim2.fromOffset(80, 16),
+                    Font = Enum.Font.GothamBold,
+                    Text = tostring(sDefault) .. sSuffix,
+                    TextColor3 = Color3.fromRGB(129, 140, 248),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Right,
+                }, row)
+
+                local groove = mk("Frame", {
+                    Position = UDim2.new(0, 10, 0, 32),
+                    Size = UDim2.new(1, -20, 0, 6),
+                    BackgroundColor3 = Color3.fromRGB(8, 9, 13),
+                }, row)
+                corner(groove, 3)
+                sunkenStroke(groove, 1)
+
+                local initFrac = math.clamp((sDefault - sMin) / math.max(1, sMax - sMin), 0, 1)
+                local fill = mk("Frame", {
+                    Size = UDim2.new(initFrac, 0, 1, 0),
+                    BackgroundColor3 = accentCol,
+                    ClipsDescendants = false,
+                }, groove)
+                corner(fill, 3)
+
+                -- Moving Energy Conduit Light through Slider Fill
+                movingGradient(fill, {
+                    Rotation = 0,
+                    Speed = 2.4,
+                    PingPong = false,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0.0, Color3.fromRGB(79, 70, 229)),
+                        ColorSequenceKeypoint.new(0.45, Color3.fromRGB(129, 140, 248)),
+                        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(199, 215, 255)),
+                        ColorSequenceKeypoint.new(0.55, Color3.fromRGB(129, 140, 248)),
+                        ColorSequenceKeypoint.new(1.0, Color3.fromRGB(79, 70, 229)),
+                    }),
+                })
+
+                local thumb = mk("Frame", {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = UDim2.new(1, 0, 0.5, 0),
+                    Size = UDim2.fromOffset(12, 12),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                    ZIndex = 2,
+                }, fill)
+                corner(thumb, 6)
+                beveledStroke(thumb, Color3.fromRGB(255, 255, 255), Color3.fromRGB(120, 130, 160), 1)
+
+                local thumbShadow = addUIShadow(thumb, {
+                    BlurRadius = UDim.new(0, 3),
+                    Offset = UDim2.fromOffset(0, 1),
+                    Transparency = 0.4,
+                })
+
+                local trigger = mk("TextButton", {
+                    BackgroundTransparency = 1,
+                    Size = UDim2.fromScale(1, 1),
+                    Text = "",
+                    ZIndex = 3,
+                }, groove)
+
+                local SliderControl = {
+                    Value = sDefault,
+                }
+
+                local isDragging = false
+
+                local function updateFrac(frac, animate, fire)
+                    frac = math.clamp(frac, 0, 1)
+                    local calculated = math.round(sMin + frac * (sMax - sMin))
+                    SliderControl.Value = calculated
+                    valLbl.Text = tostring(calculated) .. sSuffix
+
+                    if animate then
+                        TweenService:Create(fill, TweenInfo.new(0.05, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                            Size = UDim2.new(frac, 0, 1, 0)
+                        }):Play()
+                    else
+                        fill.Size = UDim2.new(frac, 0, 1, 0)
+                    end
+
+                    if fire then
+                        pcall(sCallback, calculated)
+                    end
+                end
+
+                local function processInput(input)
+                    local groovePos = groove.AbsolutePosition.X
+                    local grooveSize = groove.AbsoluteSize.X
+                    if grooveSize <= 0 then return end
+                    local frac = (input.Position.X - groovePos) / grooveSize
+                    updateFrac(frac, true, true)
+                end
+
+                trigger.InputBegan:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        isDragging = true
+                        processInput(input)
+                        TweenService:Create(thumb, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                            Size = UDim2.fromOffset(15, 15)
+                        }):Play()
+                        if thumbShadow and thumbShadow:IsA("UIShadow") then
+                            TweenService:Create(thumbShadow, TweenInfo.new(0.12), {
+                                BlurRadius = UDim.new(0, 6),
+                                Transparency = 0.25,
+                            }):Play()
+                        end
+                    end
+                end)
+
+                UserInputService.InputChanged:Connect(function(input)
+                    if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                        processInput(input)
+                    end
+                end)
+
+                UserInputService.InputEnded:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        if isDragging then
+                            isDragging = false
+                            TweenService:Create(thumb, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                                Size = UDim2.fromOffset(12, 12)
+                            }):Play()
+                            if thumbShadow and thumbShadow:IsA("UIShadow") then
+                                TweenService:Create(thumbShadow, TweenInfo.new(0.16), {
+                                    BlurRadius = UDim.new(0, 3),
+                                    Transparency = 0.4,
+                                }):Play()
+                            end
+                        end
+                    end
+                end)
+
+                function SliderControl:Set(val)
+                    local frac = math.clamp((val - sMin) / math.max(1, sMax - sMin), 0, 1)
+                    updateFrac(frac, true, true)
+                end
+
+                function SliderControl:Get()
+                    return self.Value
+                end
+
+                return SliderControl
+            end
+
+            -- ========================================================
+            -- ========================================================
+            -- COMPONENT: EXPANDING ACCORDION DROPDOWN
+            -- ========================================================
+            function SectionObj:CreateDropdown(dConfig)
+                dConfig = dConfig or {}
+                local dName = dConfig.Name or "Dropdown"
+                local dOptions = dConfig.Options or {}
+                local dDefault = dConfig.Default or dOptions[1] or "None"
+                local dCallback = dConfig.Callback or function() end
+
+                local row = mk("Frame", {
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundColor3 = Color3.fromRGB(12, 14, 19),
+                    ClipsDescendants = true,
+                }, card)
+                corner(row, 6)
+                sunkenStroke(row, 1)
+
+                row.MouseEnter:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(15, 18, 25) }):Play()
+                end)
+                row.MouseLeave:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(12, 14, 19) }):Play()
+                end)
+
+                -- Header strip (fixed 36px)
+                local topHeader = mk("Frame", {
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundTransparency = 1,
+                }, row)
+
+                mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -165, 1, 0),
+                    Font = Enum.Font.GothamMedium,
+                    Text = dName,
+                    TextColor3 = Color3.fromRGB(226, 232, 240),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                }, topHeader)
+
+                local dropBtn = mk("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -10, 0.5, 0),
+                    Size = UDim2.fromOffset(145, 24),
+                    BackgroundColor3 = Color3.fromRGB(22, 27, 38),
+                    AutoButtonColor = false,
+                    Text = "",
+                }, topHeader)
+                corner(dropBtn, 4)
+                surfaceLight(dropBtn, Color3.fromRGB(30, 36, 52), Color3.fromRGB(18, 22, 32), 90)
+                beveledStroke(dropBtn, Color3.fromRGB(75, 90, 125), Color3.fromRGB(25, 30, 42), 1)
+
+                addUIShadow(dropBtn, {
+                    BlurRadius = UDim.new(0, 4),
+                    Offset = UDim2.fromOffset(0, 1),
+                    Transparency = 0.5,
+                })
+
+                local selLbl = mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(8, 0),
+                    Size = UDim2.new(1, -28, 1, 0),
+                    Font = Enum.Font.GothamMedium,
+                    Text = tostring(dDefault),
+                    TextColor3 = Color3.fromRGB(199, 210, 254),
+                    TextSize = 10,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                }, dropBtn)
+
+                local chevron = mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -6, 0.5, 0),
+                    Size = UDim2.fromOffset(14, 14),
+                    Font = Enum.Font.GothamBold,
+                    Text = "▼",
+                    TextColor3 = Color3.fromRGB(148, 163, 184),
+                    TextSize = 8,
+                }, dropBtn)
+
+                dropBtn.MouseEnter:Connect(function()
+                    TweenService:Create(dropBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(28, 34, 48) }):Play()
+                end)
+                dropBtn.MouseLeave:Connect(function()
+                    TweenService:Create(dropBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(22, 27, 38) }):Play()
+                end)
+
+                -- Divider line between header and options
+                local listDivider = mk("Frame", {
+                    Position = UDim2.new(0, 8, 0, 36),
+                    Size = UDim2.new(1, -16, 0, 1),
+                    BackgroundColor3 = Color3.fromRGB(24, 28, 38),
+                    BorderSizePixel = 0,
+                    Visible = false,
+                }, row)
+
+                -- Dropdown List Holder
+                local listHolder = mk("Frame", {
+                    Position = UDim2.new(0, 8, 0, 42),
+                    Size = UDim2.new(1, -16, 0, 0),
+                    BackgroundTransparency = 1,
+                    ClipsDescendants = true,
+                }, row)
+
+                local listLayout = mk("UIListLayout", {
+                    Padding = UDim.new(0, 3),
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                }, listHolder)
+
+                local DropdownControl = {
+                    Value = dDefault,
+                    Options = dOptions,
+                    IsOpen = false,
+                }
+
+                local optionButtons = {}
+
+                local function setDropdownOpen(openState)
+                    DropdownControl.IsOpen = openState
+                    local count = #DropdownControl.Options
+                    local totalH = count * 26 + math.max(0, count - 1) * 3
+                    local targetRowHeight = openState and (42 + totalH + 8) or 36
+
+                    listDivider.Visible = openState
+                    listHolder.Size = UDim2.new(1, -16, 0, totalH)
+
+                    TweenService:Create(row, TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                        Size = UDim2.new(1, 0, 0, targetRowHeight)
+                    }):Play()
+
+                    TweenService:Create(chevron, TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+                        Rotation = openState and 180 or 0,
+                        TextColor3 = openState and Color3.fromRGB(241, 245, 249) or Color3.fromRGB(148, 163, 184),
+                    }):Play()
+                end
+
+                dropBtn.MouseButton1Click:Connect(function()
+                    setDropdownOpen(not DropdownControl.IsOpen)
+                end)
+
+                local function updateOptionVisuals()
+                    for optVal, btnInfo in pairs(optionButtons) do
+                        local isSelected = (optVal == DropdownControl.Value)
+                        local b = btnInfo.Button
+                        local acc = btnInfo.Accent
+                        local lbl = btnInfo.Label
+
+                        if isSelected then
+                            b.BackgroundColor3 = Color3.fromRGB(26, 32, 48)
+                            b.BackgroundTransparency = 0
+                            acc.BackgroundTransparency = 0
+                            lbl.TextColor3 = Color3.fromRGB(241, 245, 249)
+                        else
+                            b.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
+                            b.BackgroundTransparency = 1
+                            acc.BackgroundTransparency = 1
+                            lbl.TextColor3 = Color3.fromRGB(148, 163, 184)
+                        end
+                    end
+                end
+
+                local function selectOption(val, fireCallback)
+                    DropdownControl.Value = val
+                    selLbl.Text = tostring(val)
+                    updateOptionVisuals()
+                    setDropdownOpen(false)
+
+                    if fireCallback then
+                        pcall(dCallback, val)
+                    end
+                end
+
+                local function rebuildOptions()
+                    for _, child in ipairs(listHolder:GetChildren()) do
+                        if child:IsA("GuiObject") and not child:IsA("UIListLayout") then
+                            child:Destroy()
+                        end
+                    end
+                    optionButtons = {}
+
+                    for idx, opt in ipairs(DropdownControl.Options) do
+                        local isSelected = (opt == DropdownControl.Value)
+                        local optBtn = mk("TextButton", {
+                            Size = UDim2.new(1, 0, 0, 26),
+                            BackgroundColor3 = isSelected and Color3.fromRGB(26, 32, 48) or Color3.fromRGB(16, 20, 28),
+                            BackgroundTransparency = isSelected and 0 or 1,
+                            AutoButtonColor = false,
+                            Text = "",
+                            LayoutOrder = idx,
+                        }, listHolder)
+                        corner(optBtn, 4)
+
+                        local leftAccent = mk("Frame", {
+                            AnchorPoint = Vector2.new(0, 0.5),
+                            Position = UDim2.new(0, 4, 0.5, 0),
+                            Size = UDim2.fromOffset(3, 14),
+                            BackgroundColor3 = accentCol,
+                            BackgroundTransparency = isSelected and 0 or 1,
+                            BorderSizePixel = 0,
+                        }, optBtn)
+                        corner(leftAccent, 2)
+
+                        local optLbl = mk("TextLabel", {
+                            BackgroundTransparency = 1,
+                            Position = UDim2.fromOffset(14, 0),
+                            Size = UDim2.new(1, -20, 1, 0),
+                            Font = Enum.Font.GothamMedium,
+                            Text = tostring(opt),
+                            TextColor3 = isSelected and Color3.fromRGB(241, 245, 249) or Color3.fromRGB(148, 163, 184),
+                            TextSize = 10,
+                            TextXAlignment = Enum.TextXAlignment.Left,
+                        }, optBtn)
+
+                        optBtn.MouseEnter:Connect(function()
+                            if opt ~= DropdownControl.Value then
+                                TweenService:Create(optBtn, TweenInfo.new(0.12), {
+                                    BackgroundTransparency = 0,
+                                    BackgroundColor3 = Color3.fromRGB(20, 25, 36),
+                                }):Play()
+                                TweenService:Create(optLbl, TweenInfo.new(0.12), {
+                                    TextColor3 = Color3.fromRGB(210, 220, 240),
+                                }):Play()
+                            end
+                        end)
+
+                        optBtn.MouseLeave:Connect(function()
+                            if opt ~= DropdownControl.Value then
+                                TweenService:Create(optBtn, TweenInfo.new(0.12), {
+                                    BackgroundTransparency = 1,
+                                    BackgroundColor3 = Color3.fromRGB(16, 20, 28),
+                                }):Play()
+                                TweenService:Create(optLbl, TweenInfo.new(0.12), {
+                                    TextColor3 = Color3.fromRGB(148, 163, 184),
+                                }):Play()
+                            end
+                        end)
+
+                        optBtn.MouseButton1Click:Connect(function()
+                            selectOption(opt, true)
+                        end)
+
+                        optionButtons[opt] = {
+                            Button = optBtn,
+                            Accent = leftAccent,
+                            Label = optLbl,
+                        }
+                    end
+                end
+
+                rebuildOptions()
+
+                function DropdownControl:Set(val)
+                    for _, opt in ipairs(self.Options) do
+                        if opt == val then
+                            selectOption(val, true)
+                            return
+                        end
+                    end
+                end
+
+                function DropdownControl:Get()
+                    return self.Value
+                end
+
+                function DropdownControl:SetOptions(newOpts)
+                    self.Options = newOpts or {}
+                    if not table.find(self.Options, self.Value) then
+                        self.Value = self.Options[1] or "None"
+                        selLbl.Text = tostring(self.Value)
+                    end
+                    rebuildOptions()
+                    if self.IsOpen then
+                        setDropdownOpen(true)
+                    end
+                end
+
+                return DropdownControl
+            end
+
+            -- ========================================================
+            -- COMPONENT: TACTILE ACTION BUTTON
+            -- ========================================================
+            function SectionObj:CreateButton(bConfig)
+                bConfig = bConfig or {}
+                local bName = bConfig.Name or "Action Button"
+                local bCallback = bConfig.Callback or function() end
+
+                local btn = mk("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 32),
+                    BackgroundColor3 = Color3.fromRGB(30, 36, 52),
+                    Font = Enum.Font.GothamBold,
+                    Text = bName,
+                    TextColor3 = Color3.fromRGB(241, 245, 249),
+                    TextSize = 11,
+                    AutoButtonColor = false,
+                }, card)
+                corner(btn, 5)
+                surfaceLight(btn, Color3.fromRGB(42, 52, 75), Color3.fromRGB(25, 30, 44), 90)
+                beveledStroke(btn, Color3.fromRGB(90, 110, 150), Color3.fromRGB(28, 34, 48), 1)
+
+                -- Top-Bevel Traveling Light Reflection along Button
+                local topBevel = mk("Frame", {
+                    Position = UDim2.new(0, 0, 0, 0),
+                    Size = UDim2.new(1, 0, 0, 1),
+                    BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                    BorderSizePixel = 0,
+                    ZIndex = 2,
+                }, btn)
+                movingGradient(topBevel, {
+                    Rotation = 0,
+                    Speed = 3.0,
+                    PingPong = true,
+                    Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0.0, Color3.fromRGB(35, 45, 68)),
+                        ColorSequenceKeypoint.new(0.4, Color3.fromRGB(70, 90, 130)),
+                        ColorSequenceKeypoint.new(0.5, Color3.fromRGB(160, 190, 255)),
+                        ColorSequenceKeypoint.new(0.6, Color3.fromRGB(70, 90, 130)),
+                        ColorSequenceKeypoint.new(1.0, Color3.fromRGB(35, 45, 68)),
+                    }),
+                })
+
+                local btnShadow = addUIShadow(btn, {
+                    BlurRadius = UDim.new(0, 8),
+                    Offset = UDim2.fromOffset(0, 3),
+                    Transparency = 0.5,
+                })
+
+                btn.MouseEnter:Connect(function()
+                    TweenService:Create(btn, TweenInfo.new(0.15), {
+                        BackgroundColor3 = Color3.fromRGB(38, 46, 66)
+                    }):Play()
+                end)
+                btn.MouseLeave:Connect(function()
+                    TweenService:Create(btn, TweenInfo.new(0.15), {
+                        BackgroundColor3 = Color3.fromRGB(30, 36, 52)
+                    }):Play()
+                end)
+
+                -- Dynamic click compression and spring pop release
+                btn.MouseButton1Down:Connect(function()
+                    TweenService:Create(btn, TweenInfo.new(0.08), {
+                        Position = UDim2.fromOffset(0, 1),
+                        BackgroundColor3 = Color3.fromRGB(20, 24, 34),
+                    }):Play()
+                    if btnShadow and btnShadow:IsA("UIShadow") then
+                        TweenService:Create(btnShadow, TweenInfo.new(0.08), {
+                            Offset = UDim2.fromOffset(0, 1),
+                            BlurRadius = UDim.new(0, 3),
+                            Transparency = 0.65,
+                        }):Play()
+                    end
+                end)
+
+                btn.MouseButton1Up:Connect(function()
+                    TweenService:Create(btn, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                        Position = UDim2.fromOffset(0, 0),
+                        BackgroundColor3 = Color3.fromRGB(38, 46, 66),
+                    }):Play()
+                    if btnShadow and btnShadow:IsA("UIShadow") then
+                        TweenService:Create(btnShadow, TweenInfo.new(0.15, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+                            Offset = UDim2.fromOffset(0, 3),
+                            BlurRadius = UDim.new(0, 8),
+                            Transparency = 0.5,
+                        }):Play()
+                    end
+                end)
+
+                btn.MouseButton1Click:Connect(function()
+                    pcall(bCallback)
+                end)
+
+                local ButtonControl = {}
+                function ButtonControl:Fire()
+                    pcall(bCallback)
+                end
+                return ButtonControl
+            end
+
+            -- ========================================================
+            -- COMPONENT: RECESSED KEYBIND PICKER
+            -- ========================================================
+            function SectionObj:CreateKeybind(kConfig)
+                kConfig = kConfig or {}
+                local kName = kConfig.Name or "Keybind"
+                local kDefault = kConfig.Default or Enum.KeyCode.E
+                local kCallback = kConfig.Callback or function() end
+
+                local row = mk("Frame", {
+                    Size = UDim2.new(1, 0, 0, 36),
+                    BackgroundColor3 = Color3.fromRGB(12, 14, 19),
+                }, card)
+                corner(row, 6)
+                sunkenStroke(row, 1)
+
+                row.MouseEnter:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(15, 18, 25) }):Play()
+                end)
+                row.MouseLeave:Connect(function()
+                    TweenService:Create(row, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(12, 14, 19) }):Play()
+                end)
+
+                mk("TextLabel", {
+                    BackgroundTransparency = 1,
+                    Position = UDim2.fromOffset(10, 0),
+                    Size = UDim2.new(1, -90, 1, 0),
+                    Font = Enum.Font.GothamMedium,
+                    Text = kName,
+                    TextColor3 = Color3.fromRGB(226, 232, 240),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                }, row)
+
+                local keyBtn = mk("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -10, 0.5, 0),
+                    Size = UDim2.fromOffset(68, 22),
+                    BackgroundColor3 = Color3.fromRGB(22, 27, 38),
+                    Font = Enum.Font.GothamBold,
+                    Text = kDefault.Name,
+                    TextColor3 = Color3.fromRGB(199, 210, 254),
+                    TextSize = 10,
+                    AutoButtonColor = false,
+                }, row)
+                corner(keyBtn, 4)
+                surfaceLight(keyBtn, Color3.fromRGB(30, 36, 52), Color3.fromRGB(18, 22, 32), 90)
+                beveledStroke(keyBtn, Color3.fromRGB(75, 90, 125), Color3.fromRGB(25, 30, 42), 1)
+
+                addUIShadow(keyBtn, {
+                    BlurRadius = UDim.new(0, 3),
+                    Offset = UDim2.fromOffset(0, 1),
+                    Transparency = 0.5,
+                })
+
+                local KeybindControl = {
+                    Value = kDefault,
+                    Binding = false,
+                }
+
+                keyBtn.MouseButton1Click:Connect(function()
+                    if KeybindControl.Binding then return end
+                    KeybindControl.Binding = true
+                    keyBtn.Text = "..."
+                    keyBtn.TextColor3 = Color3.fromRGB(255, 215, 0)
+
+                    local conn
+                    conn = UserInputService.InputBegan:Connect(function(input, gpe)
+                        if input.UserInputType == Enum.UserInputType.Keyboard then
+                            conn:Disconnect()
+                            KeybindControl.Binding = false
+                            KeybindControl.Value = input.KeyCode
+                            keyBtn.Text = input.KeyCode.Name
+                            keyBtn.TextColor3 = Color3.fromRGB(199, 210, 254)
+                            pcall(kCallback, input.KeyCode)
+                        end
+                    end)
+                end)
+
+                function KeybindControl:Set(kc)
+                    self.Value = kc
+                    keyBtn.Text = kc.Name
+                end
+
+                function KeybindControl:Get()
+                    return self.Value
+                end
+
+                return KeybindControl
+            end
+
+            table.insert(TabObj.Sections, SectionObj)
+            return SectionObj
+        end
+
+        table.insert(WindowObj.Tabs, TabObj)
+
+        -- Auto-select first tab
+        if #WindowObj.Tabs == 1 then
+            activateThisTab()
+        end
+
+        return TabObj
+    end
+
+    table.insert(self.Windows, WindowObj)
+    self.ActiveWindow = WindowObj
+    return WindowObj
+end
+
+return Library
