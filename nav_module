@@ -1,20 +1,45 @@
 --!nocheck
 --!nolint
-local ctx = ...
-if typeof(ctx) ~= "table" then ctx = {} end
-local SHARED = ctx.SHARED or getfenv(0)
+local ctx = (typeof(...) == "table" and ...) or {}
 
 local Workspace, Players = game:GetService("Workspace"), game:GetService("Players")
 local LP = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
-local Vec3, CF, Angles = Vector3.new, CFrame.new, CFrame.Angles
-local min, max, clamp, floor, ceil, round, abs = math.min, math.max, math.clamp, math.floor, math.ceil, math.round, math.abs
-local clock, task_wait = os.clock, task.wait
+local Vec3, CF = Vector3.new, CFrame.new
+local min, max, abs, clamp, floor, round, ceil = math.min, math.max, math.abs, math.clamp, math.floor, math.round, math.ceil
+local clock, task_wait, insert, remove = os.clock, task.wait, table.insert, table.remove
 
-local function char() return (ctx.Utils and ctx.Utils.char and ctx.Utils.char()) or LP.Character end
-local function root() return (ctx.Utils and ctx.Utils.root and ctx.Utils.root()) or (char() and char():FindFirstChild("HumanoidRootPart")) end
-local function hum() return (ctx.Utils and ctx.Utils.hum and ctx.Utils.hum()) or (char() and char():FindFirstChildOfClass("Humanoid")) end
+local function char()
+    return (ctx.Utils and ctx.Utils.char and ctx.Utils.char())
+        or (ctx.char and ctx.char())
+        or LP.Character
+end
 
+local function root()
+    return (ctx.Utils and ctx.Utils.root and ctx.Utils.root())
+        or (ctx.root and ctx.root())
+        or (char() and char():FindFirstChild("HumanoidRootPart"))
+end
+
+local function hum()
+    return (ctx.Utils and ctx.Utils.hum and ctx.Utils.hum())
+        or (ctx.hum and ctx.hum())
+        or (char() and char():FindFirstChildOfClass("Humanoid"))
+end
+
+local function getHorse()
+    return (ctx.Movement and ctx.Movement.myHorse and ctx.Movement.myHorse())
+        or (ctx.myHorse and ctx.myHorse())
+end
+
+local function log(msg, color, tag)
+    local fn = (ctx.Logging and ctx.Logging.logAction) or ctx.logAction
+    if fn then fn("NAV", msg, color or Color3.fromRGB(80, 200, 255), tag or "TRAVEL") end
+end
+
+-- ==========================================
+-- HARDWARE DRIVER & MOTION
+-- ==========================================
 local keypressFn = keypress or (syn and syn.keypress) or (fluxus and fluxus.keypress)
 local keyreleaseFn = keyrelease or (syn and syn.keyrelease) or (fluxus and fluxus.keyrelease)
 local keyclickFn = keyclick
@@ -25,195 +50,95 @@ local function tapSpace()
         pcall(keypressFn, 0x20); task_wait(0.035); pcall(keyreleaseFn, 0x20)
     end
     if keyreleaseFn then pcall(keyreleaseFn, 0x20) end
-    local h = hum(); if h then pcall(function() h.Jump = false end) end
+    local h = hum()
+    if h then pcall(function() h.Jump = false end) end
 end
-SHARED.tapSpace = tapSpace
 
-local GRID_SIZE = 3.5
-local MAX_STEP_UP = 2.4
-local MAX_SINGLE_JUMP = 5.2
-local MAX_DOUBLE_JUMP = 8.5
-local MAX_DROP_DOWN = 18.0
+local function stopMotion(h)
+    if h then pcall(function() h:Move(Vec3(0,0,0), false); h.WalkSpeed = 16; h.Jump = false end) end
+    if keyreleaseFn then pcall(keyreleaseFn, 0x10); pcall(keyreleaseFn, 0x20) end
+end
 
-local VIZ_FOLDER_NAME = "_BaritoneNavVisuals"
-local existingFolder = Workspace:FindFirstChild(VIZ_FOLDER_NAME)
-if existingFolder then existingFolder:Destroy() end
-
-local vizFolder = Instance.new("Folder")
-vizFolder.Name = VIZ_FOLDER_NAME
-vizFolder.Parent = Workspace
-
-local routeFolder = Instance.new("Folder", vizFolder)
-routeFolder.Name = "ActiveRoute"
-local targetFolder = Instance.new("Folder", vizFolder)
-targetFolder.Name = "ActiveTarget"
-
-local rpGround = RaycastParams.new()
+-- ==========================================
+-- CONSTANTS & RAYCASTING
+-- ==========================================
+local GRID_SIZE, MAX_STEP_UP, MAX_SINGLE_JUMP, MAX_DOUBLE_JUMP, MAX_DROP_DOWN = 3.5, 2.4, 5.2, 8.5, 18.0
+local rpGround, rpBody = RaycastParams.new(), RaycastParams.new()
 rpGround.FilterType, rpGround.IgnoreWater = Enum.RaycastFilterType.Exclude, false
-local rpBody = RaycastParams.new()
 rpBody.FilterType = Enum.RaycastFilterType.Exclude
 
 local function updateFilters()
-    local c = char()
-    local ex = { vizFolder }
-    if c then table.insert(ex, c) end
-    if SHARED.myHorse then
-        local mh = SHARED.myHorse()
-        if mh then table.insert(ex, mh) end
-    end
+    local ex, c = {}, char()
+    if c then insert(ex, c) end
+    local h = getHorse()
+    if h then insert(ex, h) end
     rpGround.FilterDescendantsInstances, rpBody.FilterDescendantsInstances = ex, ex
 end
 
-local function clearRouteVisuals() routeFolder:ClearAllChildren() end
-local function clearAllVisuals() routeFolder:ClearAllChildren(); targetFolder:ClearAllChildren() end
-
-local function drawTargetBeacon(targetPos: Vector3)
-    targetFolder:ClearAllChildren()
-    local ring = Instance.new("Part")
-    ring.Shape, ring.Size, ring.CFrame = Enum.PartType.Cylinder, Vec3(0.2, 5.5, 5.5), CF(targetPos + Vec3(0, 0.1, 0)) * Angles(0, 0, 1.5708)
-    ring.Anchored, ring.CanCollide, ring.CanQuery, ring.Material, ring.Color, ring.Transparency, ring.Parent = true, false, false, Enum.Material.Neon, Color3.fromRGB(0, 255, 180), 0.2, targetFolder
-
-    local pillar = Instance.new("Part")
-    pillar.Shape, pillar.Size, pillar.CFrame = Enum.PartType.Cylinder, Vec3(120, 0.8, 0.8), CF(targetPos + Vec3(0, 60, 0)) * Angles(0, 0, 1.5708)
-    pillar.Anchored, pillar.CanCollide, pillar.CanQuery, pillar.Material, pillar.Color, pillar.Transparency, pillar.Parent = true, false, false, Enum.Material.Neon, Color3.fromRGB(0, 255, 180), 0.6, targetFolder
+local function classifyJump(h)
+    return (h > MAX_SINGLE_JUMP and h <= MAX_DOUBLE_JUMP and "double")
+        or (h > MAX_STEP_UP and h <= MAX_SINGLE_JUMP and "single")
+        or "none"
 end
 
-local function createBeam(p1: Vector3, p2: Vector3, color: Color3, parent: Instance)
-    local part1 = Instance.new("Part"); part1.Size, part1.Position, part1.Anchored, part1.CanCollide, part1.CanQuery, part1.Transparency, part1.Parent = Vec3(0.05, 0.05, 0.05), p1, true, false, false, 1, parent
-    local part2 = Instance.new("Part"); part2.Size, part2.Position, part2.Anchored, part2.CanCollide, part2.CanQuery, part2.Transparency, part2.Parent = Vec3(0.05, 0.05, 0.05), p2, true, false, false, 1, parent
-    local a1, a2 = Instance.new("Attachment", part1), Instance.new("Attachment", part2)
-    local beam = Instance.new("Beam")
-    beam.Attachment0, beam.Attachment1, beam.Color, beam.Width0, beam.Width1, beam.FaceCamera, beam.Segments, beam.Parent = a1, a2, ColorSequence.new(color), 0.25, 0.25, true, 1, parent
-    return beam
-end
-
-local function createWaypointMarker(pos: Vector3, labelText: string, color: Color3, parent: Instance)
-    local marker = Instance.new("Part")
-    marker.Shape, marker.Size, marker.Position, marker.Anchored, marker.CanCollide, marker.CanQuery, marker.Material, marker.Color, marker.Transparency, marker.Parent = Enum.PartType.Ball, Vec3(0.85, 0.85, 0.85), pos, true, false, false, Enum.Material.Neon, color, 0.15, parent
-    local bb = Instance.new("BillboardGui", marker); bb.Size, bb.StudsOffset, bb.AlwaysOnTop, bb.Adornee = UDim2.fromOffset(90, 22), Vec3(0, 1.2, 0), true, marker
-    local label = Instance.new("TextLabel", bb); label.Size, label.BackgroundTransparency, label.TextColor3, label.TextStrokeTransparency, label.TextSize, label.Font, label.Text = UDim2.fromScale(1, 1), 1, color, 0.3, 11, Enum.Font.GothamBold, labelText
-    return marker
-end
-
-local function raycastPiercing(origin: Vector3, direction: Vector3, params: RaycastParams): RaycastResult?
-    local currentOrigin = origin
-    local distRemaining = direction.Magnitude
-    if distRemaining < 0.1 then return nil end
-    local dirUnit = direction.Unit
-
-    local filterList = table.clone(params.FilterDescendantsInstances)
-    local localParams = RaycastParams.new()
-    localParams.FilterType, localParams.IgnoreWater = params.FilterType, params.IgnoreWater
-
-    for _ = 1, 8 do
-        localParams.FilterDescendantsInstances = filterList
-        local hit = Workspace:Raycast(currentOrigin, dirUnit * distRemaining, localParams)
-        if not hit then return nil end
-
-        local inst = hit.Instance
-        if inst and (inst.CanCollide or inst:IsA("Terrain")) then
-            if inst:IsA("Terrain") then
-                if hit.Normal.Y < 0.55 then return hit end
-            else
-                return hit
-            end
-        end
-
-        table.insert(filterList, inst)
-        local stepDist = (hit.Position - currentOrigin).Magnitude + 0.1
-        distRemaining = distRemaining - stepDist
-        if distRemaining <= 0.2 then break end
-        currentOrigin = hit.Position + (dirUnit * 0.1)
-    end
-    return nil
-end
-
+-- ==========================================
+-- GEOMETRY & OBSTACLES
+-- ==========================================
 local function findWalkableFloor(origin: Vector3, searchDepth: number)
-    local currentOrigin = origin
-    local depthLeft = searchDepth
-
+    local curOrigin, depthLeft = origin, searchDepth
     for _ = 1, 5 do
-        local hit = Workspace:Raycast(currentOrigin, Vec3(0, -depthLeft, 0), rpGround)
+        local hit = Workspace:Raycast(curOrigin, Vec3(0, -depthLeft, 0), rpGround)
         if not hit then return nil end
-
-        local mat, name = hit.Material, (hit.Instance and hit.Instance.Name:lower()) or ""
-        if mat == Enum.Material.Water or name:find("water") or name:find("ocean") or name:find("river") then return nil end
-
-        local isProp = name:find("barrel") or name:find("crate") or name:find("prop") or name:find("trash")
-        if not isProp and hit.Instance and hit.Instance:IsA("BasePart") and not hit.Instance:IsA("Terrain") then
-            local sz = hit.Instance.Size
-            if sz.X < 2.5 and sz.Z < 2.5 and sz.Y > 1.8 then isProp = true end
-        end
-
-        if hit.Instance and (hit.Instance.CanCollide or hit.Instance:IsA("Terrain")) and not isProp then
-            return hit
-        end
-
-        local dropped = (currentOrigin.Y - hit.Position.Y) + 0.1
+        if hit.Material == Enum.Material.Water then return nil end
+        local name = hit.Instance and hit.Instance.Name:lower() or ""
+        if name:find("water") or name:find("ocean") or name:find("river") then return nil end
+        if hit.Instance and (hit.Instance.CanCollide or hit.Instance:IsA("Terrain")) then return hit end
+        local dropped = (curOrigin.Y - hit.Position.Y) + 0.1
         depthLeft = depthLeft - dropped
         if depthLeft <= 0 then break end
-        currentOrigin = hit.Position - Vec3(0, 0.1, 0)
+        curOrigin = hit.Position - Vec3(0, 0.1, 0)
     end
     return nil
+end
+
+local function isSolidWall(hit: RaycastResult?): boolean
+    if not hit or not hit.Instance then return false end
+    if not hit.Instance.CanCollide and not hit.Instance:IsA("Terrain") then return false end
+    return hit.Instance:IsA("Terrain") and (hit.Normal.Y < 0.55) or true
 end
 
 local function getObstacleTop(hitPos: Vector3, baseFloorY: number): (number, boolean, number)
-    local probeY = baseFloorY + MAX_DOUBLE_JUMP + 2.0
-    local topHit = findWalkableFloor(Vec3(hitPos.X, probeY, hitPos.Z), MAX_DOUBLE_JUMP + 4.0)
-
+    local topHit = findWalkableFloor(Vec3(hitPos.X, baseFloorY + MAX_DOUBLE_JUMP + 2.0, hitPos.Z), MAX_DOUBLE_JUMP + 4.0)
     if topHit then
         local topY = topHit.Position.Y
-        local obstacleHeight = topY - baseFloorY
-        local ceiling = raycastPiercing(Vec3(hitPos.X, topY + 0.5, hitPos.Z), Vec3(0, 4.8, 0), rpBody)
-        return obstacleHeight, ceiling == nil, topY
+        local ceiling = Workspace:Raycast(Vec3(hitPos.X, topY + 0.5, hitPos.Z), Vec3(0, 4.8, 0), rpBody)
+        return topY - baseFloorY, not isSolidWall(ceiling), topY
     end
     return math.huge, false, baseFloorY
 end
 
 local function evaluateCell(worldX: number, worldZ: number, refFloorY: number)
     local probeOrigin = Vec3(worldX, refFloorY + MAX_DOUBLE_JUMP + 1.5, worldZ)
-    local totalDepth = MAX_DROP_DOWN + MAX_DOUBLE_JUMP + 2.5
-
-    local floorHit = nil
+    local totalDepth, floorHit = MAX_DROP_DOWN + MAX_DOUBLE_JUMP + 2.5, nil
     for _ = 1, 4 do
         floorHit = findWalkableFloor(probeOrigin, totalDepth)
         if not floorHit then return nil end
-
         local floorY = floorHit.Position.Y
         if floorY > (refFloorY + MAX_DOUBLE_JUMP + 0.5) then
-            local dropAmount = (probeOrigin.Y - floorY) + 0.2
-            totalDepth = totalDepth - dropAmount
+            totalDepth = totalDepth - ((probeOrigin.Y - floorY) + 0.2)
             if totalDepth <= 0 then return nil end
             probeOrigin = Vec3(worldX, floorY - 0.2, worldZ)
-        else
-            break
-        end
+        else break end
     end
-
     if not floorHit then return nil end
     local floorY = floorHit.Position.Y
-
-    local ceiling = raycastPiercing(Vec3(worldX, floorY + 0.5, worldZ), Vec3(0, 5.0, 0), rpBody)
-    if ceiling then return nil end
-
-    local waistY = floorY + 1.8
-    local cl = 1.4
-    local CARDINALS = { Vec3(cl, 0, 0), Vec3(-cl, 0, 0), Vec3(0, 0, cl), Vec3(0, 0, -cl) }
-    local waistPos = Vec3(worldX, waistY, worldZ)
-    for _, dir in ipairs(CARDINALS) do
-        if raycastPiercing(waistPos, dir, rpBody) then return nil end
-    end
+    if isSolidWall(Workspace:Raycast(Vec3(worldX, floorY + 0.5, worldZ), Vec3(0, 5.0, 0), rpBody)) then return nil end
 
     local nearEdge = false
-    local EDGE_OFFSETS = { Vec3(2.0, 0, 0), Vec3(-2.0, 0, 0), Vec3(0, 0, 2.0), Vec3(0, 0, -2.0) }
-    for _, off in ipairs(EDGE_OFFSETS) do
+    for _, off in ipairs({ Vec3(2, 0, 0), Vec3(-2, 0, 0), Vec3(0, 0, 2), Vec3(0, 0, -2) }) do
         local edgeHit = findWalkableFloor(Vec3(worldX + off.X, floorY + 2.0, worldZ + off.Z), 8.0)
-        if not edgeHit or (floorY - edgeHit.Position.Y) > 5.0 then
-            nearEdge = true
-            break
-        end
+        if not edgeHit or (floorY - edgeHit.Position.Y) > 5.0 then nearEdge = true; break end
     end
-
     return { pos = Vec3(worldX, floorY + 1.5, worldZ), floorY = floorY, nearEdge = nearEdge }
 end
 
@@ -221,82 +146,75 @@ local function isTraversableBetween(posA: Vector3, posB: Vector3, floorYA: numbe
     local heightDiff = floorYB - floorYA
     if heightDiff > MAX_DOUBLE_JUMP or heightDiff < -MAX_DROP_DOWN then return false, "none" end
 
-    local jumpType = "none"
-    if heightDiff > MAX_STEP_UP and heightDiff <= MAX_SINGLE_JUMP then jumpType = "single"
-    elseif heightDiff > MAX_SINGLE_JUMP and heightDiff <= MAX_DOUBLE_JUMP then jumpType = "double" end
-
+    local jumpType = classifyJump(heightDiff)
     local baseFloor, maxFloor = min(floorYA, floorYB), max(floorYA, floorYB)
-    local waistA, waistB = Vec3(posA.X, maxFloor + 1.8, posA.Z), Vec3(posB.X, maxFloor + 1.8, posB.Z)
-    local waistHit = raycastPiercing(waistA, waistB - waistA, rpBody)
+    local dir = Vec3(posB.X - posA.X, 0, posB.Z - posA.Z)
 
-    if waistHit then
-        local obsHeight, hasHeadroom = getObstacleTop(waistHit.Position, baseFloor)
-        if hasHeadroom and obsHeight <= (MAX_STEP_UP + 0.8) then
-            jumpType = (obsHeight > MAX_STEP_UP) and "single" or "none"
-        else
-            return false, "none"
+    for _, yOff in ipairs({ 1.8, 3.2 }) do
+        local hit = Workspace:Raycast(Vec3(posA.X, maxFloor + yOff, posA.Z), dir, rpBody)
+        if hit and isSolidWall(hit) then
+            local obsHeight, hasHeadroom = getObstacleTop(hit.Position, baseFloor)
+            if not hasHeadroom or obsHeight > MAX_DOUBLE_JUMP then return false, "none" end
+            local needed = classifyJump(obsHeight)
+            if (needed == "double") or (needed == "single" and jumpType == "none") then jumpType = needed end
         end
     end
-
-    local chestA, chestB = Vec3(posA.X, maxFloor + 3.2, posA.Z), Vec3(posB.X, maxFloor + 3.2, posB.Z)
-    if raycastPiercing(chestA, chestB - chestA, rpBody) then return false, "none" end
-
     return true, jumpType
 end
 
 local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, floorYB: number): boolean
-    local horizDiff = Vec3(posB.X - posA.X, 0, posB.Z - posA.Z)
-    local dist = horizDiff.Magnitude
+    local horiz = Vec3(posB.X - posA.X, 0, posB.Z - posA.Z)
+    local dist = horiz.Magnitude
     if dist < 1.0 then return true end
 
-    local fwd = horizDiff.Unit
+    local fwd = horiz.Unit
     local side = Vec3(-fwd.Z, 0, fwd.X)
-    local shoulder = 1.4
     local maxFloor = max(floorYA, floorYB)
     local targetDir = fwd * dist
 
-    local wA = Vec3(posA.X, maxFloor + 1.8, posA.Z)
-    if raycastPiercing(wA, targetDir, rpBody) then return false end
-    if raycastPiercing(wA + (side * shoulder), targetDir, rpBody) then return false end
-    if raycastPiercing(wA - (side * shoulder), targetDir, rpBody) then return false end
-    if raycastPiercing(Vec3(posA.X, maxFloor + 3.4, posA.Z), targetDir, rpBody) then return false end
+    for _, origin in ipairs({
+        Vec3(posA.X, maxFloor + 1.8, posA.Z),
+        Vec3(posA.X, maxFloor + 1.8, posA.Z) + (side * 1.3),
+        Vec3(posA.X, maxFloor + 1.8, posA.Z) - (side * 1.3),
+        Vec3(posA.X, maxFloor + 3.2, posA.Z)
+    }) do
+        if isSolidWall(Workspace:Raycast(origin, targetDir, rpBody)) then return false end
+    end
 
     local steps = clamp(ceil(dist / 3.0), 1, 35)
     for i = 1, steps do
         local alpha = i / (steps + 1)
-        local sample = posA:Lerp(posB, alpha)
-        local expY = floorYA + (floorYB - floorYA) * alpha
-        local floorHit = findWalkableFloor(Vec3(sample.X, expY + 3.5, sample.Z), 10.0)
-        if not floorHit or abs(floorHit.Position.Y - expY) > (MAX_STEP_UP + 1.5) then return false end
+        local sampleHoriz = posA:Lerp(posB, alpha)
+        local expectedY = floorYA + (floorYB - floorYA) * alpha
+        local floorHit = findWalkableFloor(Vec3(sampleHoriz.X, expectedY + 3.5, sampleHoriz.Z), 10.0)
+        if not floorHit or abs(floorHit.Position.Y - expectedY) > (MAX_STEP_UP + 1.5) then return false end
     end
     return true
 end
 
+-- ==========================================
+-- BINARY HEAP WEIGHTED A*
+-- ==========================================
 local function heapPush(heap, item)
-    table.insert(heap, item)
+    insert(heap, item)
     local idx = #heap
     while idx > 1 do
-        local parent = floor(idx / 2)
-        if heap[idx].f < heap[parent].f then
-            heap[idx], heap[parent] = heap[parent], heap[idx]; idx = parent
-        else break end
+        local p = floor(idx / 2)
+        if heap[idx].f < heap[p].f then heap[idx], heap[p] = heap[p], heap[idx]; idx = p else break end
     end
 end
 
 local function heapPop(heap)
     if #heap == 0 then return nil end
-    local top, last = heap[1], table.remove(heap)
+    local top, last = heap[1], remove(heap)
     if #heap > 0 then
         heap[1] = last
         local idx, n = 1, #heap
         while true do
-            local left, right = idx * 2, idx * 2 + 1
-            local smallest = idx
-            if left <= n and heap[left].f < heap[smallest].f then smallest = left end
-            if right <= n and heap[right].f < heap[smallest].f then smallest = right end
-            if smallest ~= idx then
-                heap[idx], heap[smallest] = heap[smallest], heap[idx]; idx = smallest
-            else break end
+            local left, right, sm = idx * 2, (idx * 2) + 1, idx
+            if left <= n and heap[left].f < heap[sm].f then sm = left end
+            if right <= n and heap[right].f < heap[sm].f then sm = right end
+            if sm ~= idx then heap[idx], heap[sm] = heap[sm], heap[idx]; idx = sm else break end
         end
     end
     return top
@@ -304,30 +222,27 @@ end
 
 local DIRS = {
     Vec3(GRID_SIZE, 0, 0), Vec3(-GRID_SIZE, 0, 0), Vec3(0, 0, GRID_SIZE), Vec3(0, 0, -GRID_SIZE),
-    Vec3(GRID_SIZE, 0, GRID_SIZE), Vec3(-GRID_SIZE, 0, GRID_SIZE), Vec3(GRID_SIZE, 0, -GRID_SIZE), Vec3(-GRID_SIZE, 0, -GRID_SIZE),
+    Vec3(GRID_SIZE, 0, GRID_SIZE), Vec3(-GRID_SIZE, 0, GRID_SIZE), Vec3(GRID_SIZE, 0, -GRID_SIZE), Vec3(-GRID_SIZE, 0, -GRID_SIZE)
 }
 
 local function solvePath(startPos: Vector3, goalPos: Vector3)
     updateFilters()
 
-    local startFloorHit = findWalkableFloor(startPos + Vec3(0, 3.0, 0), 8.0)
-    local startFloorY = startFloorHit and startFloorHit.Position.Y or (startPos.Y - 2.5)
-    local goalFloorHit = findWalkableFloor(goalPos + Vec3(0, 3.0, 0), 14.0)
-    local goalFloorY = goalFloorHit and goalFloorHit.Position.Y or goalPos.Y
+    local startHit = findWalkableFloor(startPos + Vec3(0, 3.0, 0), 8.0)
+    local startFloorY = startHit and startHit.Position.Y or (startPos.Y - 2.5)
+    local goalHit = findWalkableFloor(goalPos + Vec3(0, 3.0, 0), 14.0)
+    local goalFloorY = goalHit and goalHit.Position.Y or goalPos.Y
 
     local startFloor, goalFloor = Vec3(startPos.X, startFloorY, startPos.Z), Vec3(goalPos.X, goalFloorY, goalPos.Z)
     local resolvedGoal = goalFloor + Vec3(0, 1.5, 0)
 
     if canTraverseDirect(startFloor, goalFloor, startFloorY, goalFloorY) then
-        local hDiff = goalFloorY - startFloorY
-        local jType = (hDiff > MAX_STEP_UP and hDiff <= MAX_SINGLE_JUMP and "single") or (hDiff > MAX_SINGLE_JUMP and hDiff <= MAX_DOUBLE_JUMP and "double") or "none"
-        return { { pos = resolvedGoal, floorY = goalFloorY, jumpType = jType } }, true
+        return { { pos = resolvedGoal, floorY = goalFloorY, jumpType = classifyJump(goalFloorY - startFloorY) } }, true
     end
 
     local openHeap, cameFrom, gScore, closedSet, jumpReq = {}, {}, {}, {}, {}
-    local function key(gx: number, gz: number) return gx .. ":" .. gz end
+    gScore["0:0"] = 0
 
-    gScore[key(0, 0)] = 0
     local H_WEIGHT = 1.4
     local initialDist = (startFloor - goalFloor).Magnitude
     heapPush(openHeap, { gx = 0, gz = 0, pos = startFloor + Vec3(0, 1.5, 0), floorY = startFloorY, f = initialDist * H_WEIGHT })
@@ -338,33 +253,29 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         local current = heapPop(openHeap)
         if not current then break end
 
-        local currentFloor = Vec3(current.pos.X, current.floorY, current.pos.Z)
-        local distToGoal = (currentFloor - goalFloor).Magnitude
+        local curFloor = Vec3(current.pos.X, current.floorY, current.pos.Z)
+        local distToGoal = (curFloor - goalFloor).Magnitude
         if distToGoal < bestDist then bestDist, bestNode = distToGoal, current end
-        if distToGoal <= GRID_SIZE * 1.4 or canTraverseDirect(currentFloor, goalFloor, current.floorY, goalFloorY) then
-            bestNode, reachedGoal = current, true
-            break
+        if distToGoal <= GRID_SIZE * 1.4 or canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
+            bestNode, reachedGoal = current, true; break
         end
 
-        local curKey = key(current.gx, current.gz)
+        local curKey = current.gx .. ":" .. current.gz
         closedSet[curKey] = true
         local curG = gScore[curKey] or 0
 
         for _, offset in ipairs(DIRS) do
             local nGX, nGZ = current.gx + round(offset.X / GRID_SIZE), current.gz + round(offset.Z / GRID_SIZE)
-            local nKey = key(nGX, nGZ)
+            local nKey = nGX .. ":" .. nGZ
 
             if not closedSet[nKey] then
                 local wx, wz = startFloor.X + (nGX * GRID_SIZE), startFloor.Z + (nGZ * GRID_SIZE)
                 local neighbor = evaluateCell(wx, wz, current.floorY)
-
                 if neighbor then
                     local canTraverse, jType = isTraversableBetween(current.pos, neighbor.pos, current.floorY, neighbor.floorY)
                     if canTraverse then
-                        local stepDist = (current.pos - neighbor.pos).Magnitude
-                        local jumpPenalty = (jType == "double" and 4.0) or (jType == "single" and 1.5) or 0
-                        local tentativeG = curG + stepDist + jumpPenalty + (neighbor.nearEdge and 14.0 or 0)
-
+                        local penalty = (jType == "double" and 4.0) or (jType == "single" and 1.5) or 0 + (neighbor.nearEdge and 14.0 or 0)
+                        local tentativeG = curG + (current.pos - neighbor.pos).Magnitude + penalty
                         if tentativeG < (gScore[nKey] or math.huge) then
                             cameFrom[nKey], jumpReq[nKey], gScore[nKey] = current, jType, tentativeG
                             local hDist = (Vec3(wx, neighbor.floorY, wz) - goalFloor).Magnitude
@@ -376,20 +287,16 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         end
     end
 
-    local rawPath = {}
-    local curr = bestNode
+    local rawPath, curr = {}, bestNode
     while curr do
-        local cKey = key(curr.gx, curr.gz)
-        table.insert(rawPath, 1, { pos = curr.pos, floorY = curr.floorY, jumpType = jumpReq[cKey] or "none" })
-        curr = cameFrom[cKey]
+        local k = curr.gx .. ":" .. curr.gz
+        insert(rawPath, 1, { pos = curr.pos, floorY = curr.floorY, jumpType = jumpReq[k] or "none" })
+        curr = cameFrom[k]
     end
-
     if #rawPath <= 1 and not reachedGoal then return nil, false end
 
     if reachedGoal and (rawPath[#rawPath].pos - resolvedGoal).Magnitude > 1.5 then
-        local hDiff = goalFloorY - rawPath[#rawPath].floorY
-        local jType = (hDiff > MAX_STEP_UP and hDiff <= MAX_SINGLE_JUMP and "single") or (hDiff > MAX_SINGLE_JUMP and hDiff <= MAX_DOUBLE_JUMP and "double") or "none"
-        table.insert(rawPath, { pos = resolvedGoal, floorY = goalFloorY, jumpType = jType })
+        insert(rawPath, { pos = resolvedGoal, floorY = goalFloorY, jumpType = classifyJump(goalFloorY - rawPath[#rawPath].floorY) })
     end
 
     local smoothed, cIdx = { rawPath[1] }, 1
@@ -399,27 +306,28 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
             if canTraverseDirect(rawPath[cIdx].pos, rawPath[nextIdx].pos, rawPath[cIdx].floorY, rawPath[nextIdx].floorY) then break end
             nextIdx = nextIdx - 1
         end
-        table.insert(smoothed, rawPath[nextIdx])
+        insert(smoothed, rawPath[nextIdx])
         cIdx = nextIdx
     end
     return smoothed, reachedGoal
 end
 
-local function executeJumpClimb(targetWpPos: Vector3, requiredClearY: number, isDoubleJump: boolean, myToken: number, NAV: any)
+-- ==========================================
+-- JUMP CLIMB MOTOR
+-- ==========================================
+local function executeJumpClimb(targetWpPos: Vector3, requiredClearY: number, isDouble: boolean, myToken: number, NAV: any)
     local r, h = root(), hum()
     if not r or not h or h.Health <= 0 then return false end
+    h:Move(Vec3(0,0,0), false)
 
-    h:Move(Vec3(0, 0, 0), false)
     local climbStart, cleared = clock(), false
-
     while (clock() - climbStart < 3.2) and (NAV.walkToken == myToken) do
         r, h = root(), hum()
         if not r or not h or h.Health <= 0 then break end
         if (r.Position.Y - 2.2) >= (requiredClearY - 0.3) then cleared = true; break end
-
-        h:Move(Vec3(0, 0, 0), false)
+        h:Move(Vec3(0,0,0), false)
         tapSpace()
-        if isDoubleJump then task_wait(0.20); tapSpace(); task_wait(0.45) else task_wait(0.65) end
+        if isDouble then task_wait(0.20); tapSpace(); task_wait(0.45) else task_wait(0.65) end
     end
 
     if cleared and NAV.walkToken == myToken then
@@ -427,38 +335,58 @@ local function executeJumpClimb(targetWpPos: Vector3, requiredClearY: number, is
         while (clock() - pushStart < 0.40) and (NAV.walkToken == myToken) do
             r, h = root(), hum()
             if not r or not h or h.Health <= 0 then break end
-            h:MoveTo(targetWpPos); task_wait(0.05)
+            h:MoveTo(targetWpPos)
+            task_wait(0.05)
         end
     end
     return cleared
 end
 
-local NAV = {
-    walkToken = 0,
-    isWalking = false,
-    activeTarget = nil,
-    drawBeacon = drawTargetBeacon,
-    clearVisuals = clearAllVisuals,
-    clearRoute = clearRouteVisuals,
-    tapSpace = tapSpace,
+-- ==========================================
+-- MODULE DEFINITION & CLEAN EVENT HOOKS
+-- ==========================================
+local NAV = {}
+NAV.__index = NAV
+
+NAV.walkToken = 0
+NAV.isWalking = false
+NAV.activeTarget = nil
+NAV.activeRoute = nil
+NAV.tapSpace = tapSpace
+
+NAV.visuals = {
+    onTarget = nil, -- (targetPos: Vector3?) -> ()
+    onRoute = nil,  -- (waypoints: {any}?) -> ()
+    onStep = nil,   -- (index: number, currentWp: any) -> ()
+    onClear = nil,  -- () -> ()
 }
+
+local function emitVisual(hookName, ...)
+    local fn = NAV.visuals[hookName]
+    if fn then pcall(fn, ...) end
+end
+
+function NAV.setContext(newCtx)
+    if typeof(newCtx) == "table" then
+        ctx = newCtx
+    end
+end
+NAV.init = NAV.setContext
 
 function NAV.cancel()
     NAV.walkToken = NAV.walkToken + 1
     NAV.isWalking = false
-    clearAllVisuals()
-    local h = hum()
-    if h then
-        pcall(function() h:Move(Vec3(0, 0, 0), false); h.WalkSpeed = 16; h.Jump = false end)
-    end
-    if keyreleaseFn then pcall(keyreleaseFn, 0x10); pcall(keyreleaseFn, 0x20) end
+    NAV.activeTarget = nil
+    NAV.activeRoute = nil
+    emitVisual("onClear")
+    stopMotion(hum())
 end
 
 function NAV.walkTo(targetPos: Vector3, options: any?): boolean
     if not targetPos then return false end
     local opt = options or {}
     local maxTimeout, stopDist = opt.timeout or 120, opt.stopDist or 3.8
-    local allowSprint, showViz = opt.sprint ~= false, opt.visualize ~= false
+    local allowSprint = opt.sprint ~= false
 
     local r, h = root(), hum()
     if not r or not h or h.Health <= 0 then return false end
@@ -467,84 +395,79 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
     local myToken = NAV.walkToken
     NAV.isWalking, NAV.activeTarget = true, targetPos
 
-    if showViz then drawTargetBeacon(targetPos) else clearAllVisuals() end
+    emitVisual("onTarget", targetPos)
+
     local totalTimeout, success = clock(), false
 
     while NAV.walkToken == myToken and (clock() - totalTimeout < maxTimeout) do
         r, h = root(), hum()
         if not r or not h or h.Health <= 0 then break end
-
-        local distToBeacon = (targetPos - r.Position).Magnitude
-        if distToBeacon <= stopDist then success = true; break end
+        if (targetPos - r.Position).Magnitude <= stopDist then success = true; break end
 
         local waypoints, isComplete = solvePath(r.Position, targetPos)
         if not waypoints or #waypoints == 0 then
-            local escapes = { -r.CFrame.LookVector * 4.0, r.CFrame.RightVector * 4.0, -r.CFrame.RightVector * 4.0 }
-            for _, esc in ipairs(escapes) do
+            local l, rt = r.CFrame.LookVector * 4, r.CFrame.RightVector * 4
+            for _, esc in ipairs({ -l, rt, -rt, -l + rt, -l - rt }) do
                 local testPos = r.Position + esc
                 waypoints, isComplete = solvePath(testPos, targetPos)
                 if waypoints and #waypoints > 1 then
-                    table.insert(waypoints, 1, { pos = testPos, floorY = testPos.Y - 1.5, jumpType = "none" })
+                    insert(waypoints, 1, { pos = testPos, floorY = testPos.Y - 1.5, jumpType = "none" })
                     break
                 end
             end
         end
 
-        if not waypoints or #waypoints == 0 then break end
-
-        if showViz then
-            clearRouteVisuals()
-            for i = 1, #waypoints do
-                local wp = waypoints[i]
-                local col = (wp.jumpType == "double" and Color3.fromRGB(255, 80, 220)) or (wp.jumpType == "single" and Color3.fromRGB(255, 160, 40)) or Color3.fromRGB(0, 200, 255)
-                createWaypointMarker(wp.pos, `#{i}`, col, routeFolder)
-                if i < #waypoints then createBeam(wp.pos, waypoints[i + 1].pos, col, routeFolder) end
-            end
+        if not waypoints or #waypoints == 0 then
+            log("Navigation stalled: No clear trajectory found", Color3.fromRGB(245, 140, 60), "NAV")
+            break
         end
 
-        local wpIndex, lastRecalcCheck, wasFalling = 1, clock(), false
-        local stuckAnchorPos, stuckCheckTime, stuckAttempts = r.Position, clock(), 0
+        NAV.activeRoute = waypoints
+        emitVisual("onRoute", waypoints)
+
+        local wpIndex, lastRecalc, wasFalling = 1, clock(), false
+        local stuckAnchor, stuckTime, stuckAttempts = r.Position, clock(), 0
 
         while wpIndex <= #waypoints and NAV.walkToken == myToken do
             r, h = root(), hum()
             if not r or not h or h.Health <= 0 then break end
 
-            local hState = h:GetState()
-            if hState == Enum.HumanoidStateType.Ragdoll or hState == Enum.HumanoidStateType.FallingDown or hState == Enum.HumanoidStateType.Physics then
+            local st = h:GetState()
+            if st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown or st == Enum.HumanoidStateType.Physics then
                 pcall(function() h:ChangeState(Enum.HumanoidStateType.GettingUp); h.PlatformStand = false end)
                 task_wait(0.2)
             end
-
             if h.Sit then h.Sit = false; tapSpace() end
             if h.PlatformStand then h.PlatformStand = false end
 
-            if hState == Enum.HumanoidStateType.Freefall then wasFalling = true
+            if st == Enum.HumanoidStateType.Freefall then wasFalling = true
             elseif wasFalling and (h.FloorMaterial ~= Enum.Material.Air) then wasFalling = false; break end
 
-            if hState == Enum.HumanoidStateType.Swimming then tapSpace(); task_wait(0.2); break end
+            if st == Enum.HumanoidStateType.Swimming then tapSpace(); task_wait(0.2); break end
 
             local currentWp = waypoints[wpIndex]
             if (currentWp.pos.Y - r.Position.Y) > (MAX_DOUBLE_JUMP + 1.0) then break end
 
+            emitVisual("onStep", wpIndex, currentWp)
+
             local toWp = currentWp.pos - r.Position
             local flatDist = Vec3(toWp.X, 0, toWp.Z).Magnitude
-            distToBeacon = (targetPos - r.Position).Magnitude
-            if distToBeacon <= stopDist then success = true; break end
+            if (targetPos - r.Position).Magnitude <= stopDist then success = true; break end
 
-            local isHighStep = (currentWp.pos.Y - r.Position.Y) > MAX_STEP_UP
-            local fwdDir = flatDist > 0.2 and toWp.Unit or r.CFrame.LookVector
-            local fwdHit = raycastPiercing(r.Position + Vec3(0, 1.0, 0), fwdDir * 3.0, rpBody)
+            local fwd = flatDist > 0.2 and toWp.Unit or r.CFrame.LookVector
+            local fwdHit = Workspace:Raycast(r.Position + Vec3(0, 1, 0), fwd * 3.0, rpBody)
             local obsHeight, hasHeadroom, obsTopY = 0, false, 0
-            if fwdHit then obsHeight, hasHeadroom, obsTopY = getObstacleTop(fwdHit.Position, r.Position.Y - 2.2) end
+            if fwdHit and isSolidWall(fwdHit) then
+                obsHeight, hasHeadroom, obsTopY = getObstacleTop(fwdHit.Position, r.Position.Y - 2.2)
+            end
 
             local reqJump = (currentWp.jumpType ~= "none" and flatDist <= 3.2)
-            local reqClimb = (hasHeadroom and obsHeight > MAX_STEP_UP and obsHeight <= (MAX_STEP_UP + 0.8) and flatDist <= 2.8)
-            local reqStep = (isHighStep and flatDist <= 2.8)
+            local reqClimb = (hasHeadroom and obsHeight > MAX_STEP_UP and obsHeight <= MAX_DOUBLE_JUMP and flatDist <= 2.8)
+            local reqStep = ((currentWp.pos.Y - r.Position.Y) > MAX_STEP_UP and flatDist <= 2.8)
 
             if reqJump or reqClimb or reqStep then
-                local isDbl = (currentWp.jumpType == "double")
-                local targetY = max(currentWp.pos.Y - 1.5, obsTopY)
-                executeJumpClimb(currentWp.pos, targetY, isDbl, myToken, NAV)
+                local isDbl = (currentWp.jumpType == "double") or (obsHeight > MAX_SINGLE_JUMP)
+                executeJumpClimb(currentWp.pos, max(currentWp.pos.Y - 1.5, obsTopY), isDbl, myToken, NAV)
             end
 
             if flatDist <= 3.2 then
@@ -552,36 +475,38 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 if wpIndex <= #waypoints then currentWp = waypoints[wpIndex] end
             end
 
-            if allowSprint and distToBeacon > 20 then
-                pcall(function() h.WalkSpeed = 22; if keypressFn then pcall(keypressFn, 0x10) end end)
-            else
-                pcall(function() h.WalkSpeed = 16; if keyreleaseFn then pcall(keyreleaseFn, 0x10) end end)
+            local sprinting = allowSprint and (targetPos - r.Position).Magnitude > 20
+            h.WalkSpeed = sprinting and 22 or 16
+            if keypressFn and keyreleaseFn then
+                pcall(sprinting and keypressFn or keyreleaseFn, 0x10)
             end
 
             h:MoveTo(currentWp.pos)
 
-            if clock() - lastRecalcCheck > 0.40 then
-                lastRecalcCheck = clock()
-                local rFloor, gFloor = r.Position.Y - 1.5, targetPos.Y
-                if canTraverseDirect(r.Position, targetPos, rFloor, gFloor) then
-                    local hDiff = gFloor - rFloor
-                    local jType = (hDiff > MAX_STEP_UP and hDiff <= MAX_SINGLE_JUMP and "single") or (hDiff > MAX_SINGLE_JUMP and hDiff <= MAX_DOUBLE_JUMP and "double") or "none"
-                    waypoints = { { pos = targetPos + Vec3(0, 1.5, 0), floorY = gFloor, jumpType = jType } }
+            -- Dynamic shortcut check
+            if clock() - lastRecalc > 0.40 then
+                lastRecalc = clock()
+                local rF, gF = r.Position.Y - 1.5, targetPos.Y
+                if canTraverseDirect(r.Position, targetPos, rF, gF) then
+                    waypoints = { { pos = targetPos + Vec3(0, 1.5, 0), floorY = gF, jumpType = classifyJump(gF - rF) } }
+                    NAV.activeRoute = waypoints
+                    emitVisual("onRoute", waypoints)
                     wpIndex = 1
                     break
                 end
             end
 
-            if clock() - stuckCheckTime >= 1.4 then
-                if (r.Position - stuckAnchorPos).Magnitude < 1.2 and flatDist > 3.0 then
+            -- Sustained stuck watchdog
+            if clock() - stuckTime >= 1.4 then
+                if (r.Position - stuckAnchor).Magnitude < 1.2 and flatDist > 3.0 then
                     stuckAttempts = stuckAttempts + 1
-                    if stuckAttempts >= 2 then
-                        h:Move(-r.CFrame.LookVector, false); task_wait(0.35); break
-                    end
+                    local isDbl = (obsHeight > MAX_SINGLE_JUMP) or (currentWp.jumpType == "double")
+                    executeJumpClimb(currentWp.pos, max(currentWp.pos.Y - 1.5, obsTopY), isDbl, myToken, NAV)
+                    if stuckAttempts >= 3 then break end
                 else
                     stuckAttempts = 0
                 end
-                stuckAnchorPos, stuckCheckTime = r.Position, clock()
+                stuckAnchor, stuckTime = r.Position, clock()
             end
             task_wait(0.05)
         end
@@ -589,14 +514,14 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
         task_wait(0.05)
     end
 
-    pcall(function()
-        local hFinal = hum()
-        if hFinal then hFinal:Move(Vec3(0, 0, 0), false); hFinal.WalkSpeed = 16; hFinal.Jump = false end
-        if keyreleaseFn then pcall(keyreleaseFn, 0x10); pcall(keyreleaseFn, 0x20) end
-    end)
-
-    if NAV.walkToken == myToken then NAV.isWalking = false; clearAllVisuals() end
+    stopMotion(hum())
+    if NAV.walkToken == myToken then
+        NAV.isWalking = false
+        NAV.activeTarget = nil
+        NAV.activeRoute = nil
+        emitVisual("onClear")
+    end
     return success
 end
 
-return {
+return NAV
