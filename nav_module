@@ -1,4 +1,4 @@
---eeee?
+--eeee!!!
 --!nocheck
 --!nolint
 local ctx = (typeof(...) == "table" and ...) or {}
@@ -589,55 +589,45 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 end
             end
 
-            -- Un-snag Maneuver: 3s reverse followed by 2.5s lateral sidestep nearest to goal
+            -- Timed backpedal & lateral bypass maneuver
             if clock() - stuckTime >= 0.55 then
                 local distMoved = (r.Position - stuckAnchor).Magnitude
                 if distMoved < 0.65 and flatDist > 1.0 then
-                    stuckAttempts = stuckAttempts + 1
+                    -- 1. Determine lateral direction (Left vs Right) closest to the goal
+                    local lookDir = r.CFrame.LookVector
+                    local flatLook = Vec3(lookDir.X, 0, lookDir.Z).Unit
+                    local rightVec = Vec3(-flatLook.Z, 0, flatLook.X)
+                    local leftVec = -rightVec
 
-                    -- 1. Step backward for 3.0 seconds
+                    local testRight = r.Position + (rightVec * 4.0)
+                    local testLeft = r.Position + (leftVec * 4.0)
+                    local sideDir = ((testRight - currentWp.pos).Magnitude < (testLeft - currentWp.pos).Magnitude) and rightVec or leftVec
+
+                    -- 2. Backpedal away for 3.0s
                     local backStart = clock()
                     while clock() - backStart < 3.0 and NAV.walkToken == myToken do
                         r, h = root(), hum()
                         if not r or not h or h.Health <= 0 then break end
-                        local backLook = -r.CFrame.LookVector
-                        local flatBack = Vec3(backLook.X, 0, backLook.Z).Unit
-                        h:MoveTo(r.Position + flatBack * 6)
+                        h:MoveTo(r.Position - (flatLook * 4.0))
                         task_wait(0.05)
                     end
 
-                    -- 2. Determine which lateral side (Left or Right) points closer to the goal
-                    r, h = root(), hum()
-                    if r and h and h.Health > 0 and NAV.walkToken == myToken then
-                        local goalDir = (targetPos - r.Position).Unit
-                        local rightVec = r.CFrame.RightVector
-                        local leftVec = -rightVec
-
-                        -- Compare dot products to pick the side nearest to the destination
-                        local bestSide = (rightVec:Dot(goalDir) >= leftVec:Dot(goalDir)) and rightVec or leftVec
-                        local flatSide = Vec3(bestSide.X, 0, bestSide.Z).Unit
-
-                        -- Step toward that side for 2.5 seconds
-                        local sideStart = clock()
-                        while clock() - sideStart < 2.5 and NAV.walkToken == myToken do
-                            r, h = root(), hum()
-                            if not r or not h or h.Health <= 0 then break end
-                            h:MoveTo(r.Position + flatSide * 6)
-                            task_wait(0.05)
-                        end
+                    -- 3. Strafe laterally toward the goal side for 2.5s
+                    local sideStart = clock()
+                    while clock() - sideStart < 2.5 and NAV.walkToken == myToken do
+                        r, h = root(), hum()
+                        if not r or not h or h.Health <= 0 then break end
+                        h:MoveTo(r.Position + (sideDir * 4.0))
+                        task_wait(0.05)
                     end
 
-                    -- Break to trigger a clean A* path recalculation after maneuvering
-                    if stuckAttempts >= 2 then
-                        stuckAttempts = 0
-                        break
-                    end
+                    -- 4. Reset tracker and break to recalculate path from new coordinates
+                    stuckAnchor, stuckTime = r.Position, clock()
+                    break
                 else
                     stuckAttempts = 0
                 end
-                r = root()
-                stuckAnchor = r and r.Position or stuckAnchor
-                stuckTime = clock()
+                stuckAnchor, stuckTime = r.Position, clock()
             end
             task_wait(0.04)
         end
