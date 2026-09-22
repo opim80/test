@@ -1,4 +1,4 @@
---new
+--bettersit
 --!nocheck
 --!nolint
 local ctx = (typeof(...) == "table" and ...) or {}
@@ -109,7 +109,6 @@ local function isSolidWall(hit: RaycastResult?): boolean
 end
 
 local function getObstacleTop(hitPos: Vector3, baseFloorY: number, travelDir: Vector3?): (number, boolean, number)
-    -- Check for porch roof, awning, or ceiling above the obstacle
     local lowCeiling = Workspace:Raycast(Vec3(hitPos.X, baseFloorY + 1.8, hitPos.Z), Vec3(0, MAX_DOUBLE_JUMP + 2.0, 0), rpBody)
     if isSolidWall(lowCeiling) then return math.huge, false, baseFloorY end
 
@@ -120,11 +119,9 @@ local function getObstacleTop(hitPos: Vector3, baseFloorY: number, travelDir: Ve
 
         if obsHeight > MAX_SINGLE_JUMP then return math.huge, false, baseFloorY end
 
-        -- Headroom clearance directly above obstacle top
         local ceiling = Workspace:Raycast(Vec3(hitPos.X, topY + 0.5, hitPos.Z), Vec3(0, 5.0, 0), rpBody)
         if isSolidWall(ceiling) then return math.huge, false, baseFloorY end
 
-        -- Landing zone verification behind obstacle
         if travelDir and travelDir.Magnitude > 0.1 then
             local fwd = Vec3(travelDir.X, 0, travelDir.Z).Unit
             local landingProbePos = Vec3(hitPos.X, topY + 1.0, hitPos.Z) + (fwd * 2.2)
@@ -197,7 +194,6 @@ local function isTraversableBetween(posA: Vector3, posB: Vector3, floorYA: numbe
     return true, jumpType
 end
 
--- Bidirectional 3-channel capsule line-of-sight & corner checker
 local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, floorYB: number): boolean
     local fullDir = posB - posA
     local horiz = Vec3(fullDir.X, 0, fullDir.Z)
@@ -207,7 +203,6 @@ local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, 
     local fwd = dist > 0.1 and horiz.Unit or Vec3(0, 0, 1)
     local side = Vec3(-fwd.Z, 0, fwd.X)
 
-    -- Multi-tier bidirectional raycasts (Forward A->B and Reverse B->A)
     for _, yOff in ipairs({ 0.6, 1.8, 3.2, 4.2 }) do
         for _, sideMult in ipairs({ 0, 1.4, -1.4 }) do
             local oA = Vec3(posA.X, floorYA + yOff, posA.Z) + (side * sideMult)
@@ -221,7 +216,6 @@ local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, 
         end
     end
 
-    -- Dense intermediate cross-section sampling
     local steps = clamp(ceil(dist / 1.8), 2, 25)
     for i = 1, steps do
         local alpha = i / (steps + 1)
@@ -308,7 +302,6 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         local distToGoal = (curFloor - goalFloor).Magnitude
         if distToGoal < bestDist then bestDist, bestNode = distToGoal, current end
 
-        -- Strictly require unobstructed line of sight before completing path
         if canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
             bestNode, reachedGoal = current, true
             break
@@ -562,12 +555,32 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 end
             end
 
-            if clock() - stuckTime >= 1.4 then
-                if (r.Position - stuckAnchor).Magnitude < 1.2 and flatDist > 3.0 then
+            -- Doorframe ridge & corner un-snagger
+            if clock() - stuckTime >= 0.65 then
+                local distMoved = (r.Position - stuckAnchor).Magnitude
+                if distMoved < 0.8 and flatDist > 1.2 then
                     stuckAttempts = stuckAttempts + 1
-                    local isDbl = (obsHeight > MAX_SINGLE_JUMP) or (currentWp.jumpType == "double")
-                    executeJumpClimb(currentWp.pos, max(currentWp.pos.Y - 1.5, obsTopY), isDbl, myToken, NAV)
-                    if stuckAttempts >= 3 then break end
+
+                    local snagProbe = Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), fwd * 2.4, rpBody)
+                        or Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), r.CFrame.LookVector * 2.0, rpBody)
+
+                    if snagProbe and isSolidWall(snagProbe) then
+                        local wallNormal = snagProbe.Normal
+                        local flatNormal = Vec3(wallNormal.X, 0, wallNormal.Z)
+                        if flatNormal.Magnitude > 0.1 then
+                            local unwedgeDir = (flatNormal.Unit * 1.8 + toWp.Unit * 0.6).Unit
+                            h:MoveTo(r.Position + unwedgeDir * 2.2)
+                            task_wait(0.18)
+                        end
+                    else
+                        local isDbl = (obsHeight > MAX_SINGLE_JUMP) or (currentWp.jumpType == "double")
+                        executeJumpClimb(currentWp.pos, max(currentWp.pos.Y - 1.5, obsTopY), isDbl, myToken, NAV)
+                    end
+
+                    if stuckAttempts >= 3 then
+                        stuckAttempts = 0
+                        break
+                    end
                 else
                     stuckAttempts = 0
                 end
