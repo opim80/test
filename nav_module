@@ -1,4 +1,4 @@
---eeee/
+--eeee?
 --!nocheck
 --!nolint
 local ctx = (typeof(...) == "table" and ...) or {}
@@ -589,36 +589,55 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 end
             end
 
-            -- Fast un-snagger for doorframes and corners
+            -- Un-snag Maneuver: 3s reverse followed by 2.5s lateral sidestep nearest to goal
             if clock() - stuckTime >= 0.55 then
                 local distMoved = (r.Position - stuckAnchor).Magnitude
                 if distMoved < 0.65 and flatDist > 1.0 then
                     stuckAttempts = stuckAttempts + 1
 
-                    local snagProbe = Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), fwd * 2.2, rpBody)
-                        or Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), r.CFrame.LookVector * 2.0, rpBody)
-
-                    if snagProbe and isSolidWall(snagProbe) then
-                        local wallNormal = snagProbe.Normal
-                        local flatNormal = Vec3(wallNormal.X, 0, wallNormal.Z)
-                        if flatNormal.Magnitude > 0.1 then
-                            local unwedgeDir = (flatNormal.Unit * 1.8 + toWp.Unit * 0.6).Unit
-                            h:MoveTo(r.Position + unwedgeDir * 2.0)
-                            task_wait(0.14)
-                        end
-                    else
-                        tapSpace()
-                        h:MoveTo(currentWp.pos)
+                    -- 1. Step backward for 3.0 seconds
+                    local backStart = clock()
+                    while clock() - backStart < 3.0 and NAV.walkToken == myToken do
+                        r, h = root(), hum()
+                        if not r or not h or h.Health <= 0 then break end
+                        local backLook = -r.CFrame.LookVector
+                        local flatBack = Vec3(backLook.X, 0, backLook.Z).Unit
+                        h:MoveTo(r.Position + flatBack * 6)
+                        task_wait(0.05)
                     end
 
-                    if stuckAttempts >= 3 then
+                    -- 2. Determine which lateral side (Left or Right) points closer to the goal
+                    r, h = root(), hum()
+                    if r and h and h.Health > 0 and NAV.walkToken == myToken then
+                        local goalDir = (targetPos - r.Position).Unit
+                        local rightVec = r.CFrame.RightVector
+                        local leftVec = -rightVec
+
+                        -- Compare dot products to pick the side nearest to the destination
+                        local bestSide = (rightVec:Dot(goalDir) >= leftVec:Dot(goalDir)) and rightVec or leftVec
+                        local flatSide = Vec3(bestSide.X, 0, bestSide.Z).Unit
+
+                        -- Step toward that side for 2.5 seconds
+                        local sideStart = clock()
+                        while clock() - sideStart < 2.5 and NAV.walkToken == myToken do
+                            r, h = root(), hum()
+                            if not r or not h or h.Health <= 0 then break end
+                            h:MoveTo(r.Position + flatSide * 6)
+                            task_wait(0.05)
+                        end
+                    end
+
+                    -- Break to trigger a clean A* path recalculation after maneuvering
+                    if stuckAttempts >= 2 then
                         stuckAttempts = 0
                         break
                     end
                 else
                     stuckAttempts = 0
                 end
-                stuckAnchor, stuckTime = r.Position, clock()
+                r = root()
+                stuckAnchor = r and r.Position or stuckAnchor
+                stuckTime = clock()
             end
             task_wait(0.04)
         end
