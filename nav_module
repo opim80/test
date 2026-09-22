@@ -107,39 +107,30 @@ local function isSolidWall(hit: RaycastResult?): boolean
     return hit.Instance:IsA("Terrain") and (hit.Normal.Y < 0.55) or true
 end
 
--- Obstacle clearance validator with overhang & structural building detection
 local function getObstacleTop(hitPos: Vector3, baseFloorY: number, travelDir: Vector3?): (number, boolean, number)
-    -- 1. Check if there is an overhead ceiling / porch awning directly above the obstacle point
+    -- Check for porch roof, awning, or ceiling above the obstacle
     local lowCeiling = Workspace:Raycast(Vec3(hitPos.X, baseFloorY + 1.8, hitPos.Z), Vec3(0, MAX_DOUBLE_JUMP + 2.0, 0), rpBody)
-    if isSolidWall(lowCeiling) then
-        -- An overhang or ceiling exists lower than maximum jump apex: cannot jump over
-        return math.huge, false, baseFloorY
-    end
+    if isSolidWall(lowCeiling) then return math.huge, false, baseFloorY end
 
     local topHit = findWalkableFloor(Vec3(hitPos.X, baseFloorY + MAX_DOUBLE_JUMP + 2.0, hitPos.Z), MAX_DOUBLE_JUMP + 4.0)
     if topHit then
         local topY = topHit.Position.Y
         local obsHeight = topY - baseFloorY
 
-        -- Walls higher than single jump between ground surfaces are structural walls, not hurdles
-        if obsHeight > MAX_SINGLE_JUMP then
-            return math.huge, false, baseFloorY
-        end
+        if obsHeight > MAX_SINGLE_JUMP then return math.huge, false, baseFloorY end
 
-        -- 2. Verify vertical headroom directly above the obstacle top
+        -- Headroom clearance directly above obstacle top
         local ceiling = Workspace:Raycast(Vec3(hitPos.X, topY + 0.5, hitPos.Z), Vec3(0, 5.0, 0), rpBody)
         if isSolidWall(ceiling) then return math.huge, false, baseFloorY end
 
-        -- 3. Verify landing space behind the obstacle
+        -- Landing zone verification behind obstacle
         if travelDir and travelDir.Magnitude > 0.1 then
             local fwd = Vec3(travelDir.X, 0, travelDir.Z).Unit
             local landingProbePos = Vec3(hitPos.X, topY + 1.0, hitPos.Z) + (fwd * 2.2)
 
-            -- Check for back wall obstructing jump descent
             local wallBehind = Workspace:Raycast(Vec3(hitPos.X, topY + 1.0, hitPos.Z), fwd * 2.2, rpBody)
             if isSolidWall(wallBehind) then return math.huge, false, baseFloorY end
 
-            -- Verify walkable landing ground on other side with clearance
             local landingFloor = findWalkableFloor(landingProbePos, obsHeight + 4.0)
             if not landingFloor then return math.huge, false, baseFloorY end
 
@@ -168,7 +159,6 @@ local function evaluateCell(worldX: number, worldZ: number, refFloorY: number)
     if not floorHit then return nil end
     local floorY = floorHit.Position.Y
 
-    -- Ensure adequate standing headroom inside cell
     if isSolidWall(Workspace:Raycast(Vec3(worldX, floorY + 0.5, worldZ), Vec3(0, 5.0, 0), rpBody)) then return nil end
 
     local nearEdge = false
@@ -188,19 +178,14 @@ local function isTraversableBetween(posA: Vector3, posB: Vector3, floorYA: numbe
     local dir = posB - posA
     local horizDir = Vec3(dir.X, 0, dir.Z)
 
-    -- Sweep capsule trajectory (knees, torso, and head heights)
     for _, yOff in ipairs({ 0.8, 2.0, 3.4 }) do
         local rayOrigin = Vec3(posA.X, floorYA + yOff, posA.Z)
         local rayDir = (Vec3(posB.X, floorYB + yOff, posB.Z) - rayOrigin)
         local hit = Workspace:Raycast(rayOrigin, rayDir, rpBody)
         if hit and isSolidWall(hit) then
-            -- If both endpoints are ground level, any wall above step height must be vaulted
             local obsHeight, hasHeadroom = getObstacleTop(hit.Position, baseFloor, horizDir)
-            if not hasHeadroom or obsHeight > MAX_SINGLE_JUMP then
-                return false, "none"
-            end
+            if not hasHeadroom or obsHeight > MAX_SINGLE_JUMP then return false, "none" end
 
-            -- Ensure character isn't under a roof/porch when attempting an obstacle jump
             local startHeadroom = Workspace:Raycast(Vec3(posA.X, floorYA + 0.5, posA.Z), Vec3(0, obsHeight + 4.5, 0), rpBody)
             if isSolidWall(startHeadroom) then return false, "none" end
 
@@ -211,46 +196,46 @@ local function isTraversableBetween(posA: Vector3, posB: Vector3, floorYA: numbe
     return true, jumpType
 end
 
--- Full capsule corner-clearance checker (prevents diagonal clipping through building walls)
+-- Bidirectional 3-channel capsule line-of-sight & corner checker
 local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, floorYB: number): boolean
     local fullDir = posB - posA
     local horiz = Vec3(fullDir.X, 0, fullDir.Z)
     local dist = horiz.Magnitude
-    if dist < 1.0 then return true end
-    if dist > 18.0 then return false end
+    if dist > 20.0 then return false end
 
-    local fwd = horiz.Unit
+    local fwd = dist > 0.1 and horiz.Unit or Vec3(0, 0, 1)
     local side = Vec3(-fwd.Z, 0, fwd.X)
 
-    -- 1. Full 3-channel raycast sweep (Center, Left 1.4 studs, Right 1.4 studs)
-    for _, yOff in ipairs({ 0.8, 2.0, 3.6 }) do
+    -- Multi-tier bidirectional raycasts (Forward A->B and Reverse B->A)
+    for _, yOff in ipairs({ 0.6, 1.8, 3.2, 4.2 }) do
         for _, sideMult in ipairs({ 0, 1.4, -1.4 }) do
-            local o = Vec3(posA.X, floorYA + yOff, posA.Z) + (side * sideMult)
-            local d = (Vec3(posB.X, floorYB + yOff, posB.Z) + (side * sideMult)) - o
-            local hit = Workspace:Raycast(o, d, rpBody)
-            if hit and isSolidWall(hit) then return false end
+            local oA = Vec3(posA.X, floorYA + yOff, posA.Z) + (side * sideMult)
+            local oB = Vec3(posB.X, floorYB + yOff, posB.Z) + (side * sideMult)
+
+            local hitFwd = Workspace:Raycast(oA, oB - oA, rpBody)
+            if hitFwd and isSolidWall(hitFwd) then return false end
+
+            local hitRev = Workspace:Raycast(oB, oA - oB, rpBody)
+            if hitRev and isSolidWall(hitRev) then return false end
         end
     end
 
-    -- 2. Dense intermediate cross-section validation
-    local steps = clamp(ceil(dist / 2.0), 3, 25)
+    -- Dense intermediate cross-section sampling
+    local steps = clamp(ceil(dist / 1.8), 2, 25)
     for i = 1, steps do
         local alpha = i / (steps + 1)
         local samplePos = posA:Lerp(posB, alpha)
         local expectedY = floorYA + (floorYB - floorYA) * alpha
 
-        -- Continuous floor support test
         local floorHit = findWalkableFloor(Vec3(samplePos.X, expectedY + 3.0, samplePos.Z), 7.0)
         if not floorHit or abs(floorHit.Position.Y - expectedY) > (MAX_STEP_UP + 0.8) then
             return false
         end
 
-        -- Check body clearance at sample position
         local bodyClear = Workspace:Raycast(Vec3(samplePos.X, expectedY + 0.5, samplePos.Z), Vec3(0, 4.5, 0), rpBody)
         if isSolidWall(bodyClear) then return false end
 
-        -- Horizontal cross check for corner clipping
-        local cornerHit = Workspace:Raycast(Vec3(samplePos.X - side.X * 1.2, expectedY + 1.5, samplePos.Z - side.Z * 1.2), side * 2.4, rpBody)
+        local cornerHit = Workspace:Raycast(Vec3(samplePos.X - side.X * 1.3, expectedY + 1.5, samplePos.Z - side.Z * 1.3), side * 2.6, rpBody)
         if isSolidWall(cornerHit) then return false end
     end
 
@@ -321,8 +306,11 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         local curFloor = Vec3(current.pos.X, current.floorY, current.pos.Z)
         local distToGoal = (curFloor - goalFloor).Magnitude
         if distToGoal < bestDist then bestDist, bestNode = distToGoal, current end
-        if distToGoal <= GRID_SIZE * 1.4 or canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
-            bestNode, reachedGoal = current, true; break
+
+        -- Strictly require unobstructed line of sight before completing path
+        if canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
+            bestNode, reachedGoal = current, true
+            break
         end
 
         local curKey = current.gx .. ":" .. current.gz
@@ -408,7 +396,7 @@ local function executeJumpClimb(targetWpPos: Vector3, requiredClearY: number, is
 end
 
 -- ==========================================
--- MODULE DEFINITION & CLEAN EVENT HOOKS
+-- MODULE DEFINITION & EVENT HOOKS
 -- ==========================================
 local NAV = {}
 NAV.__index = NAV
@@ -467,7 +455,12 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
     while NAV.walkToken == myToken and (clock() - totalTimeout < maxTimeout) do
         r, h = root(), hum()
         if not r or not h or h.Health <= 0 then break end
-        if (targetPos - r.Position).Magnitude <= stopDist then success = true; break end
+
+        local distToTarget = (targetPos - r.Position).Magnitude
+        if distToTarget <= stopDist and canTraverseDirect(r.Position, targetPos, r.Position.Y - 1.5, targetPos.Y) then
+            success = true
+            break
+        end
 
         local waypoints, isComplete = solvePath(r.Position, targetPos)
         if not waypoints or #waypoints == 0 then
@@ -517,7 +510,12 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
 
             local toWp = currentWp.pos - r.Position
             local flatDist = Vec3(toWp.X, 0, toWp.Z).Magnitude
-            if (targetPos - r.Position).Magnitude <= stopDist then success = true; break end
+            distToTarget = (targetPos - r.Position).Magnitude
+
+            if distToTarget <= stopDist and canTraverseDirect(r.Position, targetPos, r.Position.Y - 1.5, targetPos.Y) then
+                success = true
+                break
+            end
 
             local fwd = flatDist > 0.2 and toWp.Unit or r.CFrame.LookVector
             local fwdHit = Workspace:Raycast(r.Position + Vec3(0, 1, 0), fwd * 3.0, rpBody)
