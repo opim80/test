@@ -62,7 +62,9 @@ end
 -- ==========================================
 -- CONSTANTS & RAYCASTING
 -- ==========================================
-local GRID_SIZE, MAX_STEP_UP, MAX_VAULT_HURDLE, MAX_SINGLE_JUMP, MAX_DOUBLE_JUMP, MAX_DROP_DOWN = 3.0, 2.2, 3.4, 5.0, 8.0, 16.0
+-- GRID_SIZE = 2.0 allows pathing through standard 3-stud doorways
+-- MAX_STEP_UP = 1.1 ensures curbs and porch steps trigger jumps immediately
+local GRID_SIZE, MAX_STEP_UP, MAX_VAULT_HURDLE, MAX_SINGLE_JUMP, MAX_DOUBLE_JUMP, MAX_DROP_DOWN = 2.0, 1.1, 3.2, 5.0, 8.0, 16.0
 local rpGround, rpBody = RaycastParams.new(), RaycastParams.new()
 rpGround.FilterType, rpGround.IgnoreWater = Enum.RaycastFilterType.Exclude, false
 rpBody.FilterType = Enum.RaycastFilterType.Exclude
@@ -108,16 +110,14 @@ local function isSolidWall(hit: RaycastResult?): boolean
 end
 
 local function getObstacleTop(hitPos: Vector3, baseFloorY: number, travelDir: Vector3?): (number, boolean, number)
-    -- If there is any ceiling/roof within 8 studs above the obstacle, it cannot be jumped over
     local lowCeiling = Workspace:Raycast(Vec3(hitPos.X, baseFloorY + 1.5, hitPos.Z), Vec3(0, 8.5, 0), rpBody)
     if isSolidWall(lowCeiling) then return math.huge, false, baseFloorY end
 
-    local topHit = findWalkableFloor(Vec3(hitPos.X, baseFloorY + MAX_VAULT_HURDLE + 2.0, hitPos.Z), MAX_VAULT_HURDLE + 4.0)
+    local topHit = findWalkableFloor(Vec3(hitPos.X, baseFloorY + MAX_VAULT_HURDLE + 1.5, hitPos.Z), MAX_VAULT_HURDLE + 3.0)
     if topHit then
         local topY = topHit.Position.Y
         local obsHeight = topY - baseFloorY
 
-        -- Anything higher than waist-high (3.4 studs) is a structural wall, NOT a vaultable obstacle
         if obsHeight > MAX_VAULT_HURDLE or obsHeight <= 0.2 then return math.huge, false, baseFloorY end
 
         local ceiling = Workspace:Raycast(Vec3(hitPos.X, topY + 0.5, hitPos.Z), Vec3(0, 5.0, 0), rpBody)
@@ -125,9 +125,9 @@ local function getObstacleTop(hitPos: Vector3, baseFloorY: number, travelDir: Ve
 
         if travelDir and travelDir.Magnitude > 0.1 then
             local fwd = Vec3(travelDir.X, 0, travelDir.Z).Unit
-            local landingProbePos = Vec3(hitPos.X, topY + 1.0, hitPos.Z) + (fwd * 2.2)
+            local landingProbePos = Vec3(hitPos.X, topY + 0.8, hitPos.Z) + (fwd * 2.0)
 
-            local wallBehind = Workspace:Raycast(Vec3(hitPos.X, topY + 1.0, hitPos.Z), fwd * 2.2, rpBody)
+            local wallBehind = Workspace:Raycast(Vec3(hitPos.X, topY + 0.8, hitPos.Z), fwd * 2.0, rpBody)
             if isSolidWall(wallBehind) then return math.huge, false, baseFloorY end
 
             local landingFloor = findWalkableFloor(landingProbePos, obsHeight + 4.0)
@@ -158,10 +158,11 @@ local function evaluateCell(worldX: number, worldZ: number, refFloorY: number)
     if not floorHit then return nil end
     local floorY = floorHit.Position.Y
 
-    if isSolidWall(Workspace:Raycast(Vec3(worldX, floorY + 0.5, worldZ), Vec3(0, 5.0, 0), rpBody)) then return nil end
+    -- Require 5 studs of clear standing headroom
+    if isSolidWall(Workspace:Raycast(Vec3(worldX, floorY + 0.4, worldZ), Vec3(0, 5.0, 0), rpBody)) then return nil end
 
     local nearEdge = false
-    for _, off in ipairs({ Vec3(2, 0, 0), Vec3(-2, 0, 0), Vec3(0, 0, 2), Vec3(0, 0, -2) }) do
+    for _, off in ipairs({ Vec3(1.5, 0, 0), Vec3(-1.5, 0, 0), Vec3(0, 0, 1.5), Vec3(0, 0, -1.5) }) do
         local edgeHit = findWalkableFloor(Vec3(worldX + off.X, floorY + 2.0, worldZ + off.Z), 8.0)
         if not edgeHit or (floorY - edgeHit.Position.Y) > 5.0 then nearEdge = true; break end
     end
@@ -177,13 +178,13 @@ local function isTraversableBetween(posA: Vector3, posB: Vector3, floorYA: numbe
     local dir = posB - posA
     local horizDir = Vec3(dir.X, 0, dir.Z)
 
-    -- Sweep capsule trajectory (knees, torso, head)
-    for _, yOff in ipairs({ 0.6, 1.8, 3.2 }) do
+    -- Sweep rays at knees, torso, and head
+    for _, yOff in ipairs({ 0.5, 1.8, 3.2 }) do
         local rayOrigin = Vec3(posA.X, floorYA + yOff, posA.Z)
         local rayDir = (Vec3(posB.X, floorYB + yOff, posB.Z) - rayOrigin)
         local hit = Workspace:Raycast(rayOrigin, rayDir, rpBody)
         if hit and isSolidWall(hit) then
-            -- Obstacles between two cells must be vaultable hurdles (<= 3.4 studs), NEVER walls
+            -- Obstacles must be low vaultable fences/crates, NEVER building walls
             local obsHeight, hasHeadroom = getObstacleTop(hit.Position, baseFloor, horizDir)
             if not hasHeadroom or obsHeight > MAX_VAULT_HURDLE then return false, "none" end
 
@@ -202,9 +203,9 @@ local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, 
     local horiz = Vec3(fullDir.X, 0, fullDir.Z)
     local dist = horiz.Magnitude
 
-    -- Instant pass if already right at the target
-    if dist <= 1.2 then
-        local quickHit = Workspace:Raycast(posA + Vec3(0, 1.0, 0), (posB - posA), rpBody)
+    -- Single center-line check when within 1.5 studs
+    if dist <= 1.5 then
+        local quickHit = Workspace:Raycast(posA + Vec3(0, 1.0, 0), fullDir, rpBody)
         return not (quickHit and isSolidWall(quickHit))
     end
     if dist > 20.0 then return false end
@@ -212,9 +213,9 @@ local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, 
     local fwd = horiz.Unit
     local side = Vec3(-fwd.Z, 0, fwd.X)
 
-    -- Bidirectional sweep
-    for _, yOff in ipairs({ 0.6, 1.8, 3.2, 4.2 }) do
-        for _, sideMult in ipairs({ 0, 1.3, -1.3 }) do
+    -- Bidirectional check
+    for _, yOff in ipairs({ 0.5, 1.8, 3.2 }) do
+        for _, sideMult in ipairs({ 0, 1.1, -1.1 }) do
             local oA = Vec3(posA.X, floorYA + yOff, posA.Z) + (side * sideMult)
             local oB = Vec3(posB.X, floorYB + yOff, posB.Z) + (side * sideMult)
 
@@ -226,22 +227,19 @@ local function canTraverseDirect(posA: Vector3, posB: Vector3, floorYA: number, 
         end
     end
 
-    local steps = clamp(ceil(dist / 1.8), 2, 25)
+    local steps = clamp(ceil(dist / 1.6), 2, 20)
     for i = 1, steps do
         local alpha = i / (steps + 1)
         local samplePos = posA:Lerp(posB, alpha)
         local expectedY = floorYA + (floorYB - floorYA) * alpha
 
-        local floorHit = findWalkableFloor(Vec3(samplePos.X, expectedY + 3.0, samplePos.Z), 7.0)
+        local floorHit = findWalkableFloor(Vec3(samplePos.X, expectedY + 2.5, samplePos.Z), 6.0)
         if not floorHit or abs(floorHit.Position.Y - expectedY) > (MAX_STEP_UP + 0.8) then
             return false
         end
 
-        local bodyClear = Workspace:Raycast(Vec3(samplePos.X, expectedY + 0.5, samplePos.Z), Vec3(0, 4.5, 0), rpBody)
+        local bodyClear = Workspace:Raycast(Vec3(samplePos.X, expectedY + 0.4, samplePos.Z), Vec3(0, 4.5, 0), rpBody)
         if isSolidWall(bodyClear) then return false end
-
-        local cornerHit = Workspace:Raycast(Vec3(samplePos.X - side.X * 1.3, expectedY + 1.5, samplePos.Z - side.Z * 1.3), side * 2.6, rpBody)
-        if isSolidWall(cornerHit) then return false end
     end
 
     return true
@@ -299,20 +297,23 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
     local openHeap, cameFrom, gScore, closedSet, jumpReq = {}, {}, {}, {}, {}
     gScore["0:0"] = 0
 
-    local H_WEIGHT = 1.4
+    local H_WEIGHT = 1.3
     heapPush(openHeap, { gx = 0, gz = 0, pos = startFloor + Vec3(0, 1.5, 0), floorY = startFloorY, f = initialDist * H_WEIGHT })
 
-    local bestNode, bestDist, reachedGoal, iterations = openHeap[1], initialDist, false, 0
-    while #openHeap > 0 and iterations < 6000 do
+    local bestNode, reachedGoal, iterations = nil, false, 0
+    while #openHeap > 0 and iterations < 7000 do
         iterations = iterations + 1
         local current = heapPop(openHeap)
         if not current then break end
 
         local curFloor = Vec3(current.pos.X, current.floorY, current.pos.Z)
         local distToGoal = (curFloor - goalFloor).Magnitude
-        if distToGoal < bestDist then bestDist, bestNode = distToGoal, current end
 
-        if canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
+        -- Only accept goal if line-of-sight is unobstructed
+        if distToGoal <= 2.2 and canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
+            bestNode, reachedGoal = current, true
+            break
+        elseif distToGoal <= 8.0 and canTraverseDirect(curFloor, goalFloor, current.floorY, goalFloorY) then
             bestNode, reachedGoal = current, true
             break
         end
@@ -331,7 +332,7 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
                 if neighbor then
                     local canTraverse, jType = isTraversableBetween(current.pos, neighbor.pos, current.floorY, neighbor.floorY)
                     if canTraverse then
-                        local penalty = (jType == "double" and 4.0) or (jType == "single" and 1.5) or (neighbor.nearEdge and 14.0 or 0)
+                        local penalty = (jType == "double" and 4.0) or (jType == "single" and 1.5) or (neighbor.nearEdge and 8.0 or 0)
                         local tentativeG = curG + (current.pos - neighbor.pos).Magnitude + penalty
                         if tentativeG < (gScore[nKey] or math.huge) then
                             cameFrom[nKey], jumpReq[nKey], gScore[nKey] = current, jType, tentativeG
@@ -344,18 +345,24 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         end
     end
 
+    -- If no valid path to goal exists, reject instead of leading straight into a wall
+    if not reachedGoal or not bestNode then
+        return nil, false
+    end
+
     local rawPath, curr = {}, bestNode
     while curr do
         local k = curr.gx .. ":" .. curr.gz
         insert(rawPath, 1, { pos = curr.pos, floorY = curr.floorY, jumpType = jumpReq[k] or "none" })
         curr = cameFrom[k]
     end
-    if #rawPath <= 1 and not reachedGoal then return nil, false end
+    if #rawPath <= 1 then return nil, false end
 
-    if reachedGoal and (rawPath[#rawPath].pos - resolvedGoal).Magnitude > 1.5 then
+    if (rawPath[#rawPath].pos - resolvedGoal).Magnitude > 1.2 then
         insert(rawPath, { pos = resolvedGoal, floorY = goalFloorY, jumpType = classifyJump(goalFloorY - rawPath[#rawPath].floorY) })
     end
 
+    -- Smooth path while guaranteeing no wall-clipping
     local smoothed, cIdx = { rawPath[1] }, 1
     while cIdx < #rawPath do
         local nextIdx = #rawPath
@@ -366,17 +373,17 @@ local function solvePath(startPos: Vector3, goalPos: Vector3)
         insert(smoothed, rawPath[nextIdx])
         cIdx = nextIdx
     end
-    return smoothed, reachedGoal
+    return smoothed, true
 end
 
 -- ==========================================
--- INSTANT RESPONSIVE JUMP MOTOR
+-- RESPONSIVE JUMP MOTOR
 -- ==========================================
 local function executeJumpClimb(targetWpPos: Vector3, isDouble: boolean, myToken: number, NAV: any)
     local r, h = root(), hum()
     if not r or not h or h.Health <= 0 then return false end
 
-    -- Keep forward momentum towards target while jumping
+    -- Maintain continuous forward momentum towards target
     h:MoveTo(targetWpPos)
     tapSpace()
 
@@ -386,7 +393,7 @@ local function executeJumpClimb(targetWpPos: Vector3, isDouble: boolean, myToken
             tapSpace()
         end
     end
-    task_wait(0.20)
+    task_wait(0.15)
     return true
 end
 
@@ -433,7 +440,7 @@ end
 function NAV.walkTo(targetPos: Vector3, options: any?): boolean
     if not targetPos then return false end
     local opt = options or {}
-    local maxTimeout, stopDist = opt.timeout or 120, opt.stopDist or 3.8
+    local maxTimeout, stopDist = opt.timeout or 120, opt.stopDist or 3.5
     local allowSprint = opt.sprint ~= false
 
     local r, h = root(), hum()
@@ -452,15 +459,27 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
         if not r or not h or h.Health <= 0 then break end
 
         local distToTarget = (targetPos - r.Position).Magnitude
-        -- Instant arrival if within 1.4 studs or within stopDist with clear line of sight
-        if distToTarget <= 1.4 or (distToTarget <= stopDist and canTraverseDirect(r.Position, targetPos, r.Position.Y - 1.5, targetPos.Y - 1.5)) then
-            success = true
-            break
+
+        -- Instant arrival check without side-ray false positives
+        if distToTarget <= 1.8 then
+            local directRay = Workspace:Raycast(r.Position + Vec3(0, 1.0, 0), targetPos - r.Position, rpBody)
+            if not (directRay and isSolidWall(directRay)) then
+                success = true
+                break
+            end
+        end
+        if distToTarget <= stopDist then
+            local directRay = Workspace:Raycast(r.Position + Vec3(0, 1.0, 0), targetPos - r.Position, rpBody)
+            if not (directRay and isSolidWall(directRay)) then
+                success = true
+                break
+            end
         end
 
         local waypoints, isComplete = solvePath(r.Position, targetPos)
         if not waypoints or #waypoints == 0 then
-            local l, rt = r.CFrame.LookVector * 4, r.CFrame.RightVector * 4
+            -- Fallback escape sampling
+            local l, rt = r.CFrame.LookVector * 3.5, r.CFrame.RightVector * 3.5
             for _, esc in ipairs({ -l, rt, -rt, -l + rt, -l - rt }) do
                 local testPos = r.Position + esc
                 waypoints, isComplete = solvePath(testPos, targetPos)
@@ -472,7 +491,7 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
         end
 
         if not waypoints or #waypoints == 0 then
-            log("Navigation stalled: No clear trajectory found", Color3.fromRGB(245, 140, 60), "NAV")
+            log("No open trajectory found to destination", Color3.fromRGB(245, 140, 60), "NAV")
             break
         end
 
@@ -508,9 +527,20 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
             local flatDist = Vec3(toWp.X, 0, toWp.Z).Magnitude
             distToTarget = (targetPos - r.Position).Magnitude
 
-            if distToTarget <= 1.4 or (distToTarget <= stopDist and canTraverseDirect(r.Position, targetPos, r.Position.Y - 1.5, targetPos.Y - 1.5)) then
-                success = true
-                break
+            -- Real-time arrival check
+            if distToTarget <= 1.8 then
+                local directRay = Workspace:Raycast(r.Position + Vec3(0, 1.0, 0), targetPos - r.Position, rpBody)
+                if not (directRay and isSolidWall(directRay)) then
+                    success = true
+                    break
+                end
+            end
+            if distToTarget <= stopDist then
+                local directRay = Workspace:Raycast(r.Position + Vec3(0, 1.0, 0), targetPos - r.Position, rpBody)
+                if not (directRay and isSolidWall(directRay)) then
+                    success = true
+                    break
+                end
             end
 
             local fwd = flatDist > 0.2 and toWp.Unit or r.CFrame.LookVector
@@ -520,17 +550,17 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 obsHeight, hasHeadroom = getObstacleTop(fwdHit.Position, r.Position.Y - 2.2, fwd)
             end
 
-            -- Instant Jump Trigger without freezing forward movement
-            local reqJump = (currentWp.jumpType ~= "none" and flatDist <= 3.4)
-            local reqClimb = (hasHeadroom and obsHeight > MAX_STEP_UP and obsHeight <= MAX_VAULT_HURDLE and flatDist <= 3.0)
-            local reqStep = ((currentWp.pos.Y - r.Position.Y) > MAX_STEP_UP and flatDist <= 3.0)
+            -- Instant jump triggers on approach (flatDist <= 3.8 ensures clean clearance)
+            local reqJump = (currentWp.jumpType ~= "none" and flatDist <= 3.8)
+            local reqClimb = (hasHeadroom and obsHeight > MAX_STEP_UP and obsHeight <= MAX_VAULT_HURDLE and flatDist <= 3.2)
+            local reqStep = ((currentWp.pos.Y - r.Position.Y) > MAX_STEP_UP and flatDist <= 3.4)
 
             if reqJump or reqClimb or reqStep then
                 local isDbl = (currentWp.jumpType == "double") or (obsHeight > MAX_SINGLE_JUMP)
                 executeJumpClimb(currentWp.pos, isDbl, myToken, NAV)
             end
 
-            if flatDist <= 2.8 then
+            if flatDist <= 2.2 then
                 wpIndex = wpIndex + 1
                 if wpIndex <= #waypoints then currentWp = waypoints[wpIndex] end
             end
@@ -545,8 +575,8 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
 
             if clock() - lastRecalc > 0.50 then
                 lastRecalc = clock()
-                local distToGoal = (targetPos - r.Position).Magnitude
-                if distToGoal <= 18.0 then
+                local distGoal = (targetPos - r.Position).Magnitude
+                if distGoal <= 18.0 then
                     local rF, gF = r.Position.Y - 1.5, targetPos.Y - 1.5
                     if canTraverseDirect(r.Position, targetPos, rF, gF) then
                         waypoints = { { pos = targetPos + Vec3(0, 1.5, 0), floorY = targetPos.Y, jumpType = classifyJump(gF - rF) } }
@@ -558,13 +588,13 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                 end
             end
 
-            -- Fast un-snagger for door jambs and corner lips
+            -- Fast un-snagger for doorframes and corners
             if clock() - stuckTime >= 0.55 then
                 local distMoved = (r.Position - stuckAnchor).Magnitude
-                if distMoved < 0.65 and flatDist > 1.2 then
+                if distMoved < 0.65 and flatDist > 1.0 then
                     stuckAttempts = stuckAttempts + 1
 
-                    local snagProbe = Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), fwd * 2.4, rpBody)
+                    local snagProbe = Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), fwd * 2.2, rpBody)
                         or Workspace:Raycast(r.Position + Vec3(0, 0.8, 0), r.CFrame.LookVector * 2.0, rpBody)
 
                     if snagProbe and isSolidWall(snagProbe) then
@@ -572,8 +602,8 @@ function NAV.walkTo(targetPos: Vector3, options: any?): boolean
                         local flatNormal = Vec3(wallNormal.X, 0, wallNormal.Z)
                         if flatNormal.Magnitude > 0.1 then
                             local unwedgeDir = (flatNormal.Unit * 1.8 + toWp.Unit * 0.6).Unit
-                            h:MoveTo(r.Position + unwedgeDir * 2.2)
-                            task_wait(0.15)
+                            h:MoveTo(r.Position + unwedgeDir * 2.0)
+                            task_wait(0.14)
                         end
                     else
                         tapSpace()
